@@ -1,0 +1,66 @@
+air_temperature_drift:
+  field: MwxAirTemp
+  fault: drift
+  params: {start: 300, end: 660, rate_per_hour: 30}
+  seed: 7
+
+air_temperature_step:
+  field: MwxAirTemp
+  fault: step
+  params: {start: 300, end: 660, bias: 4}
+  seed: 7
+
+air_temperature_lag:
+  field: MwxAirTemp
+  fault: lag
+  params: {start: 300, end: 660, tau_seconds: 45}
+  seed: 7
+
+air_temperature_hysteresis:
+  field: MwxAirTemp
+  fault: hysteresis
+  params: {start: 300, end: 660, rising_offset: 3, falling_offset: -3}
+  seed: 7
+
+mwx_clock_jump:
+  field: MwxAirTemp
+  fault: clock_jump
+  params: {start: 300, end: 660, seconds: 90}
+  seed: 7
+
+mwx_clock_reset:
+  field: MwxAirTemp
+  fault: clock_reset
+  params: {start: 300, end: 660, seconds: 120}
+  seed: 7
+
+air_temperature_spikes:
+  field: MwxAirTemp
+  fault: spikes
+  params: {start: 300, end: 660, count: 4, size: 6}
+  seed: 7
+
+air_temperature_flatline:
+  field: MwxAirTemp
+  fault: flatline
+  params: {start: 300, end: 660}
+  seed: 7
+
+air_temperature_dropout:
+  field: MwxAirTemp
+  fault: dropout
+  params: {start: 300, end: 660}
+  seed: 7
+
+pir_temperature_front:
+  field: MwxPIRCaseTemp
+  companion_field: MwxPIRDomeTemp
+  trap: front
+  params: {start: 300, end: 660, bias: 2}
+  seed: 7
+
+port_wind_direction_turn:
+  field: MwxPortRelWindDir
+  trap: turn
+  params: {start: 300, end: 660, degrees: 120}
+  seed: 7
