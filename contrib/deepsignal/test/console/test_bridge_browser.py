@@ -21,10 +21,13 @@ def test_bridge_night_red_and_no_vertical_scroll(tmp_path):
         reason="browser test, run by lead outside the sandbox",
     )
     assert (DIST / "index.html").is_file(), "Run npm run build before the browser test"
-    # The shipped console.yaml lists only the example page; serve a copy that lists the Bridge preset.
+    # The shipped console.yaml lists only the example page;
+    # serve a copy that lists the Bridge preset.
     console = shutil.copytree(DIST, tmp_path / "console")
     config = console / "console.yaml"
-    config.write_text(config.read_text(encoding="utf-8").replace("pages: [example]", "pages: [bridge]"), encoding="utf-8")
+    text = config.read_text(encoding="utf-8")
+    config.write_text(text.replace("pages: [example]", "pages: [bridge]"),
+                      encoding="utf-8")
     assert "pages: [bridge]" in config.read_text(encoding="utf-8")
     cache = LocalCachedDataServer(port=0, interval=0.1)
     try:
