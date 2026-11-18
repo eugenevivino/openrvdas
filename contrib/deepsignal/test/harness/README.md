@@ -17,3 +17,9 @@ RUNNING logger status reach the real cache. Programmatic users can use
 All generated configuration, scaled replay inputs, state, and logs live in a
 temporary directory. `--speed` scales copied timestamps without changing the
 stock `LogfileReader(use_timestamps=True)` implementation.
+
+The fixture process applies a small compatibility shim because the stock 2024
+CachedDataServer uses the legacy two-argument websocket handler signature,
+which websockets 14 and newer no longer accepts. The clean long-term answer is
+either a `websockets<14` pin or a CachedDataServer fix, proposed upstream only
+after Eugene's approval under D-UPSTREAM0.

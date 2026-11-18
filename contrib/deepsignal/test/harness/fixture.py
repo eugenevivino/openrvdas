@@ -223,6 +223,9 @@ def _down(state_dir):
 
 def _run_cache(port):
     """Run the stock cache without its CLI's unrelated optional UDP imports."""
+    from contrib.deepsignal.test.harness import ws_compat
+
+    ws_compat.apply()
     from server.cached_data_server import CachedDataServer
 
     server = CachedDataServer(port=port, interval=0.05)
