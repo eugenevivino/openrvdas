@@ -4,7 +4,8 @@ from bisect import bisect_right
 from collections import defaultdict
 from datetime import datetime, timezone
 import math
-from statistics import fmean, median
+from fractions import Fraction
+from statistics import median
 
 from .stats import finite
 
@@ -60,7 +61,11 @@ def relative_angle(direct, direction, heading):
 def angle_mean(values):
     angles = [math.radians(v) for v in values]
     x, y = sum(map(math.cos, angles)), sum(map(math.sin, angles))
-    if math.hypot(x, y) > 1e-12 * len(values):
+    return _vector_angle(x, y, len(values))
+
+
+def _vector_angle(x, y, count):
+    if math.hypot(x, y) > 1e-12 * count:
         return normalized_angle(math.degrees(math.atan2(y, x)))
     return None
 
@@ -84,44 +89,83 @@ def polar_cell(row, config):
     return None
 
 
+STATE_CHANNELS = ('heading', 'relative_heading', 'direction', 'sog', 'heading_rate', 'regime')
+
+
+class ObservationBin:
+    """Bounded sufficient statistics for the same offline and live bin means."""
+
+    def __init__(self):
+        self.totals = defaultdict(Fraction)
+        self.vectors = {}
+        self.counts = defaultdict(int)
+        self.label = None
+        self.conflicting_labels = False
+
+    def add(self, values, angles, label_key):
+        for key, value in values.items():
+            if key == label_key and isinstance(value, str):
+                self.conflicting_labels |= self.label is not None and self.label != value
+                self.label = value
+            elif key not in ('timestamp', 'cruise') and finite(value):
+                self.counts[key] += 1
+                if key in angles:
+                    x, y = self.vectors.get(key, (0., 0.))
+                    theta = math.radians(value)
+                    self.vectors[key] = x + math.cos(theta), y + math.sin(theta)
+                else:
+                    # Exact running total keeps a speed on its band edge regardless
+                    # of packet order, without buffering an unbounded bin of packets.
+                    self.totals[key] += Fraction(value)
+
+    def means(self):
+        row = {key: float(total / self.counts[key]) for key, total in self.totals.items()}
+        row.update({key: _vector_angle(x, y, self.counts[key])
+                    for key, (x, y) in self.vectors.items()})
+        row['regime'] = None if self.conflicting_labels else self.label
+        return row
+
+
+def bin_state(row, previous, seconds, config):
+    angle = relative_angle(row.get('relative_heading'), row.get('direction'), row.get('heading'))
+    if angle is not None:
+        row.update(relative_heading=angle, relative_heading_cos=sine_degrees(angle + 90),
+                   relative_heading_sin=sine_degrees(angle))
+    elif any(config.get(k + '_field', k) != k
+             for k in ('relative_heading', 'direction', 'heading')):
+        row['relative_heading_cos'] = row['relative_heading_sin'] = None
+    rate, change = bin_motion(row, previous, seconds)
+    if rate is not None:
+        row['heading_rate'] = rate
+    row['regime'] = regime(row.get('sog'), row.get('heading_rate'), change, config) or row['regime']
+    return row
+
+
+def bin_motion(row, previous, seconds):
+    rate = row.get('heading_rate')
+    if finite(row.get('heading')) and finite(previous.get('heading')):
+        rate = abs(angle_difference(row['heading'], previous['heading'])) / seconds
+    change = None
+    if finite(row.get('sog')) and finite(previous.get('sog')):
+        change = abs(row['sog'] - previous['sog']) * 60 / seconds
+    return rate, change
+
+
 def _grid(indexed, cruise, config):
     seconds = config.get('bin_seconds', 10)
     names = {k: config.get(k + '_field', k) for k in
-             ('heading', 'direction', 'sog', 'roll', 'pitch', 'rpm', 'thruster',
-              'latitude', 'longitude', 'relative_heading')}
+             (*STATE_CHANNELS, 'roll', 'pitch', 'rpm', 'thruster', 'latitude', 'longitude')}
     angles = {names[k] for k in ('heading', 'direction', 'relative_heading', 'longitude')}
     rows = []
     for index in range(min(indexed), max(indexed) + 1):
-        row = {'timestamp': index * seconds, 'cruise': cruise}
-        samples = indexed.get(index, [])
-        numbers = defaultdict(list)
-        labels = set()
-        for sample in samples:
-            for key, value in sample.items():
-                if key == 'regime' and value is not None:
-                    labels.add(value)
-                elif key not in ('timestamp', 'cruise') and finite(value):
-                    numbers[key].append(value)
-        for key, values in numbers.items():
-            row[key] = angle_mean(values) if key in angles else fmean(values)
-        for key, name in names.items():
-            if name in row:
-                row[key] = row[name]
-        angle = relative_angle(row.get('relative_heading'), row.get('direction'),
-                               row.get('heading'))
-        if angle is not None:
-            row.update(relative_heading=angle, relative_heading_cos=sine_degrees(angle + 90),
-                       relative_heading_sin=sine_degrees(angle))
-        previous = rows[-1] if rows else {}
-        if finite(row.get('heading')) and finite(previous.get('heading')):
-            delta = angle_difference(row['heading'], previous['heading'])
-            row['heading_rate'] = abs(delta) / seconds
-        change = None
-        if finite(row.get('sog')) and finite(previous.get('sog')):
-            change = abs(row['sog'] - previous['sog']) * 60 / seconds
-        label = regime(row.get('sog'), row.get('heading_rate'), change, config)
-        row['regime'] = label if label else next(iter(labels)) if len(labels) == 1 else None
-        rows.append(row)
+        observations = ObservationBin()
+        for sample in indexed.get(index, ()):
+            observations.add(sample, angles, names['regime'])
+        row = observations.means()
+        # Resolve aliases simultaneously, including missing configured channels.
+        row.update({k: row.get(name) for k, name in names.items() if k != name and k != 'regime'})
+        row.update(timestamp=index * seconds, cruise=cruise)
+        rows.append(bin_state(row, rows[-1] if rows else {}, seconds, config))
 
     window = max(1, int(config.get('median_minutes', 30) * 60 / seconds))
     for field in config.get('fields', []):

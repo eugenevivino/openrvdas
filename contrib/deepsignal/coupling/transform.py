@@ -1,12 +1,19 @@
 """Apply frozen ship-contamination evidence to copies of live records."""
 
-from collections import OrderedDict
 import copy
 import json
 import math
+from typing import Union
 
-from logger.transforms.transform import Transform
-from logger.utils.das_record import DASRecord
+try:
+    from logger.transforms.transform import Transform
+    from logger.utils.das_record import DASRecord
+except ModuleNotFoundError as exc:
+    if exc.name not in ('logger', 'logger.transforms', 'logger.transforms.transform',
+                        'logger.utils', 'logger.utils.das_record'):
+        raise
+    from openrvdas.logger.transforms.transform import Transform
+    from openrvdas.logger.utils.das_record import DASRecord
 
 from . import prep, stats
 
@@ -23,9 +30,12 @@ class ShipCouplingTransform(Transform):
         self.fields = list(atlas.get('polar', {})) if fields is None else fields
         self.thresholds = suspect_threshold, fail_threshold
         self.state = {}
+        self.readings = {}
         self.speed_change = None
+        self.heading_rate = None
         self.latest = None
-        self.history = OrderedDict()
+        self.history = {}
+        self.seconds = self.config.get('bin_seconds', 10)
         self.lookback = 0
         self.clocks = {}
         self.spreads = atlas.get('healthy_spread', {})
@@ -40,48 +50,98 @@ class ShipCouplingTransform(Transform):
         self.cells = {(field, row.get('regime'), row['sector'], row['speed_band']): row
                       for field, table in atlas.get('polar', {}).items() for row in table}
 
-    def _state(self, fields, timestamp):
-        updates = {}
-        for name in ('relative_heading', 'heading', 'direction', 'sog', 'heading_rate', 'regime'):
-            source = self.config.get(name + '_field', name)
-            if source in fields:
-                updates[name] = fields[source]
-        for name in ('heading', 'sog'):
-            if name not in updates:
-                continue
-            previous = self.clocks.get(name)
-            if timestamp is not None and timestamp == previous:
-                continue
-            before, after = self.state.get(name), updates[name]
-            rate = None
-            if (timestamp is not None and previous is not None and
-                    stats.finite(before) and stats.finite(after)):
-                dt = timestamp - previous
-                if name == 'sog':
-                    rate = abs(after - before) * 60 / dt
-                else:
-                    rate = abs(prep.angle_difference(after, before)) / dt
-            if name == 'sog':
-                self.speed_change = rate
-            elif timestamp is None or self.clocks.get('heading_rate') != timestamp:
-                updates.setdefault('heading_rate', rate)
+    def _remember(self, updates, timestamp):
+        """Accumulate actual observations, including late packets within the lag window."""
+        index = math.floor(timestamp / self.seconds)
+        if self.latest is None or timestamp > self.latest:
+            self.latest = timestamp
+            oldest = index - self.lookback - 1
+            for key in list(self.history):
+                if key < oldest:
+                    del self.history[key]
+        if updates and index >= math.floor(self.latest / self.seconds) - self.lookback - 1:
+            if index not in self.history:
+                self.history[index] = prep.ObservationBin()
+            self.history[index].add(updates, ('heading', 'direction', 'relative_heading'), 'regime')
+        return index
 
-        self.state.update(updates)
-        self.clocks.update(dict.fromkeys(updates, timestamp))
-        if updates.keys() & {'relative_heading', 'heading', 'direction'}:
-            direct = self.state.get('relative_heading')
-            same_time = timestamp is not None and self.clocks.get('relative_heading') == timestamp
-            if ('relative_heading' not in updates and not same_time and
-                    'direction' in self.state and 'heading' in self.state):
+    def _means(self, index):
+        observations = self.history.get(index)
+        return observations.means() if observations else {}
+
+    def _latest_bin(self, *names):
+        times = [self.clocks[name] for name in names if self.clocks.get(name) is not None]
+        return math.floor(max(times) / self.seconds) if times else None
+
+    def _update_motion(self, index, updates):
+        speed_bin = self._latest_bin('sog')
+        heading_bin = self._latest_bin('heading', 'heading_rate')
+        # A late observation can change either side of an adjacent-bin difference.
+        for key in (index, index + 1):
+            if key not in (speed_bin, heading_bin):
+                continue
+            row = self._means(key)
+            if not row and key == index:
+                row = updates
+            if row:
+                rate, change = prep.bin_motion(row, self._means(key-1), self.seconds)
+                if key == speed_bin:
+                    self.speed_change = change
+                if key == heading_bin:
+                    self.heading_rate = rate
+
+    def _relative_heading(self, updates, timestamp):
+        direct = self.readings.get('relative_heading')
+        if 'heading' in self.readings and 'direction' in self.readings:
+            if timestamp is None:
+                use_derived = 'relative_heading' not in updates
+            else:
+                derived_bin = self._latest_bin('heading', 'direction')
+                direct_bin = self._latest_bin('relative_heading')
+                use_derived = derived_bin is not None and (
+                    direct_bin is None or derived_bin > direct_bin)
+            if use_derived:
                 direct = None
-            self.state['relative_heading'] = prep.relative_angle(
-                direct, self.state.get('direction'), self.state.get('heading'))
-        explicit_regime = timestamp is not None and self.clocks.get('regime') == timestamp
-        if ('regime' not in updates and not explicit_regime and
-                updates.keys() & {'sog', 'heading', 'heading_rate'}):
-            self.state['regime'] = prep.regime(self.state.get('sog'),
-                                               self.state.get('heading_rate'),
-                                               self.speed_change, self.config)
+        return prep.relative_angle(direct, self.readings.get('direction'),
+                                   self.readings.get('heading'))
+
+    def _state(self, fields, timestamp):
+        updates = {name: fields[source] for name in prep.STATE_CHANNELS
+                   if (source := self.config.get(name + '_field', name)) in fields}
+        if timestamp is not None:
+            index = self._remember(updates, timestamp)
+        if not updates:
+            return
+        if timestamp is None:
+            self.clocks.update(dict.fromkeys(updates))
+            if 'heading' in updates or 'heading_rate' in updates:
+                self.heading_rate = updates.get('heading_rate')
+            if 'sog' in updates:
+                self.speed_change = None
+        else:
+            means = self._means(index)
+            # A late packet can improve a bin mean or supply the newest observation
+            # of one channel after an unrelated channel advanced.
+            updates = {k: means.get(k, v) for k, v in updates.items()
+                       if self.clocks.get(k) is None or timestamp >= self.clocks[k]
+                       or (means and index == self._latest_bin(k))}
+            for name in updates:
+                last = self.clocks.get(name)
+                self.clocks[name] = timestamp if last is None else max(last, timestamp)
+            self._update_motion(index, updates)
+        self.readings.update(updates)
+        self.state.update(updates)
+        self.state['heading_rate'] = self.heading_rate
+        if updates.keys() & {'relative_heading', 'heading', 'direction'}:
+            self.state['relative_heading'] = self._relative_heading(updates, timestamp)
+
+        measured = prep.regime(self.state.get('sog'), self.heading_rate,
+                               self.speed_change, self.config)
+        label = self.readings.get('regime')
+        if timestamp is None and measured == 'transit' and label == 'maneuver':
+            # Without elapsed time a label can supply missing turn evidence.
+            measured = label
+        self.state['regime'] = measured or label
 
     def _calibration(self, field, timestamp):
         current = self.state.get('regime')
@@ -93,8 +153,11 @@ class ShipCouplingTransform(Transform):
         if lag:
             if timestamp is None or lag > 0:
                 return None
-            index = math.floor(timestamp / self.config.get('bin_seconds', 10))
-            state = self.history.get(index + lag, {})
+            index = math.floor(timestamp / self.seconds) + lag
+            state = self._means(index)
+            if not state:
+                return None
+            state = prep.bin_state(state, self._means(index-1), self.seconds, self.config)
             if state.get('regime') != current:
                 return None
         cell = prep.polar_cell(state, self.config)
@@ -104,32 +167,31 @@ class ShipCouplingTransform(Transform):
             return variable, current, cell, entry
         return None
 
-    def transform(self, record):
+    def transform(self, record: Union[DASRecord, dict]):
         if record is None:
             return None
         if isinstance(record, list):
             return [self.transform(item) for item in record]
+        if not isinstance(record, (dict, DASRecord)):
+            if hasattr(self, 'can_process_record') and not self.can_process_record(record):
+                return self.digest_record(record)
+            return None
         result = copy.deepcopy(record)
         if isinstance(result, DASRecord):
             fields, timestamp = result.fields, result.timestamp
+            timed = True
         else:
             fields, timestamp = result.get('fields', result), result.get('timestamp')
+            timed = 'timestamp' in result
         if not isinstance(fields, dict):
             return result
         try:
-            timestamp = prep.timestamp(timestamp) if timestamp is not None else None
-        except (ValueError, OverflowError):
-            timestamp = None
-        on_time = timestamp is None or self.latest is None or timestamp >= self.latest
-        if on_time:
+            timestamp = prep.timestamp(timestamp) if timed else None
+        except (ValueError, OverflowError, OSError):
+            on_time = False
+        else:
+            on_time = timestamp is None or self.latest is None or timestamp >= self.latest
             self._state(fields, timestamp)
-        if on_time and timestamp is not None:
-            self.latest = timestamp
-            if self.lookback:
-                index = math.floor(timestamp / self.config.get('bin_seconds', 10))
-                while self.history and next(iter(self.history)) < index - self.lookback:
-                    self.history.popitem(last=False)
-                self.history[index] = self.state.copy()
         for field in self.fields:
             if field not in fields or field not in self.evidence:
                 continue

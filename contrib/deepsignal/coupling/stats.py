@@ -63,13 +63,20 @@ def acf(x, k, spans=None):
     values = [v for v in x if finite(v)]
     if not values or k < 0 or k >= len(x):
         return 0.0
-    mean = sum(values) / len(values)
-    denominator = sum((value - mean) ** 2 for value in values)
+    # An exact power-of-two rescaling cancels in the ratio. Subtracting an
+    # origin first also preserves small deviations from a large common level.
+    exponent = math.frexp(max(map(abs, values)))[1]
+    origin = math.ldexp(values[0], -exponent)
+    scaled = [math.ldexp(v, -exponent) - origin if finite(v) else None for v in x]
+    mean = math.fsum(v for v in scaled if v is not None) / len(values)
+    centered = [v - mean if v is not None else None for v in scaled]
+    denominator = math.fsum(v*v for v in centered if v is not None)
     if denominator == 0:
         return 0.0
     tracks = spans if spans is not None else [(0, len(x))]
-    numerator = sum((x[i] - mean) * (x[i + k] - mean) for start, end in tracks
-                    for i in range(start, end - k) if finite(x[i]) and finite(x[i + k]))
+    numerator = math.fsum(centered[i] * centered[i+k] for start, end in tracks
+                          for i in range(start, end-k)
+                          if centered[i] is not None and centered[i+k] is not None)
     return numerator / denominator
 
 
@@ -126,23 +133,65 @@ def circular_shift_pvalue(x, y, stat, reps=500, min_shift=None, seed=0,
     return circular_shift_test(x, y, stat, reps, min_shift, seed, lags, spans)[0]
 
 
+def has_lag_pair(x, y, lo, hi, lags):
+    return any(finite(x[i]) and finite(y[i+lag]) for lag in lags
+               for i in range(lo + max(0, -lag), hi - max(0, lag)))
+
+
+def _rotation_period(values):
+    """Shortest repeating tile, including missing bins, in linear time."""
+    values = [v if finite(v) else None for v in values]
+    prefix = [0] * len(values)
+    for i in range(1, len(values)):
+        length = prefix[i-1]
+        while length and values[length] != values[i]:
+            length = prefix[length-1]
+        prefix[i] = length + (values[length] == values[i])
+    period = len(values) - prefix[-1]
+    return period if len(values) % period == 0 else len(values)
+
+
+def _shift_period(x, y, lags, stat):
+    period = _rotation_period(y)
+    if period == 1 or stat not in (spearman, pearson):
+        return period
+    # Correlations depend on pairs, irrespective of order. A rotation that
+    # preserves the field and its observation mask on every tested lag clock
+    # also reproduces the same pairs. Truncation at lag boundaries matters.
+    n = len(y)
+    field_period = 1
+    for lag in lags:
+        field = [x[i-lag] if 0 <= i-lag < n else None for i in range(n)]
+        field_period = math.lcm(field_period, _rotation_period(field))
+        if field_period == n:
+            break
+    return math.gcd(period, field_period)
+
+
 def circular_shift_test(x, y, stat, reps, min_shift, seed, lags, spans):
     """Return the plus-one p-value and the number of distinct shifts used in it."""
+    if len(x) < len(y):
+        x = list(x) + [None] * (len(y) - len(x))
     if min_shift is None:
         min_shift = 4 * max(decorrelation_lag(x, spans), decorrelation_lag(y, spans))
     if reps < 1:
         raise ValueError('Shift replicate count must be positive')
     # Each cruise is shifted on its own bin clock, including its missing bins.
     spans = [(0, len(y))] if spans is None else spans
-    spans = [(lo, hi) for lo, hi in spans
-             if any(map(finite, x[lo:hi])) and any(map(finite, y[lo:hi]))]
-    shifts = [range(max(1, min_shift), min(end - start, end - start - min_shift + 1))
-              for start, end in spans]
+    lags = [0] if lags is None else lags
+    spans = [(lo, hi) for lo, hi in spans if has_lag_pair(x, y, lo, hi, lags)]
+    shifts = []
+    first = max(1, min_shift)
+    for lo, hi in spans:
+        # Rotations separated by a whole period give exactly the same data.
+        period = _shift_period(x[lo:hi], y[lo:hi], lags, stat)
+        stop = min(hi - lo, hi - lo - min_shift + 1, first + period)
+        shifts.append(range(first, stop))
     if not shifts or not all(shifts):
         return None, 0
 
     def measure(values):
-        return lagged_best(x, values, lags if lags is not None else [0], spans, stat)[1]
+        return lagged_best(x, values, lags, spans, stat)[1]
 
     observed = measure(y)
     if observed is None:

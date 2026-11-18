@@ -1,5 +1,6 @@
 """Geographic reciprocal-leg and fixed-clock controls for replicated heading effects."""
 
+from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
 from itertools import groupby
 import math
@@ -21,8 +22,12 @@ def iqr(values):
 
 
 def _km(a, b):
-    lat, lon = math.radians(a['latitude']), math.radians(b['longitude'] - a['longitude'])
-    other = math.radians(b['latitude'])
+    return _site_km((a['latitude'], a['longitude']), (b['latitude'], b['longitude']))
+
+
+def _site_km(a, b):
+    lat, lon = math.radians(a[0]), math.radians(b[1] - a[1])
+    other = math.radians(b[0])
     h = math.sin((other - lat) / 2)**2 + math.cos(lat) * math.cos(other) * math.sin(lon / 2)**2
     return 12742 * math.asin(math.sqrt(min(1, h)))
 
@@ -48,26 +53,62 @@ def _legs(rows, field, variable, config):
 
 def _site_summary(rows, field, variable):
     residuals = [r[field] for r in rows]
+    readings = [r['paired_reading'] for r in rows]
     angles = [r['relative_heading'] for r in rows if stats.finite(r.get('relative_heading'))]
     return dict(relative=prep.angle_mean(angles), ship=median(r[variable] for r in rows),
-                residual=median(residuals), spread=iqr(residuals))
+                residual=median(residuals), spread=iqr(residuals),
+                reading=median(readings), reading_spread=iqr(readings),
+                background=median(v-r for v, r in zip(readings, residuals)))
 
 
 def _site_vote(a, b, variable, sign):
+    if (not stats.finite(a['relative']) or not stats.finite(b['relative']) or
+            abs(prep.angle_difference(a['relative'], b['relative'])) < 150):
+        return 'ambiguous'
+    if variable in ('relative_heading_cos', 'relative_heading_sin') and a['ship']*b['ship'] >= 0:
+        return 'ambiguous'
     delta = b['residual'] - a['residual']
     noise = max(a['spread'], b['spread'])
-    if variable in ('relative_heading_cos', 'relative_heading_sin'):
-        reversed_heading = a['ship'] * b['ship'] < 0
-    else:
-        reversed_heading = (stats.finite(a['relative']) and stats.finite(b['relative']) and
-                            abs(prep.angle_difference(a['relative'], b['relative'])) >= 150)
+    raw_delta = b['reading'] - a['reading']
+    if abs(raw_delta) <= max(a['reading_spread'], b['reading_spread']):
+        return 'environmental'
     if abs(delta) <= noise or (a['residual'] * b['residual'] > 0 and
                                abs(delta) < min(abs(a['residual']), abs(b['residual']))):
         return 'environmental'
-    if (reversed_heading and a['residual'] * b['residual'] < 0 and
+    # The reversal must survive using either leg's background for both
+    # readings. A change in rolling baseline alone cannot then cast a vote.
+    low, high = sorted((a['reading'], b['reading']))
+    common_flip = all(low < leg['background'] < high for leg in (a, b))
+    if (common_flip and raw_delta * delta > 0 and a['residual'] * b['residual'] < 0 and
             delta * (b['ship'] - a['ship']) * sign > 0):
         return 'ship_artifact'
     return 'ambiguous'
+
+
+def _matched_sites(a, b, tolerance):
+    # Pair closest sites one-to-one. The tighter site tolerance represents
+    # position precision at the observation, separate from the leg search radius.
+    shared = a.keys() & b.keys()
+    pairs = [(site, site) for site in shared]
+    # Search only the latitude strip within reach. Keeping just each site's
+    # nearest neighbor bounds storage even in a dense cloud of GPS fixes.
+    sites = sorted(b.keys() - shared)
+    latitudes = [lat for lat, _ in sites]
+    margin = math.degrees(tolerance / 6371)
+    nearest_a, nearest_b = {}, {}
+    for x in a.keys() - shared:
+        start = bisect_left(latitudes, x[0] - margin)
+        end = bisect_right(latitudes, x[0] + margin)
+        for i in range(start, end):
+            y = sites[i]
+            distance = _site_km(x, y)
+            if distance <= tolerance:
+                if x not in nearest_b or (distance, y) < nearest_b[x]:
+                    nearest_b[x] = distance, y
+                if y not in nearest_a or (distance, x) < nearest_a[y]:
+                    nearest_a[y] = distance, x
+    pairs.extend((x, y) for x, (_, y) in nearest_b.items() if nearest_a[y][1] == x)
+    return pairs
 
 
 def _votes(rows, field, variable, sign, config):
@@ -76,7 +117,7 @@ def _votes(rows, field, variable, sign, config):
         # Condition on where the environmental observation was made, including at nonzero lag.
         sites = defaultdict(list)
         for r in segment:
-            if r.get('sample_site') is not None:
+            if r.get('sample_site') is not None and stats.finite(r.get('paired_reading')):
                 sites[r['sample_site']].append(r)
         legs.append(dict(cruise=segment[0]['cruise'],
                          latitude=median(r['latitude'] for r in segment),
@@ -97,17 +138,18 @@ def _votes(rows, field, variable, sign, config):
             if i in used or abs(prep.angle_difference(a['heading'], b['heading'])) < 150:
                 continue
             km = _km(a, b)
-            if km <= config['reciprocal_km'] and not a['sites'].keys().isdisjoint(b['sites']):
+            if km <= config['reciprocal_km']:
                 candidates.append((km, -i))
-        if not candidates:
-            continue
-        i = -min(candidates)[1]
-        used.update([i, j])
-        a = legs[i]
-        shared = a['sites'].keys() & b['sites'].keys()
-        evidence = {_site_vote(a['sites'][site], b['sites'][site], variable, sign)
-                    for site in shared}
-        votes[evidence.pop() if len(evidence) == 1 else 'ambiguous'] += 1
+        for _, neg_i in sorted(candidates):
+            a = legs[-neg_i]
+            sites = _matched_sites(a['sites'], b['sites'],
+                                   min(config['reciprocal_km'], config['reciprocal_site_m']/1000))
+            if sites:
+                used.update([-neg_i, j])
+                evidence = {_site_vote(a['sites'][x], b['sites'][y], variable, sign)
+                            for x, y in sites}
+                votes[evidence.pop() if len(evidence) == 1 else 'ambiguous'] += 1
+                break
     return votes
 
 
@@ -157,7 +199,8 @@ def invariance(item, splits, config):
             observation = clock.get((r['cruise'], r['timestamp'] - lag), {})
             lat, lon = observation.get('latitude'), observation.get('longitude')
             site = (lat, lon % 360) if stats.finite(lat) and stats.finite(lon) else None
-            aligned.append(dict(r, paired_residual=observation.get(field), sample_site=site))
+            aligned.append(dict(r, paired_residual=observation.get(field), sample_site=site,
+                                paired_reading=observation.get(item['field'])))
         votes.update(_votes(aligned, 'paired_residual', variable, fit['effect'], config))
         controls[name] = {f'{hours}h': _shifted(rows, field, variable, item['regime'], fit['lag'],
                                                 config['bin_seconds'], hours, config)

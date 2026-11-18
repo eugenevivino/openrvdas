@@ -352,14 +352,25 @@ class ReviewTest(unittest.TestCase):
         self.assertEqual(series[1], (20, 2))
 
     def test_null_family_and_max_lag(self):
-        rng = random.Random(270)
         fields = ['f%d' % i for i in range(50)]
-        rows = [dict({f: rng.random() for f in fields}, v=rng.random(), regime='transit',
-                     cruise=i // 45, timestamp=i * 10) for i in range(180)]
-        config = dict(CFG, fields=fields, lags=[-2, 0, 2], reps=999, min_shift=2, bootstrap_reps=10)
-        hypotheses = atlas.discover(rows[:90], rows[90:], config)['hypotheses']
-        self.assertLessEqual(sum(h['q_pass'] for h in hypotheses), 2)
-        self.assertTrue(all(h['p'] is not None for h in hypotheses))
+        q = .05
+        config = dict(CFG, fields=fields, lags=[-2, 0, 2], reps=999, min_shift=2,
+                      bootstrap_reps=10, q=q)
+        seeds = (18, 92, 270)
+        confirmed = 0
+        for seed in seeds:
+            rng = random.Random(seed)
+            rows = [dict({f: rng.random() for f in fields}, v=rng.random(), regime='transit',
+                         cruise=i // 45, timestamp=i * 10) for i in range(180)]
+            with self.subTest(seed=seed):
+                hypotheses = atlas.discover(rows[:90], rows[90:], config)['hypotheses']
+                self.assertEqual(len(hypotheses), 50)
+                self.assertLessEqual(sum(h['q_pass'] for h in hypotheses), 2)
+                self.assertTrue(all(h['p'] is not None for h in hypotheses))
+                confirmed += sum(h['status'] == 'confirmed' for h in hypotheses)
+        # Independent null splits: confirmation requires two marginal p-values <= q.
+        # E[false confirms] <= m*q*q per family. Compare the fixed-seed total to its bound.
+        self.assertLessEqual(confirmed, len(seeds)*len(fields)*q*q)
         x, y = [r['f1'] for r in rows[:80]], [r['v'] for r in rows[:80]]
         lags = (-2, 0, 2)
 

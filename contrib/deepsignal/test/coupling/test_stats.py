@@ -1,3 +1,4 @@
+import math
 import random
 import unittest
 
@@ -10,6 +11,14 @@ class StatsTest(unittest.TestCase):
         self.assertAlmostEqual(stats.spearman([1, 2, 2, 4], [4, 2, 2, 1]), -1.0)
         self.assertAlmostEqual(stats.acf([1, 2, 3], 1), 0.0)
         self.assertEqual(stats.decorrelation_lag([1] * 8), 1)
+
+    def test_nonperfect_pearson(self):
+        # Three times the centered x is [-4, -1, 5]. Centered y is [0, -2, 2].
+        self.assertAlmostEqual(stats.pearson([0, 1, 3], [2, 0, 4]), 12/math.sqrt(42*8))
+
+    def test_asymmetric_spearman(self):
+        # Average ranks center to [-1, -1, -1, 1, 2] and [-2, 1, -1, 2, 0].
+        self.assertAlmostEqual(stats.spearman([1, 1, 1, 2, 3], [1, 4, 2, 5, 3]), 4/math.sqrt(80))
 
     def test_later_decorrelation_crossing(self):
         # The first three biased correlations are 17/24, 10/24 and 3/24.

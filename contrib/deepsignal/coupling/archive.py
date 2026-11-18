@@ -7,7 +7,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from tempfile import NamedTemporaryFile
+import shutil
 
 from .prep import timestamp
 
@@ -159,10 +159,59 @@ def write_atlas(atlas, inputs):
         os.close(directory)
 
 
+def _switch_link(pending, target, path):
+    if pending.is_symlink():
+        pending.unlink()
+    pending.symlink_to(target)
+    os.replace(pending, path)
+
+
+def _publish_files(output, files, stale, inputs):
+    # Public names point through one symlink. Either side of its atomic rename
+    # is a complete generation, even if the writer is killed between syscalls.
+    store = output / '.ship-coupling'
+    if store.is_symlink() or any(Path(p).resolve().is_relative_to(store.resolve()) for p in inputs):
+        raise ValueError('Atlas generation directory aliases an input or symlink')
+    store.mkdir(exist_ok=True)
+    current = store / 'current'
+    active = os.readlink(current) if current.is_symlink() else 'a'
+    if active not in ('a', 'b'):
+        raise ValueError('Invalid atlas generation link')
+    previous, stage = store / active, store / ('b' if active == 'a' else 'a')
+    for directory in (previous, stage):
+        if directory.is_symlink():
+            raise ValueError('Invalid atlas generation directory')
+        directory.mkdir(exist_ok=True)
+    pending = store / 'next'
+    if not current.exists():
+        _switch_link(pending, active, current)
+    for path in stage.iterdir():
+        if path.name not in ('atlas.json', 'atlas.md') and not path.match('polar_*.csv'):
+            raise ValueError(f'Unexpected entry in atlas generation: {path}')
+        path.unlink()
+    for name, contents in files.items():
+        (stage / name).write_text(contents, encoding='utf-8', newline='')
+
+    for name in sorted(files.keys() | stale):
+        path = output / name
+        target = Path(store.name, current.name, name)
+        if path.is_symlink() and path.readlink() == target:
+            continue
+        # Migration of a flat export preserves its visible bytes until commit.
+        if path.is_file():
+            old = previous / name
+            old.unlink(missing_ok=True)
+            shutil.copyfile(path, old)
+        _switch_link(pending, target, path)
+    _switch_link(pending, stage.name, current)
+    for name in stale:
+        (output / name).unlink()
+
+
 def _publish(atlas, output, inputs):
     params = atlas['parameters']
     names = {'atlas.json', 'atlas.md'}
-    for field in params['fields']:
+    for field in set(params['fields']) | atlas['polar'].keys():
         if Path(field).name != field:
             raise ValueError('Field names must be single filename components')
         names.add(f'polar_{field}.csv')
@@ -190,23 +239,12 @@ def _publish(atlas, output, inputs):
         writer.writeheader()
         writer.writerows(records)
         files[f'polar_{field}.csv'] = stream.getvalue()
-    stale = {p.name for p in output.glob('polar_*.csv') if p.name not in files and _owned_polar(p)}
+    stale = {p.name for p in output.glob('polar_*.csv') if p.name not in files and
+             ((p.is_symlink() and p.readlink() == Path('.ship-coupling/current', p.name))
+              or _owned_polar(p))}
     for name in names | stale:
         path = output / name
         if path.exists() and any(os.path.samefile(path, source) for source in inputs):
             raise ValueError(f'Input file aliases output {path}')
     files['atlas.json'] = json.dumps(atlas, indent=2, sort_keys=True, allow_nan=False) + '\n'
-    for name, contents in files.items():
-        if name == 'atlas.json':
-            for old in stale:
-                (output / old).unlink()
-        # Replace the directory entry instead of truncating any existing file or link target.
-        with NamedTemporaryFile(mode='w', dir=output, encoding='utf-8', newline='',
-                                delete=False) as stream:
-            temporary = Path(stream.name)
-            try:
-                stream.write(contents)
-                stream.close()
-                temporary.replace(output / name)
-            finally:
-                temporary.unlink(missing_ok=True)
+    _publish_files(output, files, stale, inputs)

@@ -16,7 +16,7 @@ DEFAULTS = {
     'sog_change_kn_min': 1, 'min_n_eff': 30, 'max_lag': None, 'block': None,
     'min_shift': None, 'reps': 500, 'bootstrap_reps': 1000, 'method': 'bh',
     'output_dir': 'ship-coupling', 'q': .05, 'seed': 78, 'sectors': 12, 'speed_bands': [1, 5, 10],
-    'reciprocal_km': 10, 'reciprocal_hours': 12, 'min_reciprocal_pairs': 2,
+    'reciprocal_km': 10, 'reciprocal_site_m': 1, 'reciprocal_hours': 12, 'min_reciprocal_pairs': 2,
     'reciprocal_agreement': .75, 'shift_effect_limit': .2,
 }
 # The explicitly configured partition takes precedence over these standard field names.
@@ -36,7 +36,7 @@ def _evaluate(rows, field, variable, config, seed):
         for r in track:
             x.append(r.get(field))
             y.append(r.get(variable))
-        if any(map(stats.finite, x[start:])) and any(map(stats.finite, y[start:])):
+        if stats.has_lag_pair(x, y, start, len(x), lags):
             spans.append((start, len(x)))
         else:
             del x[start:]
