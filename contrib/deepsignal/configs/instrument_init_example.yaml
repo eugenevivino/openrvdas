@@ -1,0 +1,17 @@
+profile_id: example-met-v1
+version: 3
+reviewed_by: "J. Tech"
+reviewed_on: 2026-11-01
+source: "Generic instrument manual example, initialization section"
+instrument: example-met
+line_ending: "\r\n"
+steps:
+  - {name: wake, class: query, send: "\r", pause_s: 0.5, expect: null}
+  - {name: id, class: query, send: "*ID?", expect: "^EX-MET .*", timeout_s: 1.0, retries: 2}
+  - {name: rate_1hz, class: setup, send: "RATE 1", expect: "^OK$", timeout_s: 1.0, retries: 1}
+  - {name: set_clock, class: setup, send: "TIME {utc:%H:%M:%S}", expect: "^OK$", optional: true}
+  - {name: start, class: setup, send: "GO", expect: null}
+reinit:
+  on_reconnect: true
+  after_silence_s: 30
+  max_per_hour: 6
