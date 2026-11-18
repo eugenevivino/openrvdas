@@ -8,7 +8,8 @@ import unittest
 
 from contrib.deepsignal.sounding_uncertainty.contract import RESULT_FIELDS
 from contrib.deepsignal.sounding_uncertainty.estimator import (
-    calibrate_vertical, compare_crossline, estimate_sounding)
+    calibrate_vertical, compare_crossline, convert_covariance_units,
+    estimate_sounding)
 from contrib.deepsignal.sounding_uncertainty.transform import (
     SoundingUncertaintyTransform)
 from contrib.deepsignal.test.sounding_uncertainty.fixtures import (
@@ -79,14 +80,19 @@ class EstimatorTruthTest(unittest.TestCase):
         self.assertIn("detection_cross", result["signed_cross_terms_m2"])
 
     def test_heave_sign_convention(self):
-        packet = vertical_packet(heave_m=-1.25)
+        packet = vertical_packet(heave_up_m=1.25)
         result = estimate_sounding(packet)
         self.assertAlmostEqual(result["depth_m"], 78.75, places=7)
 
     def test_deg_to_rad_covariance(self):
-        result = estimate_sounding(vertical_packet(), {"angle_sd_deg": 2.0})
-        self.assertAlmostEqual(result["angle_variance_rad2"],
-                               4.0 * (math.pi / 180.0) ** 2, places=12)
+        converted = convert_covariance_units(
+            ((4.0, 6.0, 8.0), (6.0, 9.0, 12.0), (8.0, 12.0, 16.0)),
+            ("deg", "deg", "m"))
+        factor = math.pi / 180.0
+        self.assertAlmostEqual(converted[0][1], 6.0 * factor ** 2,
+                               places=12)
+        self.assertAlmostEqual(converted[1][2], 12.0 * factor, places=12)
+        self.assertEqual(converted[2][2], 16.0)
 
     def test_invalid_joint_covariance(self):
         packet = vertical_packet()
@@ -105,10 +111,17 @@ class EstimatorTruthTest(unittest.TestCase):
         self.assertIsNone(comparison["standardized_difference"])
         self.assertEqual(comparison["reason"], "comparison SD must be finite and positive")
 
-    def test_calibration_order_statistic_and_support(self):
+    def test_scale_estimator_uses_finite_order_statistic(self):
         result = calibrate_vertical(calibration_samples(), alpha=0.05, seed=17001)
         self.assertEqual(result["q"], 3.8)
         self.assertEqual(result["independent_blocks"], 39)
+
+    def test_independent_reference_gate_parameters(self):
+        result = calibrate_vertical(calibration_samples(), alpha=0.05,
+                                    seed=17001)
+        self.assertEqual(result["reference_sd_ratio_limit"], 0.1)
+        self.assertAlmostEqual(result["reference_variance_inflation"], 1.01)
+        self.assertEqual(result["absolute_depth_coverage"], "approximate")
 
     def test_repeated_ping_adds_zero_support(self):
         samples = calibration_samples() + [calibration_samples()[0]] * 5

@@ -24,9 +24,13 @@ function or returns an incomplete-model result. Legacy `.all` and independently
 decoded rays must enter through the same normalized contract. The module never
 opens a socket or queries an instrument.
 
-Detection variance appears exactly once. When detection error is correlated
-with `q`, `detection_cross_covariance` supplies C for the signed cross term. A
-zero C requires `detection_independence_source_id`. A clock offset is never
+Detection variance appears exactly once. The covariance equation is
+`J Sigma_q J^T + Sigma_detect + J C + C^T J^T`, where
+`C = Cov(q, e_detect)`. When detection error is correlated with `q`,
+`detection_cross_covariance` supplies C for the signed cross term. A zero C
+requires a documented `detection_independence_source_id`. Without documented
+independence or a measured C, the cross term is an unbounded assumption rather
+than zero. A clock offset is never
 treated as its standard deviation, and RMS is never inferred from one absolute
 offset. Missing shared cross-covariance produces an incomplete result or a
 flagged sensitivity bound.
@@ -56,16 +60,18 @@ persistence, making replay causal and deterministic.
 
 ## Calibration and limitations
 
-Vertical calibration selects one seed-declared representative from each
+The vertical scale estimator selects one seed-declared representative from each
 independent line block and needs at least 39 blocks in a matching regime. At
 alpha 0.05, `k=ceil((B+1)*0.95)` and the 1-indexed kth ordered score is frozen.
 Repeated pings add no support. Fits exclude holdout line, site, and time IDs with
 a footprint buffer and preserve input hashes. Live lookup uses prior records
 only.
 
-The finite-sample guarantee is for disagreement with the independent reference.
-At reference SD `0.1*s_z`, comparison variance is `1.01*s_z^2`; absolute-depth
-coverage is approximate and reports that 1% variance inflation. Crossline-only
+The independent-reference gate defaults to `reference_sd <= 0.1*s_z`. The
+finite-sample guarantee is for disagreement with the crossline reference, not
+absolute depth. At the gate boundary, comparison variance is `1.01*s_z^2`;
+absolute-depth coverage is approximate and reports that 1% variance inflation.
+Crossline-only
 calibration produces a difference multiplier and cannot label absolute depth.
 Horizontal coverage requires independent horizontal control.
 

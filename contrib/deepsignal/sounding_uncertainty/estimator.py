@@ -5,6 +5,12 @@ from typing import Any, Mapping, Sequence
 from .contract import NormalizedSoundingPacket
 
 
+def convert_covariance_units(covariance: Sequence[Sequence[float]],
+                             units: Sequence[str]) -> tuple:
+    """Convert a labeled covariance to the estimator's SI unit system."""
+    raise NotImplementedError("Estimator implementation belongs to the Mac Astra lane")
+
+
 def estimate_sounding(packet: NormalizedSoundingPacket,
                       calibration: Mapping[str, Any] | None = None) -> dict:
     """Propagate one normalized sounding packet into the TPU result schema."""

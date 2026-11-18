@@ -32,6 +32,9 @@ class NormalizedSoundingPacket:
     lever_arm_m: Tuple[float, float, float]
     q_names: Tuple[str, ...]
     q_units: Tuple[str, ...]
+    # Joint covariance of q and not a collection of independently checked
+    # marginal blocks. Cross entries have the product of the corresponding
+    # q_units and the complete matrix must be symmetric and PSD.
     covariance: Tuple[Tuple[float, ...], ...]
     covariance_source_ids: Tuple[str, ...]
     static_installation_id: str
