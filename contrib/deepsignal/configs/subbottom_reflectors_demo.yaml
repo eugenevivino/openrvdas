@@ -1,0 +1,11 @@
+# Offline-safe declaration. The numerical owner will add fixture replay wiring.
+transforms:
+- class: SubbottomReflectorsTransform
+  module: contrib.deepsignal.subbottom_reflectors.transform
+  kwargs:
+    contrast_threshold: 1.0
+    minimum_support: 5
+writers:
+  class: TextFileWriter
+interval: 0
+check_format: false
