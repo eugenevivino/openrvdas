@@ -9,6 +9,8 @@ import uuid
 from contrib.deepsignal.ai_guard.audit import AuditLog
 from contrib.deepsignal.ai_guard.budget import BudgetMeter
 from contrib.deepsignal.ai_triage import context, schema
+from contrib.deepsignal.ai_triage.models import PROXY_REQUIRED
+from contrib.deepsignal.ai_triage.redact import redact
 from contrib.deepsignal.ai_triage.vault import VaultUnavailable, VAULT_REQUIRED
 from contrib.deepsignal.ai_triage.triggers import signature
 
@@ -16,12 +18,15 @@ from contrib.deepsignal.ai_triage.triggers import signature
 class TriageService:
     def __init__(self, state_dir, api_model=None, local_model=None,
                  api_enabled=False, local_enabled=False, cache_hours=6,
-                 max_context_tokens=6000, caps=None):
+                 max_context_tokens=6000, caps=None, api_opt_in=None,
+                 disclosure_policy=None):
         self.state_dir = state_dir
         os.makedirs(state_dir, exist_ok=True)
         self.api_model = api_model
         self.local_model = local_model
         self.api_enabled = api_enabled
+        self.api_opt_in = api_opt_in
+        self.disclosure_policy = disclosure_policy or (lambda: {})
         self.local_enabled = local_enabled
         self.cache_hours = cache_hours
         self.max_context_tokens = max_context_tokens
@@ -68,14 +73,20 @@ class TriageService:
                 last_error = error
         raise last_error
 
-    def briefing(self, stream, snapshot):
-        pack, removals = context.build_pack(snapshot, self.max_context_tokens)
+    def briefing(self, stream, snapshot, force=False):
+        raw_pack, unused = context.build_pack(
+            snapshot, self.max_context_tokens, redact_pack=False)
+        policy = dict(self.disclosure_policy() or {})
+        pack, removals = redact(
+            raw_pack, policy.get("held_fields", snapshot.get("held_fields")),
+            policy.get("eez_inside", snapshot.get("eez_inside", False)),
+            policy.get("eez_held_fields", snapshot.get("eez_held_fields")))
         evidence = [item.get("kind", item.get("id", ""))
                     for item in pack.get("refs", [])]
         pack_signature = signature(stream, snapshot.get("failing_stage", ""), evidence)
         cached = self.cache.get(pack_signature)
         now = time.time()
-        if cached and now - cached[0] <= self.cache_hours * 3600:
+        if not force and cached and now - cached[0] <= self.cache_hours * 3600:
             answer = dict(cached[1])
             answer["same_as_before"] = True
             return answer
@@ -84,7 +95,8 @@ class TriageService:
         started = time.monotonic()
         answer = None
         vault_missing = False
-        if self.api_enabled and self.api_model and self.link_up:
+        api_ready = self.api_enabled and bool(self.api_opt_in)
+        if api_ready and self.api_model and self.link_up:
             reservation = self.meter.check_and_reserve(0, "usd", "ship")
             if reservation:
                 try:
@@ -103,7 +115,7 @@ class TriageService:
             except (ValueError, KeyError, TypeError, OSError):
                 pass
         if answer is None:
-            if self.api_enabled and self.api_model and not self.link_up:
+            if api_ready and self.api_model and not self.link_up:
                 self._enqueue({"stream": stream, "snapshot": snapshot,
                                "queued_at": datetime.datetime.now(
                                    datetime.UTC).isoformat()})
@@ -113,6 +125,11 @@ class TriageService:
             answer = self._fallback(stream, snapshot, label)
             if vault_missing:
                 answer["message"] = VAULT_REQUIRED
+            elif self.api_enabled and self.api_model and not self.api_opt_in:
+                answer["message"] = "AI assist needs explicit ship opt-in."
+            elif (api_ready and self.api_model and
+                  not getattr(self.api_model, "proxy", None)):
+                answer["message"] = PROXY_REQUIRED
         briefing_id = uuid.uuid4().hex
         answer.update({"label": label, "briefing_id": briefing_id,
                        "same_as_before": False})
@@ -133,7 +150,7 @@ class TriageService:
         except FileNotFoundError:
             return []
         self.link_up = True
-        results = [self.briefing(item["stream"], item["snapshot"])
+        results = [self.briefing(item["stream"], item["snapshot"], force=True)
                    for item in entries if still_open(item["stream"])]
         open(self.queue_path, "w", encoding="utf-8").close()
         return results

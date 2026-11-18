@@ -11,6 +11,13 @@ class HostNotAllowed(ValueError):
     pass
 
 
+PROXY_REQUIRED = "AI assist needs the ship's egress proxy."
+
+
+class ProxyRequired(ValueError):
+    pass
+
+
 class UrlClient:
     def post(self, url, headers, body, timeout, proxy=None):
         handlers = []
@@ -25,7 +32,7 @@ class UrlClient:
 class ApiModel:
     def __init__(self, provider, url, model, key_name, client=None,
                  allowed_hosts=None, proxy=None, timeout=60, vault=None,
-                 vault_loader=key_vault.installed_vault):
+                 vault_loader=key_vault.installed_vault, require_proxy=True):
         self.provider = provider
         self.url = url
         self.model = model
@@ -36,8 +43,11 @@ class ApiModel:
         self.timeout = timeout
         self.vault = vault
         self.vault_loader = vault_loader
+        self.require_proxy = require_proxy
 
     def complete(self, pack, max_output_tokens=1000):
+        if self.require_proxy and not self.proxy:
+            raise ProxyRequired(PROXY_REQUIRED)
         host = urllib.parse.urlparse(self.url).hostname
         if host not in self.allowed_hosts:
             raise HostNotAllowed("api.allowed_hosts does not allow %s" % host)
@@ -71,4 +81,5 @@ class LocalModel(ApiModel):
                 return "local"
 
         super().__init__("openai", url, model, "local", client, [host],
-                         timeout=timeout, vault=LocalVault())
+                         timeout=timeout, vault=LocalVault(),
+                         require_proxy=False)

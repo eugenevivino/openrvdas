@@ -43,6 +43,99 @@ GOOD = {"summary": "Stage failed. Check it.", "causes": [
 
 
 class TriageTest(unittest.TestCase):
+    def test_opt_in_is_required_and_opt_out_is_logged(self):
+        with tempfile.TemporaryDirectory() as root:
+            config = os.path.join(root, "ai_triage.yaml")
+            audit = os.path.join(root, "setup.jsonl")
+            enabled = setup.opt_in(config, "tech", "cruise-7", audit)
+            self.assertEqual("tech", enabled["api"]["opt_in"]["by"])
+            self.assertTrue(enabled["api"]["opt_in"]["at"])
+            disabled = setup.opt_out(config, "lead", "stricter terms", audit)
+            self.assertNotIn("opt_in", disabled["api"])
+            with open(audit, encoding="utf-8") as source:
+                log = source.read()
+            self.assertIn("opt_in", log)
+            self.assertIn("opt_out", log)
+
+    def test_proxy_is_required_and_used(self):
+        vault = FakeVault("hostkey")
+        vault.put("ai-triage", "openai", "secret")
+        client = FakeClient([{"choices": [{"message": {"content": "{}"}}]}])
+        without_proxy = models.ApiModel(
+            "openai", "https://api.example/v1/chat/completions", "m",
+            "openai", client, ["api.example"], vault=vault)
+        with self.assertRaisesRegex(models.ProxyRequired,
+                                    models.PROXY_REQUIRED):
+            without_proxy.complete({})
+        self.assertFalse(client.calls)
+        proxied = models.ApiModel(
+            "openai", "https://api.example/v1/chat/completions", "m",
+            "openai", client, ["api.example"],
+            proxy="http://proxy.ship:3128", vault=vault)
+        proxied.complete({})
+        self.assertEqual("http://proxy.ship:3128", client.calls[0][4])
+
+    def test_service_requires_opt_in_and_reports_missing_proxy(self):
+        with tempfile.TemporaryDirectory() as root:
+            vault = FakeVault("hostkey")
+            vault.put("ai-triage", "openai", "secret")
+            response = {"choices": [{"message": {
+                "content": json.dumps(GOOD)}}], "usage": {}}
+            client = FakeClient([response])
+            model = models.ApiModel(
+                "openai", "https://api.example/v1/chat/completions", "m",
+                "openai", client, ["api.example"],
+                proxy="http://proxy.ship:3128", vault=vault)
+            snapshot = {"failing_stage": "reader",
+                        "refs": [{"id": "r1"}]}
+            service = TriageService(root, api_model=model, api_enabled=True)
+            disabled = service.briefing("s", snapshot)
+            self.assertFalse(client.calls)
+            self.assertEqual("AI assist needs explicit ship opt-in.",
+                             disabled["message"])
+            service.api_opt_in = {"by": "tech", "at": "now", "cruise_id": "c"}
+            service.briefing("s", snapshot, force=True)
+            self.assertEqual(1, len(client.calls))
+
+        with tempfile.TemporaryDirectory() as root:
+            direct = models.ApiModel(
+                "openai", "https://api.example/v1/chat/completions", "m",
+                "openai", FakeClient([]), ["api.example"], vault=vault)
+            service = TriageService(
+                root, api_model=direct, api_enabled=True,
+                api_opt_in={"by": "tech", "at": "now", "cruise_id": "c"})
+            answer = service.briefing("s", snapshot)
+            self.assertEqual(models.PROXY_REQUIRED, answer["message"])
+
+    def test_send_time_redaction_uses_current_policy(self):
+        with tempfile.TemporaryDirectory() as root:
+            policy = {"eez_inside": False, "held_fields": set(),
+                      "eez_held_fields": {"sample"}}
+            vault = FakeVault("hostkey")
+            vault.put("ai-triage", "openai", "secret")
+            client = FakeClient([{"choices": [{"message": {
+                "content": json.dumps(GOOD)}}], "usage": {}}])
+            model = models.ApiModel(
+                "openai", "https://api.example/v1/chat/completions", "m",
+                "openai", client, ["api.example"],
+                proxy="http://proxy.ship:3128", vault=vault)
+            service = TriageService(
+                root, api_model=model, api_enabled=True,
+                api_opt_in={"by": "tech", "at": "now", "cruise_id": "c"},
+                disclosure_policy=lambda: policy)
+            service.link_up = False
+            snapshot = {"stream": "s", "failing_stage": "reader",
+                        "chain": {"sample": "held", "new_hold": "also held"},
+                        "latitude": 12.3456,
+                        "refs": [{"id": "r1", "text": "failed"}]}
+            service.briefing("s", snapshot)
+            policy.update({"eez_inside": True, "held_fields": {"new_hold"}})
+            service.reconnect(lambda unused: True)
+            sent = json.loads(json.loads(client.calls[0][2])["messages"][0]["content"])
+            self.assertNotIn("sample", sent["chain"])
+            self.assertNotIn("new_hold", sent["chain"])
+            self.assertEqual(12.35, sent["latitude"])
+
     def test_triggers_and_cache(self):
         trigger = TriggerManager(hold_s=60, digest_times=["0400"])
         self.assertFalse(trigger.transition("s", "DEGRADED", 0))
@@ -81,17 +174,20 @@ class TriageTest(unittest.TestCase):
                               "usage": {}}])
         model = models.ApiModel("openai", "https://api.example/v1/chat/completions",
                                 "m", "openai", client, ["api.example"],
+                                proxy="http://proxy.ship:3128",
                                 vault=vault)
         model.complete({"a": 1})
         body = json.loads(client.calls[0][2])
         self.assertIn("messages", body)
         anth = FakeClient([{"content": [{"text": "{}"}], "usage": {}}])
         models.ApiModel("anthropic", "https://anth.example/v1/messages", "m",
-                        "openai", anth, ["anth.example"], vault=vault).complete({})
+                        "openai", anth, ["anth.example"],
+                        proxy="http://proxy.ship:3128", vault=vault).complete({})
         self.assertIn("max_tokens", json.loads(anth.calls[0][2]))
         refused = FakeClient([])
         bad = models.ApiModel("openai", "https://bad.example/v1/chat/completions",
-                              "m", "openai", refused, ["good.example"], vault=vault)
+                              "m", "openai", refused, ["good.example"],
+                              proxy="http://proxy.ship:3128", vault=vault)
         with self.assertRaises(models.HostNotAllowed):
             bad.complete({})
         self.assertFalse(refused.calls)
@@ -115,8 +211,11 @@ class TriageTest(unittest.TestCase):
             bad = FakeClient([{"choices": [{"message": {"content": "bad"}}]},
                               {"choices": [{"message": {"content": "bad"}}]}])
             api = models.ApiModel("openai", "https://api.example/v1/chat/completions",
-                                  "m", "openai", bad, ["api.example"], vault=vault)
-            service = TriageService(root, api_model=api, api_enabled=True)
+                                  "m", "openai", bad, ["api.example"],
+                                  proxy="http://proxy.ship:3128", vault=vault)
+            service = TriageService(
+                root, api_model=api, api_enabled=True,
+                api_opt_in={"by": "tech", "at": "now", "cruise_id": "c"})
             snapshot = {"stream": "s", "failing_stage": "reader",
                         "runbook_causes": ["power", "cable"],
                         "refs": [{"id": "r1", "text": "reader failed"}]}
@@ -165,9 +264,12 @@ class TriageTest(unittest.TestCase):
         client = FakeClient([])
         model = models.ApiModel(
             "openai", "https://api.example/v1/chat/completions", "m",
-            "openai", client, ["api.example"], vault_loader=lambda: None)
+            "openai", client, ["api.example"],
+            proxy="http://proxy.ship:3128", vault_loader=lambda: None)
         with tempfile.TemporaryDirectory() as root:
-            answer = TriageService(root, api_model=model, api_enabled=True).briefing(
+            answer = TriageService(
+                root, api_model=model, api_enabled=True,
+                api_opt_in={"by": "tech", "at": "now", "cruise_id": "c"}).briefing(
                 "s", {"failing_stage": "reader", "runbook_causes": ["power"]})
         self.assertEqual(setup.VAULT_REQUIRED, answer["message"])
         self.assertFalse(client.calls)

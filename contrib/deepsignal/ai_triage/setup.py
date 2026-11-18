@@ -1,5 +1,7 @@
 """Shared guided-setup engine."""
 import errno
+import datetime
+import json
 import time
 import urllib.error
 
@@ -10,6 +12,49 @@ from contrib.deepsignal.ai_triage import vault as key_vault
 
 
 VAULT_REQUIRED = key_vault.VAULT_REQUIRED
+
+
+def _read_config(path):
+    try:
+        with open(path, encoding="utf-8") as source:
+            return yaml.safe_load(source) or {}
+    except FileNotFoundError:
+        return {}
+
+
+def _write_config(path, value):
+    with open(path, "w", encoding="utf-8") as target:
+        yaml.safe_dump(value, target, sort_keys=True)
+
+
+def _log_choice(path, record):
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as target:
+        target.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def opt_in(path, by, cruise_id, audit_path=None, now=None):
+    """Record the sixth setup step, which alone enables outbound calls."""
+    value = _read_config(path)
+    api = value.setdefault("api", {})
+    choice = {"by": by, "at": now or datetime.datetime.now(
+        datetime.UTC).isoformat(), "cruise_id": cruise_id}
+    api["opt_in"] = choice
+    _write_config(path, value)
+    _log_choice(audit_path, {"action": "opt_in", **choice})
+    return value
+
+
+def opt_out(path, by, reason, audit_path=None, now=None):
+    """Disable outbound calls and retain an append-only decision record."""
+    value = _read_config(path)
+    value.setdefault("api", {}).pop("opt_in", None)
+    at = now or datetime.datetime.now(datetime.UTC).isoformat()
+    _write_config(path, value)
+    _log_choice(audit_path, {"action": "opt_out", "by": by, "at": at,
+                             "reason": reason})
+    return value
 
 
 def providers():

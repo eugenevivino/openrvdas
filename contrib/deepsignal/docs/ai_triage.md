@@ -21,7 +21,7 @@ are identified as missing or stale rather than guessed.
 ## Two directions
 
 ```text
-Outbound, this module: ship -> egress proxy or allowlisted provider HTTPS API
+Outbound, this module: ship -> required egress proxy -> allowlisted provider API
 Inbound, separate #64: AI client -> VPN or LAN -> DeepSignal MCP gateway
 ```
 
@@ -40,6 +40,14 @@ Run `python -m contrib.deepsignal.ai_triage setup` and complete these steps:
 3. Set daily and monthly spending caps and the ship's token prices.
 4. Send one small test request and review its plain-language result.
 5. Preview the exact redacted context pack and removal counts for a stream.
+6. Explicitly opt in for the cruise, recording who opted in and when. A stored
+   key does not enable calls. The vault, key, and this final opt-in must all be
+   present. `opt_out` disables calls and records who opted out and why.
+
+The ship's egress proxy is required. There is no direct-provider mode. The
+provider hostname must also appear in `api.allowed_hosts`, giving the request a
+second independent egress check. Without a proxy, every surface reports: "AI
+assist needs the ship's egress proxy."
 
 Configuration errors name the setting, received value, expected value, and an
 example. Configuration loading must use `yaml.safe_load`.
@@ -71,9 +79,11 @@ failing stage and lists its runbook causes in order with `no AI used`.
 
 Only the compact context pack leaves the ship. Redaction removes credentials,
 tokens, passwords, private keys, email addresses, phone numbers, globally held
-fields, and EEZ-held fields. Positions are rounded while inside an EEZ. Setting
-`api.enabled` defaults to `false` until #192 merges. After the vault is installed,
-a ship may enable it explicitly. Leaving it `false` disables all provider calls
+fields, and EEZ-held fields. Positions are rounded while inside an EEZ. The
+current disclosure and EEZ policy is applied at send time, including for queued
+requests, so a policy change after enqueue is honored. Setting `api.enabled`
+defaults to `false` until #192 merges. After the vault is installed, only the
+sixth guided setup step adds `api.opt_in`. Opting out disables all provider calls
 for stricter cruise terms.
 
 Briefings are hash-chained into the timeline with pack hash, model, token use,
