@@ -58,6 +58,11 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 const cfg = { type: 'map', lat: 'S330Latitude', lon: 'S330Longitude', window: '2 h', zoom: 8 }
 const mapButton = () => screen.getByRole('button', { name: 'Ship track map' })
+const canvasContext = () => ({
+  scale: vi.fn(), fillRect: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(),
+  stroke: vi.fn(), fillText: vi.fn(), strokeRect: vi.fn(), save: vi.fn(), restore: vi.fn(), translate: vi.fn(),
+  rotate: vi.fn(), closePath: vi.fn(), fill: vi.fn(), drawImage: vi.fn(), arc: vi.fn(),
+})
 
 it('keeps null coordinates and measurements missing while accepting zero', () => {
   const samples = [{ time: 1, value: null }, { time: 2, value: 0 }, { time: 3, value: 5 }]
@@ -91,6 +96,51 @@ it('marks position stale when longitude alone stops updating', () => {
   expect(screen.getByText(/Position stale 2 min/)).toBeInTheDocument()
 })
 
+it('excludes MISSING and FAIL historical coordinates using the configured QC suffix', () => {
+  const ctx = fakeContext()
+  const now = ctx.clock.now()
+  const history: Record<string, ReturnType<ConsoleContext['store']['history']>> = {
+    [cfg.lat]: [{ time: now - 6, value: 0.5 }, { time: now - 3, value: -0.5 }, { time: now, value: 0 }],
+    [cfg.lon]: [{ time: now - 6, value: 0 }, { time: now - 3, value: 0 }, { time: now, value: 0 }],
+    [`${cfg.lat}.flag`]: [{ time: now - 5, value: 9 }],
+    [`${cfg.lon}.flag`]: [{ time: now - 2, value: 4 }],
+  }
+  ctx.config.qcSuffix = '.flag'
+  ctx.store.history = (field) => history[field] ?? []
+  expect.soft(mapModule.tiles![0].fields(cfg, ctx)).toEqual(expect.arrayContaining([`${cfg.lat}.flag`, `${cfg.lon}.flag`]))
+  render(<MapTile cfg={cfg} ctx={ctx} />)
+  fireEvent.click(mapButton(), { clientX: 320, clientY: 89 })
+  expect.soft(screen.getByRole('status')).toHaveTextContent('0.00000°, 0.00000°')
+  fireEvent.click(mapButton(), { clientX: 320, clientY: 271 })
+  expect(screen.getByRole('status')).toHaveTextContent('0.00000°, 0.00000°')
+})
+
+it('marks a matched current position SUSPECT and draws it hollow', () => {
+  const ctx = fakeContext()
+  const get = ctx.store.get
+  ctx.store.get = (field) => field === cfg.lon ? { ...get(field), quality: 'SUSPECT' } : get(field)
+  const drawing = canvasContext()
+  HTMLCanvasElement.prototype.getContext = vi.fn(() => drawing) as unknown as typeof HTMLCanvasElement.prototype.getContext
+  render(<MapTile cfg={cfg} ctx={ctx} />)
+  expect.soft(screen.queryByText('▲ Position SUSPECT')).toBeInTheDocument()
+  expect(drawing.fill).not.toHaveBeenCalled()
+})
+
+it.each(['STALE', 'NO_DATA', 'MISSING', 'FAIL', 'SUSPECT'] as const)(
+  'draws a position dot without a bearing for %s heading', (issue) => {
+    const ctx = fakeContext()
+    const get = ctx.store.get
+    ctx.store.get = (field) => field !== 'S330HeadingTrue' ? get(field) : {
+      ...get(field), value: 270, ...(issue === 'STALE' || issue === 'NO_DATA' ? { freshness: issue } : { quality: issue }),
+    }
+    const drawing = canvasContext()
+    HTMLCanvasElement.prototype.getContext = vi.fn(() => drawing) as unknown as typeof HTMLCanvasElement.prototype.getContext
+    render(<MapTile cfg={{ ...cfg, heading: 'S330HeadingTrue' }} ctx={ctx} />)
+    expect.soft(drawing.rotate).not.toHaveBeenCalled()
+    expect(drawing.arc).toHaveBeenCalled()
+  },
+)
+
 it('picks the nearest plotted point in two dimensions and shows its historical states', () => {
   const ctx = fakeContext()
   const now = ctx.clock.now()
@@ -121,14 +171,9 @@ it('keeps delayed raster tiles below the track and zeros green and blue in Night
     set src(_url: string) { images.push(this) }
   }
   vi.stubGlobal('Image', TileImage)
-  const makeContext = () => ({
-    scale: vi.fn(), fillRect: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(),
-    stroke: vi.fn(), fillText: vi.fn(), strokeRect: vi.fn(), save: vi.fn(), restore: vi.fn(), translate: vi.fn(),
-    rotate: vi.fn(), closePath: vi.fn(), fill: vi.fn(), drawImage: vi.fn(),
-  })
-  const contexts = new Map<HTMLCanvasElement, ReturnType<typeof makeContext>>()
+  const contexts = new Map<HTMLCanvasElement, ReturnType<typeof canvasContext>>()
   HTMLCanvasElement.prototype.getContext = vi.fn(function (this: HTMLCanvasElement) {
-    const context = contexts.get(this) ?? makeContext()
+    const context = contexts.get(this) ?? canvasContext()
     contexts.set(this, context)
     return context
   }) as unknown as typeof HTMLCanvasElement.prototype.getContext

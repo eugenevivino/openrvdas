@@ -68,7 +68,13 @@ function fakeContext() {
     const old = states.get('status:logger_status')!
     states.set(old.field, { ...old, ageS: t, freshness: 'STALE' })
   }
-  return { ctx, adapter, at, send, staleManager, health }
+  function expire(field: string, t: number) {
+    now = feed.start_time + t
+    const old = states.get(field)!
+    states.set(field, { ...old, ageS: now - old.sourceTime!, freshness: 'STALE' })
+    listeners.forEach((cb) => cb())
+  }
+  return { ctx, adapter, at, send, staleManager, expire, health }
 }
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
@@ -114,6 +120,36 @@ describe('health logger adapter and route', () => {
     render(<HealthPage ctx={f.ctx} />)
     expect(screen.getByText(/Logger manager not reporting since .*UTC/)).toBeInTheDocument()
     expect(screen.queryByTestId('logger-row')).not.toBeInTheDocument()
+  })
+
+  it('expires shared logger health off-route when manager reports stop and restores it on recovery', () => {
+    const f = fakeContext()
+    const field = 'status:logger_status'
+    const value = { mwx1: { config: 'science', status: 'RUNNING' } }
+    const stop = healthModule.engines?.[0].start(f.ctx)
+    f.send({ t: 10, field, value })
+    expect(f.health.get('mwx1')?.health).toBe('OK')
+    f.expire(field, 40)
+    expect.soft(f.health.get('mwx1')?.health).toBe('UNKNOWN')
+    f.send({ t: 41, field, value })
+    expect(f.health.get('mwx1')?.health).toBe('OK')
+    stop?.()
+  })
+
+  it('shows the last cruise-mode report age when only that feed stops and recovers', () => {
+    const f = fakeContext()
+    const field = 'status:cruise_mode'
+    f.send({ t: 10, field, value: { active_mode: 'science' } })
+    f.send({ t: 39, field: 'status:logger_status', value: { mwx1: { config: 'mwx', status: 'RUNNING' } } })
+    render(<HealthPage ctx={f.ctx} />)
+    expect(screen.getByText(/Cruise mode:/).parentElement).toHaveTextContent('Cruise mode: science')
+    act(() => f.expire(field, 40))
+    const mode = screen.getByText(/Cruise mode:/).parentElement
+    expect.soft(mode).toHaveTextContent(/Unknown.*STALE.*30 s ago/)
+    expect.soft(mode).not.toHaveTextContent('science')
+    expect(screen.getByTestId('logger-mwx1')).toBeInTheDocument()
+    act(() => f.send({ t: 41, field, value: { active_mode: 'transit' } }))
+    expect(mode).toHaveTextContent('Cruise mode: transit')
   })
 
   it('shows manager status as missing when the latest snapshot is malformed', () => {

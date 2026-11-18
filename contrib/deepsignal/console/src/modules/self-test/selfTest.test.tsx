@@ -3,15 +3,18 @@
 import '@testing-library/jest-dom/vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
-import { parsePage } from '../../pages'
+import { createPageRegistry } from '../../context'
+import { loadConsole, parsePage } from '../../pages'
 import module from './index'
 import { makeContext } from './testkit'
 
 const SelfTest = module.routes![0].Component
+const reportValue = () => (screen.getByRole('textbox', { name: 'Plain-text self-test report' }) as HTMLTextAreaElement).value
 
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 it('shows connected checks, field and logger counts, mode, age, and loaded pages', () => {
@@ -69,4 +72,37 @@ it('counts only successfully loaded page files', () => {
   expect(screen.getByText(/^1 page loaded · Failed to load pages\/broken\.yaml$/)).toBeInTheDocument()
   expect((screen.getByRole('textbox', { name: 'Plain-text self-test report' }) as HTMLTextAreaElement).value)
     .toContain('Page files: DOWN')
+})
+
+it('reports a configured 404 even when another page file loads', async () => {
+  vi.stubGlobal('fetch', vi.fn((url: string) => Promise.resolve(
+    url === './console.yaml' ? new Response('ship: Test\npages: [deck, missing]') :
+      url === './pages/deck.yaml' ? new Response('title: Deck\ntiles: []') : new Response(null, { status: 404 }),
+  )))
+  const { config, files } = await loadConsole(new AbortController().signal)
+  const pages = createPageRegistry(config.pages)
+  for (const { page } of files) pages.register(page)
+  render(<SelfTest ctx={{ ...makeContext(), config, pages }} />)
+  expect(await screen.findByText('1 page loaded · Failed to load pages/missing.yaml')).toBeInTheDocument()
+  expect(reportValue()).toContain('Page files: DOWN')
+})
+
+it('accepts configured presets and module routes alongside a loaded page file', async () => {
+  const ctx = makeContext({ pages: [
+    { ...parsePage('pages/deck.yaml', 'title: Deck\ntiles: []'), source: 'file:pages/deck.yaml' },
+    { id: 'bridge', title: 'Bridge', source: 'preset:bridge', tiles: [{ type: 'nav' }] },
+  ] })
+  ctx.config.pages = ['deck', 'bridge', 'health']
+  render(<SelfTest ctx={ctx} />)
+  expect(await screen.findByText('1 page loaded')).toBeInTheDocument()
+  expect(reportValue()).toContain('Page files: PASS')
+})
+
+it.each([
+  { mwx1: null },
+  { mwx1: { config: 'science', status: 'RUNNING' }, knud1: { status: 'RUNNING' } },
+  { mwx1: { config: 'science', status: 'BROKEN' } },
+])('reports DOWN for malformed logger entries (%j)', (loggerStatus) => {
+  render(<SelfTest ctx={makeContext({ loggerStatus })} />)
+  expect(reportValue()).toContain('Logger status: DOWN')
 })

@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { ConsoleContext, FieldState, Page } from '../../contract'
+import { discoverModules } from '../../registry'
+import { isStatuses } from '../health/loggerStatus'
 
 type Result = { label: string; pass: boolean; detail: string }
 
@@ -22,7 +24,7 @@ function objectValue(value: unknown, key: string): unknown {
 }
 
 function isLive(state: FieldState) {
-  return state.freshness === 'LIVE' && state.quality !== 'FAIL' && state.quality !== 'MISSING' && state.value != null
+  return state.freshness === 'LIVE' && (state.quality === 'PASS' || state.quality === 'NOT_EVALUATED') && state.value != null
 }
 
 function loadedPage(page: Page) {
@@ -31,12 +33,11 @@ function loadedPage(page: Page) {
   return page.tiles.length > 0 || Object.hasOwn(page, 'order') || page.title !== page.id
 }
 
-function results(ctx: ConsoleContext): Result[] {
+function results(ctx: ConsoleContext, pages: Page[], missingPageIds: string[] | undefined): Result[] {
   const fields = ctx.store.listFields()
   const logger = ctx.store.get('status:logger_status')
   const loggerValue = logger.value
-  const loggerCount = loggerValue && typeof loggerValue === 'object' && !Array.isArray(loggerValue)
-    ? Object.keys(loggerValue).length : 0
+  const loggerCount = isStatuses(loggerValue) ? Object.keys(loggerValue).length : 0
   const cruiseState = ctx.store.get('status:cruise_mode')
   const cruise = objectValue(cruiseState.value, 'active_mode')
   const hasMode = typeof cruise === 'string' && cruise.trim().length > 0
@@ -46,9 +47,10 @@ function results(ctx: ConsoleContext): Result[] {
     return record.sourceTime !== undefined && (latest?.sourceTime === undefined || record.sourceTime > latest.sourceTime ||
       (record.sourceTime === latest.sourceTime && isLive(record))) ? record : latest
   }, undefined)
-  const files = ctx.pages.list().filter((page) => page.source?.startsWith('file:'))
-  const failed = files.filter((page) => !loadedPage(page))
-  const pageCount = files.length - failed.length
+  const files = pages.filter((page) => page.source?.startsWith('file:'))
+  const failedFiles = files.filter((page) => !loadedPage(page)).map((page) => page.source!.slice(5))
+  const pageCount = files.length - failedFiles.length
+  const failed = [...failedFiles, ...(missingPageIds ?? []).map(id => `pages/${id}.yaml`)]
   const pageDetail = pageCount > 0 ? `${pageCount} page${pageCount === 1 ? '' : 's'} loaded` : 'No page files loaded'
   return [
     {
@@ -68,8 +70,9 @@ function results(ctx: ConsoleContext): Result[] {
         : `${Math.max(0, Math.floor(ctx.clock.now() - newest.sourceTime))} seconds${newest.freshness !== 'LIVE' ? ` · ${statusDetail(newest)}` : ''}`,
     },
     {
-      label: 'Page files', pass: pageCount > 0 && failed.length === 0,
-      detail: failed.length ? `${pageDetail} · Failed to load ${failed.map((page) => page.source!.slice(5)).join(', ')}` : pageDetail,
+      label: 'Page files', pass: pageCount > 0 && missingPageIds !== undefined && failed.length === 0,
+      detail: failed.length ? `${pageDetail} · Failed to load ${failed.join(', ')}`
+        : missingPageIds === undefined ? `${pageDetail} · Checking configured pages` : pageDetail,
     },
   ]
 }
@@ -84,10 +87,23 @@ function reportText(ctx: ConsoleContext, rows: Result[]): string {
 
 export function SelfTest({ ctx }: { ctx: ConsoleContext }) {
   const [, redraw] = useState(0)
+  const [moduleRoutes, setModuleRoutes] = useState<Set<string>>()
   const fields = JSON.stringify([...new Set([...ctx.store.listFields(), 'status:logger_status', 'status:cruise_mode'])])
+  const pages = ctx.pages.list()
+  const unregistered = ctx.config.pages.filter(id => !pages.some(page => page.id === id))
+  const checkingRoutes = unregistered.length > 0 && moduleRoutes === undefined
+  useEffect(() => {
+    if (!checkingRoutes) return
+    let current = true
+    // Configured IDs can name module routes, which are outside the page registry.
+    void discoverModules().then(({ modules }) => {
+      if (current) setModuleRoutes(new Set(modules.flatMap(module => module.routes?.map(route => route.id) ?? [])))
+    })
+    return () => { current = false }
+  }, [checkingRoutes])
   useEffect(() => ctx.store.subscribe(JSON.parse(fields) as string[], () => redraw((value) => value + 1)), [ctx, fields])
   useEffect(() => ctx.lighting.subscribe(() => redraw((value) => value + 1)), [ctx])
-  const rows = results(ctx)
+  const rows = results(ctx, pages, checkingRoutes ? undefined : unregistered.filter(id => !moduleRoutes?.has(id)))
   const report = reportText(ctx, rows)
   const lighting = ctx.lighting.get()
 

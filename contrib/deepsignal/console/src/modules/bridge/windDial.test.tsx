@@ -2,6 +2,7 @@
 import '@testing-library/jest-dom/vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { parsePage } from '../../pages'
 import bridge from './index'
 import { fakeContext } from './testkit'
 
@@ -109,5 +110,20 @@ describe('bridge reading states', () => {
     render(<WindDial cfg={cfg} ctx={ctx} />)
     expect(screen.queryByText('1 min vector mean')).not.toBeInTheDocument()
     expect(screen.getByText('Instantaneous wind')).toBeInTheDocument()
+  })
+
+  it('renders the shipped fallback wind speed in metres per second', () => {
+    const preset = parsePage('bridge.yaml', bridge.presets![0].yaml).tiles.find(({ type }) => type === 'wind-dial')!
+    const config = windDial!.validate(preset, { file: 'bridge.yaml', tile: 1 })
+    const ctx = fakeContext()
+    const get = ctx.store.get
+    ctx.store.get = (field) => {
+      const state = get(field)
+      if (field === config.speed || field === config.direction) return { ...state, freshness: 'NO_DATA' }
+      return field === config.speed_fallback ? { ...state, value: 10 } : state
+    }
+    render(<WindDial cfg={config} ctx={ctx} />)
+    expect(screen.getByText('Instantaneous wind')).toBeInTheDocument()
+    expect(screen.getByText('10.0', { exact: true })).toHaveTextContent('10.0 m/s')
   })
 })

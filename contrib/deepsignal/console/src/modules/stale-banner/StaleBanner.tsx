@@ -42,17 +42,22 @@ function utc(seconds: number) {
   return new Date(seconds * 1000).toISOString().replace('.000Z', 'Z')
 }
 
-function candidates(ctx: ConsoleContext): Candidate[] {
+function candidates(ctx: ConsoleContext, active?: ReadonlyMap<string, Alert>): Candidate[] {
   const now = ctx.clock.now()
   const { grace, ignore } = settings(ctx)
   return ctx.store.listFields().flatMap((field): Candidate[] => {
     if (ignore.some(glob => globMatches(glob, field))) return []
     const state = ctx.store.get(field)
-    // The catalog also includes fields for which this console has no samples.
-    const since = state.sourceTime ?? state.lastGood?.time
-    if (since === undefined) return []
     const logger = ctx.store.describe(field)?.logger ?? 'unassigned'
-    if (state.health === 'FAILED') return [{ field, logger, state, tier: 'A2', since, title: `${logger} logger failed` }]
+    const since = state.sourceTime ?? state.lastGood?.time
+    if (state.health === 'FAILED') {
+      const title = `${logger} logger failed`
+      const previous = active?.get(`stale-alerts:${logger}`)
+      const firstSeen = previous?.title === title ? previous.since : now
+      return [{ field, logger, state, tier: 'A2', since: since ?? firstSeen, title }]
+    }
+    // The catalog also includes fields for which this console has no samples.
+    if (since === undefined) return []
     if (state.freshness === 'NO_DATA') return [{ field, logger, state, tier: 'A2', since, title: `${field} no data since ${utc(since)}` }]
     const age = state.ageS ?? now - since
     if (state.freshness === 'STALE' && age > grace) {
@@ -63,9 +68,9 @@ function candidates(ctx: ConsoleContext): Candidate[] {
   })
 }
 
-function grouped(ctx: ConsoleContext) {
+function grouped(ctx: ConsoleContext, active?: ReadonlyMap<string, Alert>) {
   const groups = new Map<string, Candidate[]>()
-  for (const candidate of candidates(ctx)) groups.set(candidate.logger, [...(groups.get(candidate.logger) ?? []), candidate])
+  for (const candidate of candidates(ctx, active)) groups.set(candidate.logger, [...(groups.get(candidate.logger) ?? []), candidate])
   return groups
 }
 
@@ -87,7 +92,7 @@ function start(ctx: ConsoleContext) {
   const active = new Map<string, Alert>()
   const evaluate = () => {
     const next = new Map<string, Alert>()
-    for (const group of grouped(ctx).values()) {
+    for (const group of grouped(ctx, active).values()) {
       const alert = makeAlert(group)
       next.set(alert.id, alert)
       if (!active.has(alert.id)) remember({ alert })

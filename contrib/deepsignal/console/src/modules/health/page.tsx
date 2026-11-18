@@ -1,19 +1,22 @@
 /* oxlint-disable react/only-export-components -- this module exports the route definition, not a standalone page */
 import { useEffect, useMemo, useState } from 'react'
 import { load } from 'js-yaml'
-import type { ConsoleContext, ConsoleModule, Health } from '../../contract'
+import type { ConsoleContext, ConsoleModule, FieldState, Health } from '../../contract'
+import { isMapping } from '../../settings'
 import defaultHintsText from './hints.default.yaml?raw'
+import { isStatuses, type LoggerEntry, type LoggerStatus } from './loggerStatus'
 import './health.css'
 
-type LoggerStatus = 'RUNNING' | 'STARTING' | 'FAILED' | 'EXITED'
-type LoggerEntry = { config: string; status: LoggerStatus }
 type Hint = { logger?: RegExp; stderr?: RegExp; text: string }
-type Runtime = { statuses: Record<string, LoggerEntry>; mode?: string; stderr: Map<string, string> }
+type Runtime = { statuses: Record<string, LoggerEntry>; stderr: Map<string, string> }
+const managerField = 'status:logger_status'
+const cruiseField = 'status:cruise_mode'
+const noStatuses: Record<string, LoggerEntry> = {}
 const runtimes = new WeakMap<ConsoleContext, Runtime>()
 
 function runtime(ctx: ConsoleContext): Runtime {
   let value = runtimes.get(ctx)
-  if (!value) { value = { statuses: {}, stderr: new Map() }; runtimes.set(ctx, value) }
+  if (!value) { value = { statuses: noStatuses, stderr: new Map() }; runtimes.set(ctx, value) }
   return value
 }
 
@@ -49,43 +52,47 @@ export function resolveHint(hints: Hint[], logger: string, stderr: string): stri
   return hints.find((hint) => (!hint.logger || hint.logger.test(logger)) && (!hint.stderr || hint.stderr.test(stderr)))?.text
 }
 
-function isStatuses(value: unknown): value is Record<string, LoggerEntry> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-  return Object.values(value).every((entry) => {
-    if (!entry || typeof entry !== 'object') return false
-    const item = entry as Record<string, unknown>
-    return typeof item.config === 'string' && typeof item.status === 'string' &&
-      ['RUNNING', 'STARTING', 'FAILED', 'EXITED'].includes(item.status)
-  })
+function expired(report: FieldState) {
+  return report.freshness === 'STALE' || report.freshness === 'NO_DATA'
+}
+
+function usableQuality(report: FieldState) {
+  return report.quality === 'PASS' || report.quality === 'NOT_EVALUATED'
+}
+
+const loggerHealth: Record<LoggerStatus, Health> = { RUNNING: 'OK', STARTING: 'DEGRADED', FAILED: 'FAILED', EXITED: 'UNKNOWN' }
+
+function syncLoggerHealth(ctx: ConsoleContext) {
+  const state = runtime(ctx)
+  const report = ctx.store.get(managerField)
+  const { value } = report
+  const valid = isStatuses(value)
+  const statuses = !expired(report) && usableQuality(report) && valid ? value : noStatuses
+  const prior = state.statuses
+  if (prior === statuses) return
+  state.statuses = statuses
+  const evidence = expired(report) ? 'Logger manager stopped reporting'
+    : !usableQuality(report) ? `Logger manager report quality is ${report.quality}`
+      : valid ? 'Logger omitted from the latest manager report' : 'Latest logger manager report is malformed'
+  for (const logger of Object.keys(prior)) {
+    if (!Object.hasOwn(statuses, logger)) ctx.store.setHealth({ logger }, 'UNKNOWN', evidence)
+  }
+  for (const [logger, entry] of Object.entries(statuses)) {
+    const suffix = entry.status === 'EXITED' ? ' (Off)' : ''
+    ctx.store.setHealth({ logger }, loggerHealth[entry.status], `Logger manager reports ${entry.status}${suffix}`)
+  }
 }
 
 const loggerAdapter = {
   id: 'logger-status',
   fields(ctx: ConsoleContext) {
-    return ['status:logger_status', 'status:cruise_mode', ...ctx.store.listFields().filter((field) => field.startsWith('stderr:logger:'))]
+    return [managerField, cruiseField, ...ctx.store.listFields().filter((field) => field.startsWith('stderr:logger:'))]
   },
   onValue(field: string, value: unknown, _time: number, ctx: ConsoleContext) {
-    const state = runtime(ctx)
-    if (field === 'status:logger_status') {
-      const prior = state.statuses
-      const valid = isStatuses(value)
-      state.statuses = valid ? value : {}
-      for (const logger of Object.keys(prior)) {
-        if (!Object.hasOwn(state.statuses, logger)) {
-          ctx.store.setHealth({ logger }, 'UNKNOWN', valid
-            ? 'Logger omitted from the latest manager report' : 'Latest logger manager report is malformed')
-        }
-      }
-      for (const [logger, entry] of Object.entries(state.statuses)) {
-        const mapping: Record<LoggerStatus, Health> = { RUNNING: 'OK', STARTING: 'DEGRADED', FAILED: 'FAILED', EXITED: 'UNKNOWN' }
-        const suffix = entry.status === 'EXITED' ? ' (Off)' : ''
-        ctx.store.setHealth({ logger }, mapping[entry.status], `Logger manager reports ${entry.status}${suffix}`)
-      }
-    } else if (field === 'status:cruise_mode' && value && typeof value === 'object') {
-      const mode = (value as Record<string, unknown>).active_mode
-      state.mode = typeof mode === 'string' ? mode : undefined
+    if (field === managerField) {
+      syncLoggerHealth(ctx)
     } else if (field.startsWith('stderr:logger:') && typeof value === 'string') {
-      state.stderr.set(field.slice('stderr:logger:'.length), value)
+      runtime(ctx).stderr.set(field.slice('stderr:logger:'.length), value)
     }
   },
 }
@@ -103,6 +110,17 @@ function ageText(age: number): string {
 }
 
 function utc(seconds: number): string { return new Date(seconds * 1000).toISOString().replace('T', ' ').replace('.000Z', ' UTC') }
+
+function cruiseMode(ctx: ConsoleContext) {
+  const report = ctx.store.get(cruiseField)
+  if (report.sourceTime === undefined) return 'Unknown'
+  const age = ageText(ctx.clock.now() - report.sourceTime)
+  if (expired(report)) return `Unknown · ${report.freshness.replace('_', ' ')} · Last report ${age}`
+  if (!usableQuality(report)) return `Unknown · ${report.quality} · Last report ${age}`
+  const mode = isMapping(report.value) && typeof report.value.active_mode === 'string' && report.value.active_mode.trim()
+  if (!mode) return 'Unknown'
+  return report.freshness === 'AGING' ? `${mode} · AGING · ${age}` : mode
+}
 
 function HealthPage({ ctx }: { ctx: ConsoleContext }) {
   const [, refresh] = useState(0)
@@ -123,14 +141,17 @@ function HealthPage({ ctx }: { ctx: ConsoleContext }) {
     return () => { current = false }
   }, [])
   const state = runtime(ctx)
-  const manager = ctx.store.get('status:logger_status')
+  const manager = ctx.store.get(managerField)
   const loggerRows = useMemo(() => Object.entries(state.statuses).sort(([nameA, a], [nameB, b]) =>
     stateView[a.status].rank - stateView[b.status].rank || nameA.localeCompare(nameB)), [state.statuses])
 
-  if (manager.value === undefined) return <main className="health-page"><h1>Health</h1><p className="health-message">Waiting for the logger manager. If this lasts over a minute, check that logger_manager is running (supervisorctl status).</p></main>
-  if (manager.freshness === 'STALE' || manager.freshness === 'NO_DATA') {
+  if (manager.value === undefined && manager.sourceTime === undefined) return <main className="health-page"><h1>Health</h1><p className="health-message">Waiting for the logger manager. If this lasts over a minute, check that logger_manager is running (supervisorctl status).</p></main>
+  if (expired(manager)) {
     const since = manager.receiveTime ?? manager.sourceTime ?? ctx.clock.now()
     return <main className="health-page"><h1>Health</h1><p className="health-message">Logger manager not reporting since {utc(since)}</p></main>
+  }
+  if (!usableQuality(manager)) {
+    return <main className="health-page"><h1>Health</h1><p className="health-message">Logger manager report quality is {manager.quality}.</p></main>
   }
   if (!isStatuses(manager.value)) {
     return <main className="health-page"><h1>Health</h1><p className="health-message">Logger manager status missing from the latest report.</p></main>
@@ -139,7 +160,7 @@ function HealthPage({ ctx }: { ctx: ConsoleContext }) {
   for (const [, entry] of loggerRows) counts[entry.status]++
   return <main className="health-page">
     <h1>Health</h1>
-    <div className="health-mode"><strong>Cruise mode:</strong> {state.mode ?? 'Unknown'}</div>
+    <div className="health-mode"><strong>Cruise mode:</strong> {cruiseMode(ctx)}</div>
     {overrideError && <p className="health-override">{overrideError}</p>}
     <div className="health-summary" aria-label="Logger state summary">
       <span>● OK {counts.RUNNING}</span><span>▲ Check {counts.STARTING}</span>
@@ -179,6 +200,11 @@ function ExpandableText({ text }: { text: string }) {
 
 const healthModule: ConsoleModule = {
   id: 'health', adapters: [loggerAdapter],
+  engines: [{ id: 'logger-health-expiry', start(ctx) {
+    const sync = () => syncLoggerHealth(ctx)
+    sync()
+    return ctx.store.subscribe([managerField], sync)
+  } }],
   routes: [{ id: 'health', title: 'Health', order: 30, Component: HealthPage, fields: (ctx) => loggerAdapter.fields(ctx) }],
 }
 export default healthModule

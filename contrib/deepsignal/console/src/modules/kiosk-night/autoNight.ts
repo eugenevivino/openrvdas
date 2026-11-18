@@ -1,4 +1,4 @@
-import type { ConsoleContext, LightingMode } from '../../contract'
+import type { ConsoleContext, FieldState, LightingMode } from '../../contract'
 import { sunElevation } from './sun'
 
 type SolarZone = 'day' | 'night'
@@ -17,6 +17,12 @@ export function positionFields(ctx: ConsoleContext): string[] {
     setting(ctx, 'latitude_field', 'S330Latitude'),
     setting(ctx, 'longitude_field', 'S330Longitude'),
   ]
+}
+
+function usableCoordinate(state: FieldState): state is FieldState & { value: number } {
+  return (state.freshness === 'LIVE' || state.freshness === 'AGING') &&
+    (state.quality === 'PASS' || state.quality === 'NOT_EVALUATED') &&
+    typeof state.value === 'number' && Number.isFinite(state.value)
 }
 
 export class AutoNight {
@@ -54,9 +60,7 @@ export class AutoNight {
   sample(nextElevation?: Elevation): void {
     const latitudeState = this.ctx.store.get(setting(this.ctx, 'latitude_field', 'S330Latitude'))
     const longitudeState = this.ctx.store.get(setting(this.ctx, 'longitude_field', 'S330Longitude'))
-    if (latitudeState.freshness === 'STALE' || latitudeState.freshness === 'NO_DATA'
-      || longitudeState.freshness === 'STALE' || longitudeState.freshness === 'NO_DATA'
-      || typeof latitudeState.value !== 'number' || typeof longitudeState.value !== 'number') {
+    if (!usableCoordinate(latitudeState) || !usableCoordinate(longitudeState)) {
       this.setStatus('Auto Night paused: position unavailable')
       return
     }

@@ -42,4 +42,23 @@ describe('automatic Night', () => {
     expect(lighting.set).not.toHaveBeenCalled()
     expect(auto.status()).toBe('Auto Night paused: position unavailable')
   })
+
+  it.each([
+    ['S330Latitude', 'MISSING'], ['S330Longitude', 'MISSING'],
+    ['S330Latitude', 'FAIL'], ['S330Longitude', 'SUSPECT'],
+  ] as const)('holds Night when %s has quality %s even with a fresh numeric reading', (field, quality) => {
+    const { ctx, store, lighting } = makeContext({ auto_night: true })
+    const auto = new AutoNight(ctx, () => -10)
+    const stop = auto.start()
+    expect(lighting.mode).toBe('night')
+    store.fields[field].quality = quality
+    auto.sample(() => 10)
+    expect.soft(lighting.mode).toBe('night')
+    expect.soft(auto.status()).toBe('Auto Night paused: position unavailable')
+    store.fields[field].quality = 'PASS'
+    auto.sample(() => 10)
+    expect(lighting.mode).toBe('day')
+    expect(auto.status()).toBe('')
+    stop()
+  })
 })

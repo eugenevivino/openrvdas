@@ -91,16 +91,23 @@ function measurementHistory(samples: Samples, flags: Samples) {
   return byTime
 }
 
+function coordinateHistory(ctx: ConsoleContext, field: string, seconds: number): Samples {
+  const readings = measurementHistory(ctx.store.history(field, seconds), ctx.store.history(field + ctx.config.qcSuffix, seconds))
+  return Array.from(readings, ([time, { value, quality }]) => ({ time, value: quality === 'FAIL' ? undefined : value }))
+}
+
 function positionNotice(states: FieldState[], latest: TrackPoint | undefined, now: number) {
   const positionAge = latest && Math.max(0, now - latest.time)
   const age = Math.max(positionAge ?? 0, ...states.map((state) => state.ageS ?? 0))
   const words = ageWords(positionAge !== undefined || states.some((state) => state.ageS !== undefined) ? age : undefined)
-  if (!latest || states.some((state) => state.freshness === 'NO_DATA')) return `× Position stale ${words} · NO DATA`
+  if (states.some((state) => state.freshness === 'NO_DATA')) return `× Position stale ${words} · NO DATA`
   if (states.some((state) => state.freshness === 'STALE')) return `□ Position stale ${words}`
   if (states.some((state) => state.quality === 'FAIL')) return '× Position FAIL'
   if (states.some((state) => state.quality === 'MISSING' || numeric(state.value) === undefined)) return '□ Position MISSING'
+  if (!latest) return `× Position stale ${words} · NO DATA`
   if (states.some((state) => state.freshness === 'AGING')) return `▲ Position aging ${words}`
   if (states.some((state) => state.sourceTime !== latest.time)) return `□ Waiting for a matched position · ${words}`
+  if (states.some((state) => state.quality === 'SUSPECT')) return '▲ Position SUSPECT'
   return undefined
 }
 
@@ -164,8 +171,9 @@ function loadTiles(context: CanvasRenderingContext2D, cache: Map<string, HTMLIma
 }
 
 function mapFields(config: MapConfig, ctx: ConsoleContext) {
-  const colorFlags = config.color_by && config.color_by + ctx.config.qcSuffix
-  return [config.lat, config.lon, config.color_by, colorFlags, config.heading, ...(config.events ?? [])]
+  const flag = (field: string) => field + ctx.config.qcSuffix
+  return [config.lat, flag(config.lat), config.lon, flag(config.lon), config.color_by,
+    config.color_by && flag(config.color_by), config.heading, ...(config.events ?? [])]
     .filter((field): field is string => Boolean(field))
 }
 
@@ -186,7 +194,7 @@ export function MapTile({ cfg, ctx }: { cfg: TileConfig, ctx: ConsoleContext }) 
   const [selectedTime, setSelectedTime] = useState<number>()
   const seconds = windowSeconds(config.window)
   const now = ctx.clock.now()
-  const track = pairTrack(ctx.store.history(config.lat, seconds), ctx.store.history(config.lon, seconds))
+  const track = pairTrack(coordinateHistory(ctx, config.lat, seconds), coordinateHistory(ctx, config.lon, seconds))
   const latest = track.at(-1)
   const zoom = config.zoom === undefined || config.zoom === 'auto' ? autoZoom(track) : config.zoom
   const center = latest ? latLonToPixel(latest.lat, latest.lon, zoom) : { x: 0, y: 0 }
@@ -251,10 +259,16 @@ export function MapTile({ cfg, ctx }: { cfg: TileConfig, ctx: ConsoleContext }) 
     if (latest) {
       context.save(); context.translate(width / 2, height / 2)
       const headingState = config.heading ? ctx.store.get(config.heading) : undefined
-      const heading = headingState?.freshness === 'LIVE' && headingState.quality !== 'FAIL' && headingState.quality !== 'MISSING'
-        ? numeric(headingState.value) ?? 0 : 0
-      context.rotate(heading * Math.PI / 180); context.strokeStyle = token(positionState ? '--stale' : '--fg'); context.fillStyle = token('--fg'); context.lineWidth = 3
-      context.beginPath(); context.moveTo(0, -15); context.lineTo(11, 12); context.lineTo(0, 7); context.lineTo(-11, 12); context.closePath()
+      const heading = headingState?.freshness === 'LIVE' && (headingState.quality === 'PASS' || headingState.quality === 'NOT_EVALUATED')
+        ? numeric(headingState.value) : undefined
+      context.strokeStyle = token(positionState ? '--stale' : '--fg'); context.fillStyle = token('--fg'); context.lineWidth = 3
+      context.beginPath()
+      if (heading === undefined) {
+        context.arc(0, 0, 7, 0, 2 * Math.PI)
+      } else {
+        context.rotate(heading * Math.PI / 180)
+        context.moveTo(0, -15); context.lineTo(11, 12); context.lineTo(0, 7); context.lineTo(-11, 12); context.closePath()
+      }
       if (positionState) context.stroke()
       else context.fill()
       context.restore()

@@ -88,9 +88,8 @@ describe('stale-alerts', () => {
 it('ignores never-observed catalog entries and preserves the outage time of an observed field', () => {
   const latent: FieldState = { field: 'latent', value: undefined, freshness: 'NO_DATA',
     health: 'UNKNOWN', quality: 'NOT_EVALUATED' }
-  const failed: FieldState = { ...latent, field: 'failed', health: 'FAILED' }
-  const f = context({ latent, failed, gone: state('gone', 'NO_DATA', 'OK', 400) },
-    { latent: 'quiet', failed: 'other', gone: 'one' })
+  const f = context({ latent, gone: state('gone', 'NO_DATA', 'OK', 400) },
+    { latent: 'quiet', gone: 'one' })
   const stop = start(f.ctx)
   act(() => vi.advanceTimersByTime(1000))
   const outage = f.alerts().find(({ groupKey }) => groupKey === 'one')
@@ -98,5 +97,22 @@ it('ignores never-observed catalog entries and preserves the outage time of an o
   f.setNow(f.ctx.clock.now() + 60)
   act(() => vi.advanceTimersByTime(1000))
   expect(f.alerts()).toEqual([outage])
+  stop()
+})
+
+it('warns about a known failed logger before its first sample and preserves the failure time', () => {
+  const failed: FieldState = { field: 'FlrChl', value: undefined, freshness: 'NO_DATA',
+    health: 'FAILED', quality: 'NOT_EVALUATED' }
+  const f = context({ FlrChl: failed }, { FlrChl: 'flr1' })
+  const firstSeen = f.ctx.clock.now()
+  const stop = start(f.ctx)
+  act(() => vi.advanceTimersByTime(1000))
+  expect(f.alerts()).toMatchObject([{ tier: 'A2', title: 'flr1 logger failed', since: firstSeen }])
+  f.setNow(firstSeen + 60)
+  act(() => vi.advanceTimersByTime(1000))
+  expect(f.alerts()).toMatchObject([{ since: firstSeen }])
+  failed.health = 'OK'
+  act(() => vi.advanceTimersByTime(1000))
+  expect(f.alerts()).toEqual([])
   stop()
 })
