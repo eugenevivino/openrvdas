@@ -862,6 +862,7 @@ class CachedDataServer:
     def __init__(
             self,
             port,
+            host='',
             interval=1,
             back_seconds=60 * 60,
             max_records=60 * 24,
@@ -886,6 +887,7 @@ class CachedDataServer:
         event_loop   If not None, the event loop to use for websocket events
         """
         self.port = port
+        self.host = host
         self.interval = interval
         self.back_seconds = back_seconds
         self.max_records = max_records
@@ -966,7 +968,7 @@ class CachedDataServer:
             # but removing the loop arg causes errors.
             self.websocket_server = websockets.serve(
                 ws_handler=self._serve_websocket_data,
-                host='', port=self.port, loop=self.event_loop)
+                host=self.host, port=self.port, loop=self.event_loop)
 
             # If event loop is already running, just add server to task list
             if self.event_loop.is_running():
@@ -1058,10 +1060,16 @@ if __name__ == '__main__':
                         action='store', type=int,
                         help='Websocket port on which to serve data')
 
+    parser.add_argument('--host', dest='host', default='',
+                        help='Address on which to serve websocket data')
+
     parser.add_argument('--udp', dest='udp', default=None, action='store',
                         help='Comma-separated list of network ports to listen '
                         'for data on, e.g. 6221,6224. Prefix by group id '
                         'to specify multicast.')
+
+    parser.add_argument('--udp_interface', dest='udp_interface', default=None,
+                        help='Interface address on which to receive UDP data')
 
     parser.add_argument('--disk_cache', dest='disk_cache', default=None,
                         action='store', help='If specified, periodically '
@@ -1112,6 +1120,7 @@ if __name__ == '__main__':
 
     logging.info('Starting CachedDataServer')
     server = CachedDataServer(port=args.port,
+                              host=args.host,
                               interval=args.interval,
                               back_seconds=args.back_seconds,
                               max_records=args.max_records,
@@ -1130,7 +1139,8 @@ if __name__ == '__main__':
             group_port = udp_spec.split(':')
             port = int(group_port[-1])
             multicast_group = group_port[-2] if len(group_port) == 2 else ''
-            readers.append(UDPReader(port=port, source=multicast_group))
+            readers.append(UDPReader(port=port, mc_group=multicast_group,
+                                     interface=args.udp_interface))
         transform = FromJSONTransform()
         reader = ComposedReader(readers=readers, transforms=[transform])
 
