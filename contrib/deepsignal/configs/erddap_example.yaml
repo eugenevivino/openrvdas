@@ -1,0 +1,24 @@
+institution: Scripps Institution of Oceanography
+ship:
+  name: Roger Revelle
+  call_sign: KAOU
+summary: Quality-controlled underway meteorology collected aboard R/V Roger Revelle.
+infoUrl: https://scripps.ucsd.edu/ships/revelle
+license: See ship data policy
+datasets:
+  - id: revelle_met_1min
+    title: R/V Revelle 1-minute meteorology
+    directory: /data/openrvdas/binned/met
+    file_regex: '.*\.csv'
+    time_column: time
+    reload_minutes: 10
+    variables:
+      - column: air_temperature
+        units: degree_C
+        long_name: Air temperature
+        standard_name: air_temperature
+        ioos_category: Meteorology
+      - column: air_temperature_flag
+        units: "1"
+        long_name: Air temperature QARTOD flag
+        flag_of: air_temperature
