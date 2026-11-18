@@ -1,0 +1,26 @@
+# Synthetic multibeam plus Knudsen-style single-beam fields.
+depth_consensus:
+  class: DepthConsensusTransform
+  module: contrib.deepsignal.depth_consensus.depth_consensus_transform
+  kwargs:
+    sources:
+      multibeam:
+        field: MB_NadirDepth
+        offset_m: 0
+        max_age_s: 10
+        role: sonar
+      knudsen_hf:
+        field: HFDepth
+        offset_m: 5.2
+        max_age_s: 10
+        role: sonar
+      grid:
+        field: GridDepth
+        offset_m: 0
+        max_age_s: 300
+        role: reference
+    threshold_pct: 2.0
+    min_depth_m: 5
+    persist_s: 60
+    clear_s: 60
+    prefix: DEPTH
