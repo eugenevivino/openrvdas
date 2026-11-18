@@ -31,11 +31,11 @@ export const rules: RecognitionRule[] = [
   { role: 'salinity', name: /(?:salinity|sal)/i, units: /(?:psu|ppt)/i, description: /salinity/i },
   { role: 'fluorescence', name: /(?:flr|chl|fluor)/i, units: /(?:ug|µg|mg).*\/?l/i, description: /(?:chlorophyll|fluorescence)/i },
   { role: 'depth', name: /depth/i, units: /(?:m|meter|metre|ft)/i, description: /depth/i },
-  { role: 'numeric', name: /.+/i, units: /.+/i },
+  { role: 'numeric', name: /$a/, units: /^(?:%|count|deg(?:c|f)?|degree(?:s)?|ft|hpa|hz|knot|kt|m|mbar|mg\/?l|m\/?s|pa|ppt|psu|rpm|ug\/?l|µg\/?l)$/i },
 ]
 
 export function ruleMatches(rule: RecognitionRule, name: string, details: FieldDescription): boolean {
   if (rule.name.test(name)) return true
-  if (rule.units?.test(details.units ?? '') && rule.description?.test(details.description ?? '')) return true
+  if (rule.units?.test(details.units ?? '') && (!rule.description || rule.description.test(details.description ?? ''))) return true
   return false
 }
