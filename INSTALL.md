@@ -44,6 +44,19 @@ bash utils/install_openrvdas.sh
 
 Replace `-b master` with `-b dev` to clone the development branch instead. When run from inside a clone, the script will detect this and offer to install into that location rather than the default (`/opt`), avoiding a confusing duplicate copy.
 
+## Install with defaults
+
+Pass `--defaults` for a non-interactive install that accepts all configuration
+defaults (the sudo password may still be requested):
+
+```
+bash utils/install_openrvdas.sh --defaults
+```
+
+This mode also installs and starts the NBP1406 simulator so that a new system
+shows data immediately. The default web password is intentionally predictable;
+follow the bold command printed at the end of installation to change it.
+
 ---
 
 The script will prompt you for your sudo password once at startup and then cache credentials for the duration of the install. It will ask a lot of questions and provide default answers in parens that will be filled in if you hit "return"; without any other input:

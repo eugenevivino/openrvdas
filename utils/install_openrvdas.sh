@@ -1,5 +1,21 @@
 #!/bin/bash -e
 
+ACCEPT_DEFAULTS=no
+
+usage() {
+    echo "Usage: $0 [--defaults] [--help]"
+    echo "  --defaults  Accept every default without prompting and install the simulator."
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --defaults) ACCEPT_DEFAULTS=yes ;;
+        --help) usage; exit 0 ;;
+        *) usage >&2; exit 2 ;;
+    esac
+    shift
+done
+
 # OpenRVDAS is available as open source under the MIT License at
 #   https:/github.com/oceandatatools/openrvdas
 #
@@ -85,10 +101,17 @@ function exit_gracefully {
 
 #########################################################################
 #########################################################################
+# BEGIN prompt helpers
 # Return a normalized yes/no for a value
 yes_no() {
     QUESTION=$1
     DEFAULT_ANSWER=$2
+
+    if [ "$ACCEPT_DEFAULTS" == "yes" ]; then
+        echo "$QUESTION (default accepted: $DEFAULT_ANSWER)"
+        YES_NO_RESULT=$DEFAULT_ANSWER
+        return
+    fi
 
     while true; do
         read -p "$QUESTION ($DEFAULT_ANSWER) " yn
@@ -106,6 +129,23 @@ yes_no() {
         esac
     done
 }
+
+# Prompt for a value, or assign its default in non-interactive mode.
+prompt_value() {
+    PROMPT_VARIABLE=$1
+    QUESTION=$2
+    DEFAULT_VALUE=$3
+
+    if [ "$ACCEPT_DEFAULTS" == "yes" ]; then
+        echo "${QUESTION}(default accepted: $DEFAULT_VALUE)"
+        printf -v "$PROMPT_VARIABLE" "%s" "$DEFAULT_VALUE"
+        return
+    fi
+
+    read -p "$QUESTION" PROMPT_RESULT
+    printf -v "$PROMPT_VARIABLE" "%s" "${PROMPT_RESULT:-$DEFAULT_VALUE}"
+}
+# END prompt helpers
 
 ###########################################################################
 ###########################################################################
@@ -125,7 +165,8 @@ function get_os_type {
             echo "WARNING: detected MacOS ARM architecture. Will install Rosetta emulator and"
             echo "rerun this script emulating X86 architecture."
             echo
-            read -p "Hit return to continue or Ctrl-C to exit. " DUMMY_VAR
+            printf "%s" "Hit return to continue or Ctrl-C to exit. " >&2
+            read DUMMY_VAR
             echo
             softwareupdate --install-rosetta --agree-to-license
 
@@ -237,7 +278,8 @@ function verify_existing_filename {
             break  # Exit the loop if the file is found
         else
             echo "File '$EXISTING_FILENAME' not found. Please try again."
-            read -p "$FILENAME_PROMPT" EXISTING_FILENAME
+            printf "%s" "$FILENAME_PROMPT" >&2
+            read EXISTING_FILENAME
 
         fi
     done
@@ -254,17 +296,20 @@ function verify_new_filename {
         dir=$(dirname "$NEW_FILENAME")
         if [ ! -d "$dir" ]; then
             echo "Directory '$dir' does not exist for path '$NEW_FILENAME'. Please try again."
-            read -p "$FILENAME_PROMPT" NEW_FILENAME
+            printf "%s" "$FILENAME_PROMPT" >&2
+            read NEW_FILENAME
             continue  # Skip the rest of the loop and prompt again
         fi
 
           # Check if the file already exists
         if [ -e "$NEW_FILENAME" ]; then
-            read -p "File '$NEW_FILENAME' already exists. Overwrite? (y/n): " answer
+            printf "%s" "File '$NEW_FILENAME' already exists. Overwrite? (y/n): " >&2
+            read answer
             case $answer in
                 [Yy]* ) break;;  # Break the loop if the user agrees to overwrite
                 [Nn]* )
-                    read -p "$FILENAME_PROMPT" NEW_FILENAME
+                    printf "%s" "$FILENAME_PROMPT" >&2
+                    read NEW_FILENAME
                     continue;;  # Continue the loop if the user does not want to overwrite
                 * ) echo "Please answer yes or no.";;
             esac
@@ -606,7 +651,8 @@ function install_prereqs {
             xcode-select --install
 
             echo " "
-            read -p "After the Xcode installation completes, please press ENTER to continue..."
+            printf "%s" "After the Xcode installation completes, please press ENTER to continue..." >&2
+            read
             echo " "
         done
 
@@ -2060,6 +2106,11 @@ install_prereqs
 
 # Read from the preferences file in $PREFERENCES_FILE, if it exists
 set_default_variables
+# Defaults mode includes simulated data so a fresh install has first light.
+if [ "$ACCEPT_DEFAULTS" == "yes" ]; then
+    DEFAULT_INSTALL_SIMULATE_NBP=yes
+    DEFAULT_RUN_SIMULATE_NBP=yes
+fi
 
 echo
 echo "#####################################################################"
@@ -2068,8 +2119,7 @@ echo
 
 # We don't set hostname on MacOS
 if [ $OS_TYPE != 'MacOS' ]; then
-    read -p "Name to assign to host ($DEFAULT_HOSTNAME)? " HOSTNAME
-    HOSTNAME=${HOSTNAME:-$DEFAULT_HOSTNAME}
+    prompt_value HOSTNAME "Name to assign to host ($DEFAULT_HOSTNAME)? " "$DEFAULT_HOSTNAME"
     echo "Hostname will be '$HOSTNAME'"
     # Set hostname
     set_hostname $HOSTNAME
@@ -2086,8 +2136,7 @@ if [ -n "$SCRIPT_GIT_ROOT" ] && [ "$(basename "$SCRIPT_GIT_ROOT")" = "openrvdas"
     echo "  1) Use this existing clone (install root: $CLONE_PARENT)"
     echo "  2) Install to the standard location (install root: $DEFAULT_INSTALL_ROOT)"
     echo
-    read -p "Use existing clone at $SCRIPT_GIT_ROOT? (yes/no) [yes] " USE_EXISTING_CLONE
-    USE_EXISTING_CLONE=${USE_EXISTING_CLONE:-yes}
+    prompt_value USE_EXISTING_CLONE "Use existing clone at $SCRIPT_GIT_ROOT? (yes/no) [yes] " "yes"
     if [ "$USE_EXISTING_CLONE" = "yes" ]; then
         DEFAULT_INSTALL_ROOT=$CLONE_PARENT
         echo "Using existing clone — install root set to '$DEFAULT_INSTALL_ROOT'"
@@ -2097,8 +2146,7 @@ if [ -n "$SCRIPT_GIT_ROOT" ] && [ "$(basename "$SCRIPT_GIT_ROOT")" = "openrvdas"
     echo
 fi
 
-read -p "OpenRVDAS install root? ($DEFAULT_INSTALL_ROOT) " INSTALL_ROOT
-INSTALL_ROOT=${INSTALL_ROOT:-$DEFAULT_INSTALL_ROOT}
+prompt_value INSTALL_ROOT "OpenRVDAS install root? ($DEFAULT_INSTALL_ROOT) " "$DEFAULT_INSTALL_ROOT"
 echo "Install root will be '$INSTALL_ROOT'"
 
 # Update SSL defaults to reflect the actual install root. Only recompute if
@@ -2121,14 +2169,11 @@ if [[ "$INSTALL_ROOT" == /home/* ]]; then
     echo "the home directory to allow nginx to traverse it."
 fi
 echo
-read -p "Repository to install from? ($DEFAULT_OPENRVDAS_REPO) " OPENRVDAS_REPO
-OPENRVDAS_REPO=${OPENRVDAS_REPO:-$DEFAULT_OPENRVDAS_REPO}
+prompt_value OPENRVDAS_REPO "Repository to install from? ($DEFAULT_OPENRVDAS_REPO) " "$DEFAULT_OPENRVDAS_REPO"
 
-read -p "Repository branch to install? ($DEFAULT_OPENRVDAS_BRANCH) " OPENRVDAS_BRANCH
-OPENRVDAS_BRANCH=${OPENRVDAS_BRANCH:-$DEFAULT_OPENRVDAS_BRANCH}
+prompt_value OPENRVDAS_BRANCH "Repository branch to install? ($DEFAULT_OPENRVDAS_BRANCH) " "$DEFAULT_OPENRVDAS_BRANCH"
 
-read -p "HTTP/HTTPS proxy to use ($DEFAULT_HTTP_PROXY)? " HTTP_PROXY
-HTTP_PROXY=${HTTP_PROXY:-$DEFAULT_HTTP_PROXY}
+prompt_value HTTP_PROXY "HTTP/HTTPS proxy to use ($DEFAULT_HTTP_PROXY)? " "$DEFAULT_HTTP_PROXY"
 
 [ -z $HTTP_PROXY ] || echo Setting up proxy $HTTP_PROXY
 [ -z $HTTP_PROXY ] || export http_proxy=$HTTP_PROXY
@@ -2144,10 +2189,10 @@ echo "Branch: '$OPENRVDAS_BRANCH'"
 echo
 echo "#####################################################################"
 if [ $OS_TYPE == 'MacOS' ]; then
-    read -p "Existing user to set system up for? ($DEFAULT_RVDAS_USER) " RVDAS_USER
+    prompt_value RVDAS_USER "Existing user to set system up for? ($DEFAULT_RVDAS_USER) " "$DEFAULT_RVDAS_USER"
 # If we're on Linux
 elif [ $OS_TYPE == 'CentOS' ] || [ $OS_TYPE == 'Ubuntu' ]; then
-    read -p "OpenRVDAS user to create? ($DEFAULT_RVDAS_USER) " RVDAS_USER
+    prompt_value RVDAS_USER "OpenRVDAS user to create? ($DEFAULT_RVDAS_USER) " "$DEFAULT_RVDAS_USER"
 fi
 RVDAS_USER=${RVDAS_USER:-$DEFAULT_RVDAS_USER}
 create_user $RVDAS_USER
@@ -2167,8 +2212,7 @@ yes_no "Activate the OpenRVDAS venv when $RVDAS_USER logs in?" $DEFAULT_ACTIVATE
 ACTIVATE_VENV_ON_LOGIN=$YES_NO_RESULT
 
 echo
-read -p "OpenRVDAS database password for user $RVDAS_USER? ($RVDAS_USER) " RVDAS_DATABASE_PASSWORD
-RVDAS_DATABASE_PASSWORD=${RVDAS_DATABASE_PASSWORD:-$RVDAS_USER}
+prompt_value RVDAS_DATABASE_PASSWORD "OpenRVDAS database password for user $RVDAS_USER? ($RVDAS_USER) " "$RVDAS_USER"
 
 #########################################################################
 #########################################################################
@@ -2188,8 +2232,7 @@ USE_SSL=$YES_NO_RESULT
 
 if [ "$USE_SSL" == "yes" ]; then
     echo
-    read -p "Port on which to serve web console? ($DEFAULT_SSL_SERVER_PORT) " SSL_SERVER_PORT
-    SSL_SERVER_PORT=${SSL_SERVER_PORT:-$DEFAULT_SSL_SERVER_PORT}
+    prompt_value SSL_SERVER_PORT "Port on which to serve web console? ($DEFAULT_SSL_SERVER_PORT) " "$DEFAULT_SSL_SERVER_PORT"
     SERVER_PORT=$SSL_SERVER_PORT
     WEBSOCKET_PROTOCOL='wss'
 
@@ -2211,18 +2254,15 @@ if [ "$USE_SSL" == "yes" ]; then
 
     # We will sanity check these values later
     if [ $HAVE_SSL_CERTIFICATE == 'yes' ]; then
-        read -p "Path and name of .crt file? ($DEFAULT_SSL_CRT_LOCATION) " SSL_CRT_LOCATION
-        read -p "Path and name of .key file? ($DEFAULT_SSL_KEY_LOCATION) " SSL_KEY_LOCATION
+        prompt_value SSL_CRT_LOCATION "Path and name of .crt file? ($DEFAULT_SSL_CRT_LOCATION) " "$DEFAULT_SSL_CRT_LOCATION"
+        prompt_value SSL_KEY_LOCATION "Path and name of .key file? ($DEFAULT_SSL_KEY_LOCATION) " "$DEFAULT_SSL_KEY_LOCATION"
     else
-        read -p "Path and name of .crt file to create? ($DEFAULT_SSL_CRT_LOCATION) " SSL_CRT_LOCATION
-        read -p "Path and name of .key file to create? ($DEFAULT_SSL_KEY_LOCATION) " SSL_KEY_LOCATION
+        prompt_value SSL_CRT_LOCATION "Path and name of .crt file to create? ($DEFAULT_SSL_CRT_LOCATION) " "$DEFAULT_SSL_CRT_LOCATION"
+        prompt_value SSL_KEY_LOCATION "Path and name of .key file to create? ($DEFAULT_SSL_KEY_LOCATION) " "$DEFAULT_SSL_KEY_LOCATION"
     fi
-    SSL_CRT_LOCATION=${SSL_CRT_LOCATION:-$DEFAULT_SSL_CRT_LOCATION}
-    SSL_KEY_LOCATION=${SSL_KEY_LOCATION:-$DEFAULT_SSL_KEY_LOCATION}
 else
     echo
-    read -p "Port on which to serve web console? ($DEFAULT_NONSSL_SERVER_PORT) " NONSSL_SERVER_PORT
-    NONSSL_SERVER_PORT=${NONSSL_SERVER_PORT:-$DEFAULT_NONSSL_SERVER_PORT}
+    prompt_value NONSSL_SERVER_PORT "Port on which to serve web console? ($DEFAULT_NONSSL_SERVER_PORT) " "$DEFAULT_NONSSL_SERVER_PORT"
     SERVER_PORT=$NONSSL_SERVER_PORT
     WEBSOCKET_PROTOCOL='ws'
 
@@ -2254,8 +2294,10 @@ if [ $OS_TYPE == 'CentOS' ]; then
         echo "Note: OpenRVDAS uses UDP ports 6221-6226 for instrument data by default."
         echo "If you skip these, the data pipeline will be blocked by the firewall."
         echo
-        IFS=',' read -p "Additional TCP ports to open? " -a TCP_PORTS_TO_OPEN
-        IFS=',' read -p "Additional UDP ports to open? (default: 6221,6222,6223,6224,6225,6226) " -a UDP_PORTS_TO_OPEN
+        printf "%s" "Additional TCP ports to open? " >&2
+        IFS=',' read -a TCP_PORTS_TO_OPEN
+        printf "%s" "Additional UDP ports to open? (default: 6221,6222,6223,6224,6225,6226) " >&2
+        IFS=',' read -a UDP_PORTS_TO_OPEN
         if [ ${#UDP_PORTS_TO_OPEN[@]} -eq 0 ]; then
             UDP_PORTS_TO_OPEN=(6221 6222 6223 6224 6225 6226)
         fi
@@ -2283,8 +2325,10 @@ if [ $OS_TYPE == 'Ubuntu' ]; then
         echo "Note: OpenRVDAS uses UDP ports 6221-6226 for instrument data by default."
         echo "If you skip these, the data pipeline will be blocked by the firewall."
         echo
-        IFS=',' read -p "Additional TCP ports to open? " -a TCP_PORTS_TO_OPEN
-        IFS=',' read -p "Additional UDP ports to open? (default: 6221,6222,6223,6224,6225,6226) " -a UDP_PORTS_TO_OPEN
+        printf "%s" "Additional TCP ports to open? " >&2
+        IFS=',' read -a TCP_PORTS_TO_OPEN
+        printf "%s" "Additional UDP ports to open? (default: 6221,6222,6223,6224,6225,6226) " >&2
+        IFS=',' read -a UDP_PORTS_TO_OPEN
         if [ ${#UDP_PORTS_TO_OPEN[@]} -eq 0 ]; then
             UDP_PORTS_TO_OPEN=(6221 6222 6223 6224 6225 6226)
         fi
@@ -2336,8 +2380,7 @@ echo "server at <hostname>/cds-ws, so this port is internal and does not"
 echo "need to be open to the outside. Change it only if something else on"
 echo "this machine already uses it."
 echo
-read -p "Port for the CachedDataServer? ($DEFAULT_CACHED_DATA_SERVER_PORT) " CACHED_DATA_SERVER_PORT
-CACHED_DATA_SERVER_PORT=${CACHED_DATA_SERVER_PORT:-$DEFAULT_CACHED_DATA_SERVER_PORT}
+prompt_value CACHED_DATA_SERVER_PORT "Port for the CachedDataServer? ($DEFAULT_CACHED_DATA_SERVER_PORT) " "$DEFAULT_CACHED_DATA_SERVER_PORT"
 
 #########################################################################
 # Choose web UI
@@ -2348,8 +2391,8 @@ echo "  django - Classic Django UI (stable, full-featured)"
 echo "  react  - New React/FastAPI UI (experimental)"
 echo "  none   - No web UI (headless / portability mode)"
 echo
-read -p "Which web UI would you like to install? (django/react/none) [$DEFAULT_UI_TYPE] " UI_TYPE_INPUT
-UI_TYPE=${UI_TYPE_INPUT:-$DEFAULT_UI_TYPE}
+prompt_value UI_TYPE_INPUT "Which web UI would you like to install? (django/react/none) [$DEFAULT_UI_TYPE] " "$DEFAULT_UI_TYPE"
+UI_TYPE=$UI_TYPE_INPUT
 # Normalise and validate
 case "$UI_TYPE" in
     react|React|REACT) UI_TYPE=react ;;
@@ -2377,11 +2420,15 @@ if [ "$UI_TYPE" == "react" ]; then
         WEB_ADMIN_PASS=
     else
         echo "Initial admin account for the React web UI:"
-        read -p "  Admin username? (${DEFAULT_WEB_ADMIN_USER:-$RVDAS_USER}) " WEB_ADMIN_USER
-        WEB_ADMIN_USER=${WEB_ADMIN_USER:-${DEFAULT_WEB_ADMIN_USER:-$RVDAS_USER}}
-        read -s -p "  Admin password? (${WEB_ADMIN_USER}) " WEB_ADMIN_PASS
-        echo
-        WEB_ADMIN_PASS=${WEB_ADMIN_PASS:-${WEB_ADMIN_USER}}
+        prompt_value WEB_ADMIN_USER "  Admin username? (${DEFAULT_WEB_ADMIN_USER:-$RVDAS_USER}) " "${DEFAULT_WEB_ADMIN_USER:-$RVDAS_USER}"
+        if [ "$ACCEPT_DEFAULTS" == "yes" ]; then
+            WEB_ADMIN_PASS=$WEB_ADMIN_USER
+            echo "  Admin password? (default accepted: $WEB_ADMIN_USER)"
+        else
+            read -s -p "  Admin password? (${WEB_ADMIN_USER}) " WEB_ADMIN_PASS
+            echo
+            WEB_ADMIN_PASS=${WEB_ADMIN_PASS:-${WEB_ADMIN_USER}}
+        fi
     fi
 else
     EXPOSE_API_DOCS=no
@@ -2402,8 +2449,7 @@ SUPERVISORD_WEBINTERFACE=$YES_NO_RESULT
 
 if [ $SUPERVISORD_WEBINTERFACE == 'yes' ]; then
 
-    read -p "Port on which to serve web interface? ($DEFAULT_SUPERVISORD_WEBINTERFACE_PORT) " SUPERVISORD_WEBINTERFACE_PORT
-    SUPERVISORD_WEBINTERFACE_PORT=${SUPERVISORD_WEBINTERFACE_PORT:-$DEFAULT_SUPERVISORD_WEBINTERFACE_PORT}
+    prompt_value SUPERVISORD_WEBINTERFACE_PORT "Port on which to serve web interface? ($DEFAULT_SUPERVISORD_WEBINTERFACE_PORT) " "$DEFAULT_SUPERVISORD_WEBINTERFACE_PORT"
 
     echo "Would you like to enable a password on the supervisord web-interface?"
     echo
@@ -2411,11 +2457,9 @@ if [ $SUPERVISORD_WEBINTERFACE == 'yes' ]; then
     SUPERVISORD_WEBINTERFACE_AUTH=$YES_NO_RESULT
 
     if [ $SUPERVISORD_WEBINTERFACE_AUTH == 'yes' ]; then
-        read -p "Username? ($RVDAS_USER) " SUPERVISORD_WEBINTERFACE_USER
-        SUPERVISORD_WEBINTERFACE_USER=${SUPERVISORD_WEBINTERFACE_USER:-$RVDAS_USER}
+        prompt_value SUPERVISORD_WEBINTERFACE_USER "Username? ($RVDAS_USER) " "$RVDAS_USER"
 
-        read -p "Password? ($RVDAS_USER) " SUPERVISORD_WEBINTERFACE_PASS
-        SUPERVISORD_WEBINTERFACE_PASS=${SUPERVISORD_WEBINTERFACE_PASS:-$RVDAS_USER}
+        prompt_value SUPERVISORD_WEBINTERFACE_PASS "Password? ($RVDAS_USER) " "$RVDAS_USER"
     fi
 fi
 echo
@@ -2436,8 +2480,7 @@ LOGGER_MANAGER_SNAPSHOTS=$YES_NO_RESULT
 # that turning snapshots back on later suggests the same place.
 LOGGER_MANAGER_SNAPSHOT_DIR=$DEFAULT_LOGGER_MANAGER_SNAPSHOT_DIR
 if [ "$LOGGER_MANAGER_SNAPSHOTS" == 'yes' ]; then
-    read -p "Directory for snapshots? ($DEFAULT_LOGGER_MANAGER_SNAPSHOT_DIR) " LOGGER_MANAGER_SNAPSHOT_DIR
-    LOGGER_MANAGER_SNAPSHOT_DIR=${LOGGER_MANAGER_SNAPSHOT_DIR:-$DEFAULT_LOGGER_MANAGER_SNAPSHOT_DIR}
+    prompt_value LOGGER_MANAGER_SNAPSHOT_DIR "Directory for snapshots? ($DEFAULT_LOGGER_MANAGER_SNAPSHOT_DIR) " "$DEFAULT_LOGGER_MANAGER_SNAPSHOT_DIR"
 fi
 echo
 
@@ -2652,6 +2695,10 @@ echo
 echo "#########################################################################"
 echo "Installation complete - happy logging!"
 echo
+if [ "$ACCEPT_DEFAULTS" == "yes" ]; then
+    echo -e "\033[1mInstalled with defaults: change the web password now with '${INSTALL_ROOT}/openrvdas/venv/bin/python ${INSTALL_ROOT}/openrvdas/manage.py changepassword ${RVDAS_USER}'.\033[0m"
+    echo
+fi
 echo "OpenRVDAS has been installed to:"
 echo "  ${INSTALL_ROOT}/openrvdas"
 echo
