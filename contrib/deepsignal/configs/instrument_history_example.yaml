@@ -1,0 +1,19 @@
+instruments:
+  - id: tsg1
+    make: Sea-Bird
+    model: SBE45
+    serial: "0231"
+    fields: [TSG_Temp, TSG_Cond]
+    # Deliberate warning: the shared intake instrument is not in this small example.
+    shares: [{id: intake_flow_meter, what: intake}]
+    events:
+      - {time: 2014-05-01T00:00Z, type: install, position: "NBP1406 main lab intake"}
+      - time: 2014-05-01T00:00Z
+        type: calibration
+        cal_id: SBE45-0231-2014a
+        form: polynomial
+        coefficients: {TSG_Temp: [0.0021, 0.99987], TSG_Cond: [0.0, 1.0]}
+        calibrated_on: 2014-04-15
+        valid_until: 2030-01-01
+        by: Sea-Bird
+        certificate: certs/0231-2014a.pdf
