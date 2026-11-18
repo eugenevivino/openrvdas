@@ -1,0 +1,25 @@
+# Offline-only declaration chain. The test supplies fixture records directly.
+module_declarations:
+  - module: contrib.deepsignal.swath_refraction.fixtures
+    class: demo_records
+  - module: contrib.deepsignal.swath_refraction.transform
+    class: SwathRefractionTransform
+  - module: logger.writers.logfile_writer
+    class: LogfileWriter
+fixture:
+  module: contrib.deepsignal.swath_refraction.fixtures
+  function: demo_records
+transform:
+  module: contrib.deepsignal.swath_refraction.transform
+  class: SwathRefractionTransform
+  kwargs:
+    max_angular_bins: 32
+    max_matched_cells: 128
+    minimum_solve_interval_s: 30
+writer:
+  module: logger.writers.logfile_writer
+  class: LogfileWriter
+  kwargs:
+    filebase: /tmp/swath_refraction_demo
+    suffix: .jsonl
+    flush: true
