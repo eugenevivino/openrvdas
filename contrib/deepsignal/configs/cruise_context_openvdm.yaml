@@ -1,0 +1,5 @@
+class: CruiseContextReader
+module: contrib.deepsignal.cruise_context
+source: openvdm
+url: http://openvdm.example
+interval: 300
