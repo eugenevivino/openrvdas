@@ -1,0 +1,23 @@
+api:
+  enabled: true
+  provider: openai
+  url: https://api.openai.com/v1/chat/completions
+  allowed_hosts:
+    - api.openai.com
+  egress_proxy: null
+  max_usd_per_day: 2
+  max_usd_per_month: 30
+  max_tokens_per_call:
+    input: 8000
+    output: 1000
+  prices_per_million_tokens:
+    input: 0
+    output: 0
+local:
+  enabled: false
+  url: http://127.0.0.1:8000/v1/chat/completions
+  model: local
+hold_s: 60
+cache_hours: 6
+max_context_tokens: 6000
+digest_times: ["0400", "0800", "1200", "1600", "2000", "0000"]
