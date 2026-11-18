@@ -1,0 +1,14 @@
+# Demonstration measurements. Use the vessel's own survey for live data.
+positions:
+  - id: gnss_primary
+    x: 12.3
+    y: -1.1
+    z: 25.0
+    surveyed: 2025-03-02
+    by: "survey firm"
+monuments:
+  - id: BM1
+    x: 0
+    y: 0
+    z: 3.2
+    note: "main deck benchmark"

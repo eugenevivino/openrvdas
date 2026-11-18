@@ -1,0 +1,17 @@
+# From the repository root. Read one JSON record per line, write to the terminal.
+readers:
+  class: TextFileReader
+transforms:
+  - class: FromJSONTransform
+  - class: LeverArmTransform
+    module: contrib.deepsignal.geometry.transform
+    kwargs:
+      geometry_file: contrib/deepsignal/configs/geometry_example.yaml
+      antenna: gnss_primary
+      lat_field: Latitude
+      lon_field: Longitude
+      heading_field: Heading
+  - class: ToJSONTransform
+writers:
+  class: TextFileWriter
+check_format: false

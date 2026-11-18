@@ -1,0 +1,4 @@
+# Blank vessel survey. Fill in measured coordinates in metres before use.
+# The origin is the ship reference point. x forward, y starboard, z up.
+positions: []
+monuments: []
