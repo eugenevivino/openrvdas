@@ -1,0 +1,5 @@
+# Example targets for operators to translate into command-line options.
+# Discovery itself never writes to a target.
+udp_ports:
+  - 6221-6230
+listen_s: 3
