@@ -1,0 +1,11 @@
+audience: public
+levels:
+  'S330*': public
+  'TSG_*': science
+  'Knud*': shore_ops
+default_level: science
+eez:
+  inside_field: eez_inside
+  hold_back: ['TSG_*', 'Knud*', 'S330*']
+  position_fields: ['S330Latitude', 'S330Longitude']
+  position_rounding_deg: 0.1
