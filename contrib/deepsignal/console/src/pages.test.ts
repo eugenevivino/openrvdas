@@ -28,6 +28,21 @@ it('reads a fractional sample period and explains an invalid period', () => {
 
 it('defaults to Night red and accepts the Night neutral configuration', () => {
   const settings = 'ship: Example\npages: [bridge]\n'
-  expect(parseConsole(settings, 'ship').night_palette).toBe('red')
-  expect(parseConsole(settings + 'night_palette: neutral\n', 'ship').night_palette).toBe('neutral')
+  const location = { protocol: 'https:', host: 'ship.example' }
+  expect(parseConsole(settings, location).night_palette).toBe('red')
+  expect(parseConsole(settings + 'night_palette: neutral\n', location).night_palette).toBe('neutral')
+})
+
+it('uses the same-origin CDS endpoint unless websocket is configured', () => {
+  const settings = 'ship: Example\n'
+  const https = parseConsole(settings, { protocol: 'https:', host: 'ship.example' }).websocket
+  const http = parseConsole(settings, { protocol: 'http:', host: 'bridge.local:8080' }).websocket
+  const explicit = parseConsole(settings + 'websocket: wss://cds.example/live\n',
+    { protocol: 'https:', host: 'ship.example' }).websocket
+
+  expect(https).toBe('wss://ship.example/cds-ws')
+  expect(http).toBe('ws://bridge.local:8080/cds-ws')
+  expect(explicit).toBe('wss://cds.example/live')
+  expect(https).not.toContain(':8766')
+  expect(http).not.toContain(':8766')
 })

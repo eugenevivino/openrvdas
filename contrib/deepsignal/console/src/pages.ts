@@ -37,7 +37,7 @@ function isTimeZone(value: unknown): value is string {
   }
 }
 
-export function parseConsole(text: string, host: string) {
+export function parseConsole(text: string, location: Pick<Location, 'protocol' | 'host'>) {
   const file = 'console.yaml'
   const values = mapping(yaml(text, file), file, 'console', 'ship: R/V Example')
   exactKeys(values, ['ship', 'ship_timezone', 'websocket', 'pages', 'history', 'night_palette', 'qc_suffix',
@@ -47,7 +47,8 @@ export function parseConsole(text: string, host: string) {
     ship_timezone: setting(file, values, 'ship_timezone', isTimeZone,
       'a time zone such as UTC or America/Santiago', 'ship_timezone: UTC', 'UTC'),
     websocket: setting(file, values, 'websocket', isWebSocketUrl,
-      'a ws:// or wss:// address', 'websocket: ws://localhost:8766', `ws://${host}:8766`),
+      'a ws:// or wss:// address', 'websocket: ws://localhost:8766',
+      `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/cds-ws`),
     pages: setting(file, values, 'pages', (value): value is string[] =>
       Array.isArray(value) && new Set(value).size === value.length &&
       value.every((id) => typeof id === 'string' && pageIdPattern.test(id)),
@@ -94,7 +95,7 @@ async function pageIds(signal: AbortSignal) {
 }
 
 export async function loadConsole(signal: AbortSignal) {
-  const raw = parseConsole((await fetchFile('console.yaml', signal))!, window.location.hostname)
+  const raw = parseConsole((await fetchFile('console.yaml', signal))!, window.location)
   const config: ConsoleConfig = {
     ship: raw.ship, shipTimezone: raw.ship_timezone, websocket: raw.websocket, pages: raw.pages,
     historyS: raw.history, qcSuffix: raw.qc_suffix, nightPalette: raw.night_palette, modules: raw.modules,

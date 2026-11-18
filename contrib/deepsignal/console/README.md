@@ -37,7 +37,7 @@ The demo replays air temperature and humidity from the NBP1406 recording into a 
 | --- | --- | --- |
 | `ship` | Required | Ship name shown in the top bar. |
 | `ship_timezone` | `UTC` | IANA time zone for the ship clock. |
-| `websocket` | `ws://<browser-host>:8766` | Address of the data cache. Use the ship's `wss://` endpoint if serving the console over HTTPS. |
+| `websocket` | `ws(s)://<browser-host>/cds-ws` | Address of the data cache. The default uses `wss://` when the console is served over HTTPS and `ws://` over HTTP. |
 | `pages` | `[]` | Page IDs to show, in tab order. An empty list shows all available pages. The sample configuration selects `example`. |
 | `history` | `0` seconds | Initial history window. Tiles and routes can request more history. |
 | `qc_suffix` | `_QC` | Suffix added to each field name to find its QARTOD flag and details. |
