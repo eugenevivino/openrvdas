@@ -1,0 +1,19 @@
+cruise:
+  id: RR2205
+  start: 2022-04-01
+  end: 2022-05-10
+defaults:
+  logfile_root: /data/openrvdas
+  cds: localhost:8766
+  device_definitions: contrib/devices/*.yaml
+instruments:
+  - id: s330
+    device_type: Seapath330
+    transport:
+      serial: {port: /dev/ttyS0, baudrate: 115200}
+  - id: mwx1
+    device_type: RMYoung85106
+    transport:
+      udp: {port: 6224}
+    enabled: false
+modes: [off, monitor, log]
