@@ -1,0 +1,13 @@
+class: TimeHealthTransform
+module: contrib.deepsignal.time_health.streams
+kwargs:
+  stream_field: stream
+  window: 120
+  jump_s: 10
+  streams:
+    gps_primary:
+      source: embedded
+      source_time_field: utc
+    gps_secondary:
+      source: embedded
+      source_time_field: utc
