@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import type { CSSProperties, MouseEvent as ReactMouseEvent } from 'react'
-import type { ConsoleContext, ConsoleModule, FieldState, PageProblem, PageWhere, TileConfig, TileDef } from '../../contract/index.ts'
+import { QARTOD_FLAG } from '../../contract/index.ts'
+import type { ConsoleContext, ConsoleModule, FieldState, Freshness, PageProblem, PageWhere, Quality, TileConfig, TileDef } from '../../contract/index.ts'
 import { latLonToPixel, medianInterval, TILE_SIZE } from './mercator.ts'
 
 interface MapConfig extends TileConfig {
@@ -17,6 +18,7 @@ interface MapConfig extends TileConfig {
 export interface TrackPoint { time: number, lat: number, lon: number, segmentStart: boolean }
 
 function numeric(value: unknown): number | undefined {
+  if (typeof value !== 'number' && !(typeof value === 'string' && value.trim())) return undefined
   const number = typeof value === 'number' ? value : Number(value)
   return Number.isFinite(number) ? number : undefined
 }
@@ -58,21 +60,61 @@ function ageWords(seconds: number | undefined): string {
   return `${Math.round(seconds / 3600)} h`
 }
 
-function stateWords(state: FieldState): string {
-  return `${state.quality.replaceAll('_', ' ').toLowerCase()}, ${state.freshness.toLowerCase()}`
+const freshnessShape = { LIVE: '●', AGING: '▲', STALE: '□', NO_DATA: '×' } as const
+const qualityShape = { PASS: '●', NOT_EVALUATED: '◇', SUSPECT: '▲', FAIL: '×', MISSING: '□' } as const
+
+function stateWords(quality: Quality, freshness: Freshness): string {
+  return `${qualityShape[quality]} ${quality.replaceAll('_', ' ').toLowerCase()}, ${freshnessShape[freshness]} ${freshness.replace('_', ' ').toLowerCase()}`
 }
 
-function interpolateColor(start: string, end: string, amount: number): string {
-  const canvas = document.createElement('canvas').getContext('2d')
-  if (!canvas) return start
-  canvas.fillStyle = start
-  const first = canvas.fillStyle
-  canvas.fillStyle = end
-  const second = canvas.fillStyle
+function freshnessAt(age: number, period: number): Freshness {
+  if (age <= 2 * period) return 'LIVE'
+  if (age <= 5 * period) return 'AGING'
+  return age <= Math.max(300, 60 * period) ? 'STALE' : 'NO_DATA'
+}
+
+type Samples = ReturnType<ConsoleContext['store']['history']>
+
+function measurementHistory(samples: Samples, flags: Samples) {
+  const byTime = new Map<number, { value: number | undefined; quality: Quality }>()
+  let flagIndex = 0
+  samples.forEach((sample, index) => {
+    const nextTime = samples[index + 1]?.time ?? Infinity
+    // Match the store: a later flag belongs to this reading until the next reading arrives.
+    let flag: (typeof flags)[number] | undefined
+    while (flagIndex < flags.length && flags[flagIndex].time < nextTime) flag = flags[flagIndex++]
+    const quality = flag && flag.time >= sample.time && typeof flag.value === 'number'
+      ? QARTOD_FLAG[flag.value] ?? 'NOT_EVALUATED' : 'NOT_EVALUATED'
+    const value = quality === 'MISSING' ? undefined : numeric(sample.value)
+    byTime.set(sample.time, { value, quality })
+  })
+  return byTime
+}
+
+function positionNotice(states: FieldState[], latest: TrackPoint | undefined, now: number) {
+  const positionAge = latest && Math.max(0, now - latest.time)
+  const age = Math.max(positionAge ?? 0, ...states.map((state) => state.ageS ?? 0))
+  const words = ageWords(positionAge !== undefined || states.some((state) => state.ageS !== undefined) ? age : undefined)
+  if (!latest || states.some((state) => state.freshness === 'NO_DATA')) return `× Position stale ${words} · NO DATA`
+  if (states.some((state) => state.freshness === 'STALE')) return `□ Position stale ${words}`
+  if (states.some((state) => state.quality === 'FAIL')) return '× Position FAIL'
+  if (states.some((state) => state.quality === 'MISSING' || numeric(state.value) === undefined)) return '□ Position MISSING'
+  if (states.some((state) => state.freshness === 'AGING')) return `▲ Position aging ${words}`
+  if (states.some((state) => state.sourceTime !== latest.time)) return `□ Waiting for a matched position · ${words}`
+  return undefined
+}
+
+function colorScale(context: CanvasRenderingContext2D) {
+  const start = token('--chart')
+  const end = token('--accent')
+  if (start === end) return () => start
   const parse = (value: string) => value.startsWith('#') ? [1, 3, 5].map((offset) => Number.parseInt(value.slice(offset, offset + 2), 16)) : (value.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number)
-  const a = parse(first), b = parse(second)
-  if (a.length < 3 || b.length < 3) return amount < 0.5 ? start : end
-  return `rgb(${a.map((part, index) => Math.round(part + (b[index] - part) * amount)).join(' ')})`
+  context.fillStyle = start
+  const a = parse(context.fillStyle)
+  context.fillStyle = end
+  const b = parse(context.fillStyle)
+  if (a.length < 3 || b.length < 3) return (amount: number) => amount < 0.5 ? start : end
+  return (amount: number) => `rgb(${a.map((part, index) => Math.round(part + (b[index] - part) * amount)).join(' ')})`
 }
 
 function autoZoom(track: TrackPoint[]): number {
@@ -94,62 +136,108 @@ function drawGraticule(context: CanvasRenderingContext2D, width: number, height:
   if (center) context.fillText(`${center.lat.toFixed(2)}°, ${center.lon.toFixed(2)}°`, 12, 24)
 }
 
-function loadTiles(context: CanvasRenderingContext2D, template: string, zoom: number, center: { x: number, y: number }, width: number, height: number, night: boolean) {
+function loadTiles(context: CanvasRenderingContext2D, cache: Map<string, HTMLImageElement>, template: string,
+  zoom: number, center: { x: number, y: number }, width: number, height: number) {
   const firstX = Math.floor((center.x - width / 2) / TILE_SIZE)
   const firstY = Math.floor((center.y - height / 2) / TILE_SIZE)
   const lastX = Math.floor((center.x + width / 2) / TILE_SIZE)
   const lastY = Math.floor((center.y + height / 2) / TILE_SIZE)
+  const visible = new Set<string>()
   for (let x = firstX; x <= lastX; x += 1) for (let y = firstY; y <= lastY; y += 1) {
-    const image = new Image()
-    image.onload = () => {
-      context.drawImage(image, x * TILE_SIZE - center.x + width / 2, y * TILE_SIZE - center.y + height / 2)
-      if (night) { context.globalAlpha = 0.58; context.fillStyle = token('--bg'); context.fillRect(0, 0, width, height); context.globalAlpha = 1 }
+    const key = `${zoom}/${x}/${y}/${template}`
+    visible.add(key)
+    const cached = cache.get(key)
+    const image = cached ?? new Image()
+    const draw = () => context.drawImage(image, x * TILE_SIZE - center.x + width / 2, y * TILE_SIZE - center.y + height / 2)
+    if (cached && image.complete) {
+      if (image.naturalWidth > 0) draw()
+    } else {
+      image.onload = draw
     }
-    image.onerror = () => { /* A missing offline tile intentionally leaves the token background. */ }
-    image.src = fillTileTemplate(template, zoom, x, y)
+    if (!cached) {
+      cache.set(key, image)
+      image.src = fillTileTemplate(template, zoom, x, y)
+    }
   }
+  for (const key of cache.keys()) if (!visible.has(key)) cache.delete(key)
+  return () => { for (const image of cache.values()) image.onload = null }
 }
+
+function mapFields(config: MapConfig, ctx: ConsoleContext) {
+  const colorFlags = config.color_by && config.color_by + ctx.config.qcSuffix
+  return [config.lat, config.lon, config.color_by, colorFlags, config.heading, ...(config.events ?? [])]
+    .filter((field): field is string => Boolean(field))
+}
+
+function canvasSize(canvas: HTMLCanvasElement) {
+  return { width: canvas.clientWidth || 640, height: canvas.clientHeight || 360 }
+}
+
+const rasterRedMatrix = '0.2126 0.7152 0.0722 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0'
 
 export function MapTile({ cfg, ctx }: { cfg: TileConfig, ctx: ConsoleContext }) {
   const config = cfg as MapConfig
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const rasterRef = useRef<HTMLCanvasElement>(null)
+  const rasterTiles = useRef(new Map<string, HTMLImageElement>())
+  const rasterFilter = useId()
   const [, redraw] = useState(0)
-  const [tooltip, setTooltip] = useState<TrackPoint>()
+  const [{ width, height }, setSize] = useState({ width: 640, height: 360 })
+  const [selectedTime, setSelectedTime] = useState<number>()
   const seconds = windowSeconds(config.window)
-  const track = useMemo(() => pairTrack(ctx.store.history(config.lat, seconds), ctx.store.history(config.lon, seconds)), [ctx, config.lat, config.lon, seconds])
-  const colorSamples = config.color_by ? ctx.store.history(config.color_by, seconds) : []
+  const now = ctx.clock.now()
+  const track = pairTrack(ctx.store.history(config.lat, seconds), ctx.store.history(config.lon, seconds))
+  const latest = track.at(-1)
+  const zoom = config.zoom === undefined || config.zoom === 'auto' ? autoZoom(track) : config.zoom
+  const center = latest ? latLonToPixel(latest.lat, latest.lon, zoom) : { x: 0, y: 0 }
+  const colorSamples = config.color_by ? measurementHistory(ctx.store.history(config.color_by, seconds),
+    ctx.store.history(config.color_by + ctx.config.qcSuffix, seconds)) : undefined
   const eventSamples = (config.events ?? []).flatMap((field) => ctx.store.history(field, seconds).map((sample) => ({ ...sample, field })))
-  const domain = colorDomain(colorSamples)
-  const colorByTime = new Map(colorSamples.map((sample) => [sample.time, numeric(sample.value)]))
-  const position = ctx.store.get(config.lat)
-  const positionStale = position.freshness === 'STALE' || position.freshness === 'NO_DATA'
+  const domain = colorSamples && colorDomain([...colorSamples.values()])
+  const positionState = positionNotice([ctx.store.get(config.lat), ctx.store.get(config.lon)], latest, now)
+  const lighting = ctx.lighting.get()
+  const night = lighting.mode === 'night'
 
-  useEffect(() => {
-    const fields = [config.lat, config.lon, config.color_by, config.heading, ...(config.events ?? [])].filter((field): field is string => Boolean(field))
-    return ctx.store.subscribe(fields, () => redraw((value) => value + 1))
-  }, [config, ctx])
+  useEffect(() => ctx.store.subscribe(mapFields(config, ctx), () => redraw((value) => value + 1)), [config, ctx])
   useEffect(() => ctx.lighting.subscribe(() => redraw((value) => value + 1)), [ctx])
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const resize = () => setSize(canvasSize(canvas))
+    resize()
+    if (!globalThis.ResizeObserver) return
+    const observer = new ResizeObserver(resize)
+    observer.observe(canvas)
+    return () => observer.disconnect()
+  }, [])
+
+  const { x: centerX, y: centerY } = center
+  const hasTrack = latest !== undefined
+  useEffect(() => {
+    const canvas = rasterRef.current
+    const context = canvas?.getContext('2d')
+    if (!canvas || !context || !config.tiles || !hasTrack) return
+    canvas.width = width * devicePixelRatio
+    canvas.height = height * devicePixelRatio
+    context.scale(devicePixelRatio, devicePixelRatio)
+    return loadTiles(context, rasterTiles.current, config.tiles, zoom, { x: centerX, y: centerY }, width, height)
+  }, [config.tiles, zoom, centerX, centerY, hasTrack, width, height])
 
   useEffect(() => {
     const canvas = canvasRef.current
     const context = canvas?.getContext('2d')
     if (!canvas || !context) return
-    const width = canvas.clientWidth || 640, height = canvas.clientHeight || 360
     canvas.width = width * devicePixelRatio; canvas.height = height * devicePixelRatio
     context.scale(devicePixelRatio, devicePixelRatio)
-    const latest = track.at(-1)
-    const zoom = config.zoom === undefined || config.zoom === 'auto' ? autoZoom(track) : config.zoom
-    const center = latest ? latLonToPixel(latest.lat, latest.lon, zoom) : { x: 0, y: 0 }
-    drawGraticule(context, width, height, latest)
-    if (config.tiles) loadTiles(context, config.tiles, zoom, center, width, height, ctx.lighting.get().mode === 'night')
-    const start = token('--chart'), end = token('--accent')
+    if (!config.tiles) drawGraticule(context, width, height, latest)
+    const segmentColor = colorScale(context)
     track.forEach((point, index) => {
       if (!index || point.segmentStart) return
       const previous = track[index - 1]
       const a = latLonToPixel(previous.lat, previous.lon, zoom), b = latLonToPixel(point.lat, point.lon, zoom)
-      const value = colorByTime.get(point.time)
+      const value = colorSamples?.get(point.time)?.value
       const ratio = value !== undefined && domain && domain[1] !== domain[0] ? (value - domain[0]) / (domain[1] - domain[0]) : 0
-      context.strokeStyle = interpolateColor(start, end, ratio); context.lineWidth = 3; context.beginPath()
+      context.strokeStyle = segmentColor(ratio); context.lineWidth = 3; context.beginPath()
       context.moveTo(a.x - center.x + width / 2, a.y - center.y + height / 2)
       context.lineTo(b.x - center.x + width / 2, b.y - center.y + height / 2); context.stroke()
     })
@@ -162,33 +250,56 @@ export function MapTile({ cfg, ctx }: { cfg: TileConfig, ctx: ConsoleContext }) 
     }
     if (latest) {
       context.save(); context.translate(width / 2, height / 2)
-      const heading = config.heading ? numeric(ctx.store.get(config.heading).value) ?? 0 : 0
-      context.rotate(heading * Math.PI / 180); context.strokeStyle = token(positionStale ? '--stale' : '--fg'); context.fillStyle = token('--fg'); context.lineWidth = 3
+      const headingState = config.heading ? ctx.store.get(config.heading) : undefined
+      const heading = headingState?.freshness === 'LIVE' && headingState.quality !== 'FAIL' && headingState.quality !== 'MISSING'
+        ? numeric(headingState.value) ?? 0 : 0
+      context.rotate(heading * Math.PI / 180); context.strokeStyle = token(positionState ? '--stale' : '--fg'); context.fillStyle = token('--fg'); context.lineWidth = 3
       context.beginPath(); context.moveTo(0, -15); context.lineTo(11, 12); context.lineTo(0, 7); context.lineTo(-11, 12); context.closePath()
-      if (positionStale) context.stroke()
+      if (positionState) context.stroke()
       else context.fill()
       context.restore()
     }
-  }, [track, colorSamples, domain, config, ctx, eventSamples, positionStale])
+  })
 
   function showNearest(event: ReactMouseEvent<HTMLButtonElement>) {
-    if (!track.length) return
-    const ratio = Math.max(0, Math.min(1, event.nativeEvent.offsetX / event.currentTarget.clientWidth))
-    setTooltip(track[Math.round(ratio * (track.length - 1))])
+    if (!latest) return
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const x = event.clientX - bounds.left + center.x - width / 2
+    const y = event.clientY - bounds.top + center.y - height / 2
+    let nearest = latest
+    let distance = Infinity
+    for (const point of track) {
+      const pixel = latLonToPixel(point.lat, point.lon, zoom)
+      const candidateDistance = (pixel.x - x) ** 2 + (pixel.y - y) ** 2
+      if (candidateDistance < distance) {
+        nearest = point
+        distance = candidateDistance
+      }
+    }
+    setSelectedTime(nearest.time)
   }
-  const selectedValue = tooltip && config.color_by ? colorByTime.get(tooltip.time) : undefined
-  const selectedState = config.color_by ? ctx.store.get(config.color_by) : undefined
+  const tooltip = track.find((point) => point.time === selectedTime)
+  const selected = tooltip && colorSamples?.get(tooltip.time)
+  const measurementPeriod = config.color_by ? ctx.store.get(config.color_by).periodS ?? 1 : 1
   const selectedEvents = tooltip ? eventSamples.filter((event) => Math.abs(event.time - tooltip.time) <= 1) : []
   const units = config.color_by ? ctx.store.describe(config.color_by)?.units ?? 'unit unknown' : undefined
   return <section style={styles.root}>
+    {config.tiles && latest && <>
+      <svg aria-hidden="true" width="0" height="0" style={{ position: 'absolute' }}>
+        <filter id={rasterFilter} colorInterpolationFilters="sRGB"><feColorMatrix values={rasterRedMatrix} /></filter>
+      </svg>
+      <canvas ref={rasterRef} aria-hidden="true" style={{ ...styles.canvas, position: 'absolute', inset: 0,
+        opacity: night ? 0.42 * lighting.dim : 1, filter: night && lighting.nightPalette === 'red' ? `url(#${rasterFilter})` : undefined }} />
+    </>}
     <canvas ref={canvasRef} aria-hidden="true" style={styles.canvas} />
     <button type="button" aria-label="Ship track map" onClick={showNearest} style={styles.hitTarget} />
     {domain && config.color_by && <div style={styles.legend}>{domain[0].toFixed(2)}–{domain[1].toFixed(2)} {units}</div>}
-    {positionStale && <div style={styles.state}>□ Position stale {ageWords(position.ageS)}</div>}
+    {positionState && <div style={styles.state}>{positionState}</div>}
     {tooltip && <div role="status" style={styles.tooltip}>
       <div>{new Date(tooltip.time * 1000).toISOString().replace('.000', '')}</div>
       <div>{tooltip.lat.toFixed(5)}°, {tooltip.lon.toFixed(5)}°</div>
-      {selectedValue !== undefined && selectedState && <div>{selectedValue.toFixed(2)} {units} · {stateWords(selectedState)}</div>}
+      {config.color_by && <div>{selected?.value?.toFixed(2) ?? '—'} {units} · {stateWords(
+        selected?.quality ?? 'MISSING', selected ? freshnessAt(now - tooltip.time, measurementPeriod) : 'NO_DATA')}</div>}
       {selectedEvents.map((event) => <div key={`${event.field}-${event.time}`}>□ {event.field}: {String(event.value)}</div>)}
     </div>}
   </section>
@@ -196,7 +307,7 @@ export function MapTile({ cfg, ctx }: { cfg: TileConfig, ctx: ConsoleContext }) 
 
 const styles: Record<string, CSSProperties> = {
   root: { position: 'relative', minHeight: 360, overflow: 'hidden', background: 'var(--panel)', color: 'var(--fg)', fontFamily: 'var(--f-body)' },
-  canvas: { width: '100%', height: 360, display: 'block' },
+  canvas: { position: 'relative', width: '100%', height: 360, display: 'block' },
   hitTarget: { position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0, padding: 0, background: 'transparent', cursor: 'crosshair' },
   legend: { position: 'absolute', left: 12, bottom: 12, minHeight: 44, padding: '10px 14px', background: 'var(--panel2)', border: '2px solid var(--line)', fontFamily: 'var(--f-number)', fontSize: 18 },
   state: { position: 'absolute', right: 12, top: 12, minHeight: 44, padding: '10px 14px', background: 'var(--panel2)', border: '2px solid var(--stale)', fontSize: 18 },
@@ -218,7 +329,7 @@ function validate(raw: Record<string, unknown>, where: PageWhere): MapConfig {
 
 const tile: TileDef = {
   type: 'map', validate,
-  fields: (raw) => { const cfg = raw as MapConfig; return [cfg.lat, cfg.lon, cfg.color_by, cfg.heading, ...(cfg.events ?? [])].filter((field): field is string => Boolean(field)) },
+  fields: (cfg, ctx) => mapFields(cfg as MapConfig, ctx),
   Component: MapTile,
 }
 

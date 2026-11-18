@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
+import '@testing-library/jest-dom/vitest'
 import { act, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import feed from '../../contract/fake-feed.json'
 import type { ConsoleContext, FieldState } from '../../contract'
 import chart, { buildChartData, parseWindow } from './index'
 
-const plots: Array<{ redraw: ReturnType<typeof vi.fn> }> = []
+const plots: Array<{ redraw: ReturnType<typeof vi.fn>; setData: ReturnType<typeof vi.fn> }> = []
 vi.mock('uplot', () => ({ default: class {
   redraw = vi.fn()
   setData = vi.fn()
@@ -84,4 +85,26 @@ describe('chart tile', () => {
       .toThrow(expect.objectContaining({ where: { file: 'science.yaml', tile: 1 }, setting: 'window', saw: 'soon' }))
     expect(parseWindow('6 h')).toBe(21_600)
   })
+})
+
+it('plots historical QARTOD 9 as a gap and masks a retained value at timeout', () => {
+  const { ctx, emit } = context('TsgTemp')
+  const now = ctx.clock.now()
+  ctx.store.history = (field) => field.endsWith('_QC') ? [
+    { time: now - 2, value: 1 }, { time: now - 1, value: 9 },
+  ] : [{ time: now - 2, value: 18 }, { time: now - 1, value: 999 }, { time: now, value: 20 }]
+  const get = ctx.store.get
+  let expired = false
+  ctx.store.get = (field) => expired
+    ? { ...get(field), freshness: 'NO_DATA', lastGood: { value: 19.8, time: now - 301 } } : get(field)
+  const tile = chart.tiles![0]
+  const cfg = tile.validate({ type: 'chart', field: 'TsgTemp', label: 'Temperature', unit: 'degC', window: '30 min' },
+    { file: 'science.yaml', tile: 1 })
+  const view = render(<tile.Component cfg={cfg} ctx={ctx} />)
+  expect.soft(plots.at(-1)?.setData).toHaveBeenLastCalledWith(
+    [[now - 2, now - 1, now], [18, null, 20], [null, null, null]], false)
+  expired = true
+  act(emit)
+  expect(view.container.querySelector('.chart-current strong')).toHaveTextContent('—')
+  expect(screen.getByText(/Last: 19\.80 degC/)).toBeInTheDocument()
 })

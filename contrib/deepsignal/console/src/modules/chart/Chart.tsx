@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
 import './chart.css'
+import { QARTOD_FLAG } from '../../contract'
 import type { ConsoleContext, ConsoleModule, PageProblem, PageWhere, Quality, TileConfig } from '../../contract'
 
 interface ChartConfig extends TileConfig {
@@ -55,14 +56,12 @@ export function buildChartData(samples: Sample[], qualities: QualitySample[], pe
   const markers: number[] = []
   const interval = medianInterval(samples) ?? period
   let qualityIndex = 0
-  let quality: Quality = 'NOT_EVALUATED'
   let minimum = Infinity
   let maximum = -Infinity
   let outputIndex = 0
 
   for (let index = 0; index < samples.length; index += 1) {
     const sample = samples[index]
-    const number = typeof sample.value === 'number' && Number.isFinite(sample.value) ? sample.value : null
     const previous = samples[index - 1]
     if (previous && interval !== undefined && sample.time - previous.time > 3 * interval) {
       times[outputIndex] = (previous.time + sample.time) / 2
@@ -70,16 +69,19 @@ export function buildChartData(samples: Sample[], qualities: QualitySample[], pe
       markerValues[outputIndex] = null
       outputIndex += 1
     }
-    while (qualityIndex < qualities.length && qualities[qualityIndex].time <= sample.time) {
-      quality = qualities[qualityIndex].quality
-      qualityIndex += 1
-    }
+    // A flag can follow its reading, but it expires when the next reading arrives.
+    const nextTime = samples[index + 1]?.time ?? Infinity
+    let flag: QualitySample | undefined
+    while (qualityIndex < qualities.length && qualities[qualityIndex].time < nextTime) flag = qualities[qualityIndex++]
+    const quality = flag && flag.time >= sample.time ? flag.quality : 'NOT_EVALUATED'
+    const number = quality !== 'MISSING' && typeof sample.value === 'number' && Number.isFinite(sample.value)
+      ? sample.value : null
     times[outputIndex] = sample.time
     values[outputIndex] = number
     const affected = quality === 'SUSPECT' || quality === 'FAIL'
     markerValues[outputIndex] = affected ? number : null
     outputIndex += 1
-    if (affected) markers.push(sample.time)
+    if (affected && number !== null) markers.push(sample.time)
     if (number !== null) {
       minimum = Math.min(minimum, number)
       maximum = Math.max(maximum, number)
@@ -123,7 +125,9 @@ function Chart({ cfg, ctx }: { cfg: TileConfig; ctx: ConsoleContext }) {
   const state = ctx.store.get(config.field)
   const data = useMemo(() => {
     const qualityHistory = ctx.store.history(`${config.field}${ctx.config.qcSuffix}`, config.windowS)
-      .map(({ time, value }) => ({ time, quality: value === 1 ? 'PASS' : value === 3 ? 'SUSPECT' : value === 4 ? 'FAIL' : 'NOT_EVALUATED' }) as QualitySample)
+      .map(({ time, value }): QualitySample => ({
+        time, quality: (typeof value === 'number' ? QARTOD_FLAG[value] : undefined) ?? 'NOT_EVALUATED',
+      }))
     return buildChartData(ctx.store.history(config.field, config.windowS), qualityHistory, config.period)
   }, [config.field, config.period, config.windowS, ctx, revision])
 
@@ -160,12 +164,20 @@ function Chart({ cfg, ctx }: { cfg: TileConfig; ctx: ConsoleContext }) {
 
   useEffect(() => ctx.lighting.subscribe(() => plot.current?.redraw()), [ctx])
 
-  const noData = state.freshness === 'STALE' || state.freshness === 'NO_DATA'
-  const current = typeof state.value === 'number' ? state.value.toFixed(config.decimals) : '—'
+  const timedOut = state.freshness === 'NO_DATA'
+  const noData = state.freshness === 'STALE' || timedOut
+  const current = !timedOut && state.quality !== 'MISSING' && typeof state.value === 'number' && Number.isFinite(state.value)
+    ? state.value.toFixed(config.decimals) : '—'
+  const last = state.lastGood
   return <section className={`chart-tile chart-tile--${config.size}${config.wide ? ' chart-tile--wide' : ''}`} aria-label={config.label}>
     <header><h2>{config.label}</h2><span className="chart-source">{config.field}</span></header>
     <div className="chart-current"><strong>{current}</strong> <span>{config.unit || 'unit not reported'}</span></div>
-    <div className="chart-status"><span data-state={state.quality}>◇ {state.quality.replace('_', ' ')}</span><span>□ {state.freshness.replace('_', ' ')}</span></div>
+    <div className="chart-status"><span data-state={state.quality}>◇ {state.quality.replace('_', ' ')}</span>
+      <span>□ {state.freshness.replace('_', ' ')}{state.freshness !== 'LIVE' && state.ageS !== undefined
+        ? ` · ${Math.floor(state.ageS)} s old` : ''}</span></div>
+    {timedOut && last && typeof last.value === 'number' && Number.isFinite(last.value) &&
+      <div className="chart-status">Last: {last.value.toFixed(config.decimals)} {config.unit || 'unit not reported'} at{' '}
+        <time>{new Date(last.time * 1000).toISOString().slice(11, 19)}Z</time></div>}
     <div className="chart-plot-wrap">
       <div className="chart-range"><span>{data.range[1].toFixed(config.decimals)} {config.unit}</span><span>{data.range[0].toFixed(config.decimals)} {config.unit}</span></div>
       <div className="chart-plot" ref={container} aria-label={`${config.label} history`} />

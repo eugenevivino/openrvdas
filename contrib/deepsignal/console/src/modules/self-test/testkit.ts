@@ -31,7 +31,8 @@ export function makeContext(options: {
     field: 'extra', value: 1, sourceTime: now - 5,
     freshness: 'LIVE', quality: 'PASS', health: 'OK',
   })
-  const pages = options.pages ?? [{ id: 'bridge', title: 'Bridge', tiles: [] }]
+  const pages = options.pages ?? [{ id: 'bridge', title: 'Bridge', source: 'file:pages/bridge.yaml',
+    order: undefined, tiles: [] }]
   return {
     config: {
       ship: 'Test ship', shipTimezone: 'UTC', websocket: 'ws://ship:8766', pages: [],

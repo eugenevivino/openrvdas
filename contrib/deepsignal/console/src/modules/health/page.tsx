@@ -54,7 +54,8 @@ function isStatuses(value: unknown): value is Record<string, LoggerEntry> {
   return Object.values(value).every((entry) => {
     if (!entry || typeof entry !== 'object') return false
     const item = entry as Record<string, unknown>
-    return typeof item.config === 'string' && ['RUNNING', 'STARTING', 'FAILED', 'EXITED'].includes(String(item.status))
+    return typeof item.config === 'string' && typeof item.status === 'string' &&
+      ['RUNNING', 'STARTING', 'FAILED', 'EXITED'].includes(item.status)
   })
 }
 
@@ -65,9 +66,17 @@ const loggerAdapter = {
   },
   onValue(field: string, value: unknown, _time: number, ctx: ConsoleContext) {
     const state = runtime(ctx)
-    if (field === 'status:logger_status' && isStatuses(value)) {
-      state.statuses = value
-      for (const [logger, entry] of Object.entries(value)) {
+    if (field === 'status:logger_status') {
+      const prior = state.statuses
+      const valid = isStatuses(value)
+      state.statuses = valid ? value : {}
+      for (const logger of Object.keys(prior)) {
+        if (!Object.hasOwn(state.statuses, logger)) {
+          ctx.store.setHealth({ logger }, 'UNKNOWN', valid
+            ? 'Logger omitted from the latest manager report' : 'Latest logger manager report is malformed')
+        }
+      }
+      for (const [logger, entry] of Object.entries(state.statuses)) {
         const mapping: Record<LoggerStatus, Health> = { RUNNING: 'OK', STARTING: 'DEGRADED', FAILED: 'FAILED', EXITED: 'UNKNOWN' }
         const suffix = entry.status === 'EXITED' ? ' (Off)' : ''
         ctx.store.setHealth({ logger }, mapping[entry.status], `Logger manager reports ${entry.status}${suffix}`)

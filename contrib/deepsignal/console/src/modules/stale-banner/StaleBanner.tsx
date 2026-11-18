@@ -48,8 +48,10 @@ function candidates(ctx: ConsoleContext): Candidate[] {
   return ctx.store.listFields().flatMap((field): Candidate[] => {
     if (ignore.some(glob => globMatches(glob, field))) return []
     const state = ctx.store.get(field)
+    // The catalog also includes fields for which this console has no samples.
+    const since = state.sourceTime ?? state.lastGood?.time
+    if (since === undefined) return []
     const logger = ctx.store.describe(field)?.logger ?? 'unassigned'
-    const since = state.lastGood?.time ?? state.sourceTime ?? now
     if (state.health === 'FAILED') return [{ field, logger, state, tier: 'A2', since, title: `${logger} logger failed` }]
     if (state.freshness === 'NO_DATA') return [{ field, logger, state, tier: 'A2', since, title: `${field} no data since ${utc(since)}` }]
     const age = state.ageS ?? now - since

@@ -29,11 +29,44 @@ function text(raw: Record<string, unknown>, key: string, where: PageWhere, optio
 
 function chosen(ctx: ConsoleContext, primary: string, fallback?: string): FieldState {
   const value = ctx.store.get(primary)
-  return value.freshness === 'NO_DATA' && fallback ? ctx.store.get(fallback) : value
+  if (number(value) !== undefined || !fallback) return value
+  const alternate = ctx.store.get(fallback)
+  return number(alternate) === undefined ? value : alternate
 }
 
 function number(state: FieldState): number | undefined {
+  if (state.freshness === 'NO_DATA' || state.quality === 'MISSING') return undefined
   return typeof state.value === 'number' && Number.isFinite(state.value) ? state.value : undefined
+}
+
+function readingIssue(state: FieldState): keyof typeof issueStyles | undefined {
+  if (state.freshness !== 'LIVE') return state.freshness
+  if (state.quality === 'FAIL' || state.quality === 'SUSPECT') return state.quality
+  return number(state) === undefined ? 'MISSING' : undefined
+}
+
+const issueStyles = {
+  AGING: ['▲', '--check'], STALE: ['□', '--stale'], NO_DATA: ['×', '--down'],
+  FAIL: ['×', '--down'], SUSPECT: ['▲', '--check'], MISSING: ['□', '--down'],
+} as const
+
+function ReadingState({ state }: { state: FieldState }) {
+  const issue = readingIssue(state)
+  const qualityIssue = state.quality === 'FAIL' || state.quality === 'SUSPECT' || state.quality === 'MISSING'
+    ? state.quality : undefined
+  const badges = issue ? [issue] : []
+  if (qualityIssue && qualityIssue !== issue) badges.push(qualityIssue)
+  return badges.map((badge) => {
+    const [shape, tone] = issueStyles[badge]
+    const age = badge === state.freshness && state.ageS !== undefined ? ` · ${Math.floor(state.ageS)} s old` : ''
+    return <span key={badge} style={{ color: `var(${tone})`, marginInlineStart: 8, font: '16px var(--f-mono)' }}>
+      {`${shape} ${badge.replace('_', ' ')}${age}`}
+    </span>
+  })
+}
+
+function dialValue(state: FieldState) {
+  return state.freshness === 'LIVE' && state.quality !== 'FAIL' ? number(state) : undefined
 }
 
 function WindDial({ cfg, ctx }: { cfg: TileConfig; ctx: ConsoleContext }) {
@@ -53,47 +86,49 @@ function WindDial({ cfg, ctx }: { cfg: TileConfig; ctx: ConsoleContext }) {
   const headingState = ctx.store.get(config.heading)
   const speed = number(speedState)
   const direction = number(directionState)
-  const heading = number(headingState)
-  const relative = direction !== undefined && heading !== undefined
-    ? relativeWind(direction, heading, headingState.freshness) : { reason: 'NO_DATA' as const }
-  const shipRotation = orientation === 'north' && heading !== undefined ? Math.round(heading) : 0
-  const arrowRotation = direction === undefined ? 0 : Math.round(wrapAngle(
-    orientation === 'ship' && heading !== undefined ? direction - heading : direction))
-  const sourceState = speedState.freshness === 'LIVE' && directionState.freshness === 'LIVE' ? 'OK' :
-    speedState.freshness === 'NO_DATA' || directionState.freshness === 'NO_DATA' ? 'Down' : 'Stale'
-  const gust = config.gust ? number(ctx.store.get(config.gust)) : undefined
+  const heading = dialValue(headingState)
+  const windBearing = dialValue(directionState)
+  const shipUp = orientation === 'ship' && heading !== undefined
+  const northRotation = shipUp ? Math.round(wrapAngle(-heading)) : 0
+  const shipRotation = shipUp ? 0 : Math.round(heading ?? 0)
+  const arrowRotation = windBearing === undefined ? undefined : Math.round(wrapAngle(
+    shipUp ? windBearing - heading : windBearing))
+  const relative = windBearing !== undefined && heading !== undefined
+    ? relativeWind(windBearing, heading, headingState.freshness) : undefined
+  const relativeIssue = readingIssue(headingState) ?? readingIssue(directionState) ?? 'NO_DATA'
+  const gustState = config.gust ? ctx.store.get(config.gust) : undefined
+  const gust = gustState && number(gustState)
+  const fallbackCount = Number(speedState.field !== config.speed) + Number(directionState.field !== config.direction)
+  const windLabel = fallbackCount === 2 ? 'Instantaneous wind' : fallbackCount === 0 ? config.average_label : undefined
   return <article style={{ ...panel, display: 'grid', gridTemplateColumns: 'minmax(240px, 1fr) minmax(220px, 1fr)', gap: 12 }}>
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-        <h2 style={{ margin: 0, fontSize: 18 }}>{config.label}</h2>
-        <span style={{ color: sourceState === 'OK' ? 'var(--ok)' : sourceState === 'Down' ? 'var(--down)' : 'var(--stale)' }}>
-          {sourceState === 'OK' ? '● OK' : sourceState === 'Down' ? '× Down' : '□ Stale'}
-        </span>
-      </div>
-      <svg viewBox="0 0 200 200" role="img" aria-label="Wind direction dial" style={{ width: '100%', maxHeight: 260 }}>
+      <h2 style={{ margin: 0, fontSize: 18 }}>{config.label}</h2>
+      <svg viewBox="0 0 200 200" role="img" aria-label={shipUp ? 'Wind direction dial, ship up' : 'Wind direction dial, north up'} style={{ width: '100%', maxHeight: 260 }}>
         <circle cx="100" cy="100" r="88" fill="var(--panel2)" stroke="var(--line)" strokeWidth="2" />
-        <text x="100" y="22" textAnchor="middle" fill="var(--muted)" fontSize="14">N</text>
-        <g data-testid="ship" transform={`rotate(${shipRotation} 100 100)`} fill="none" stroke="var(--fg)" strokeWidth="3">
+        <text x="100" y="22" transform={`rotate(${northRotation} 100 100)`} textAnchor="middle" fill="var(--muted)" fontSize="14">N</text>
+        {heading !== undefined && <g data-testid="ship" transform={`rotate(${shipRotation} 100 100)`} fill="none" stroke="var(--fg)" strokeWidth="3">
           <path d="M100 52 L116 112 L100 142 L84 112 Z" />
           <path d="M100 52 V142" />
-        </g>
-        <g data-testid="wind-arrow" transform={`rotate(${arrowRotation} 100 100)`} stroke="var(--accent)" fill="var(--accent)" strokeWidth="5">
+        </g>}
+        {arrowRotation !== undefined && <g data-testid="wind-arrow" transform={`rotate(${arrowRotation} 100 100)`} stroke="var(--accent)" fill="var(--accent)" strokeWidth="5">
           <path d="M100 28 V91" /><path d="M88 76 L100 94 L112 76 Z" stroke="none" />
-        </g>
+        </g>}
       </svg>
       <div role="group" aria-label="Dial orientation" style={{ display: 'flex', justifyContent: 'center', gap: 8 }}>
-        <button style={button} aria-pressed={orientation === 'north'} onClick={() => selectOrientation('north')}>North up</button>
-        <button style={button} aria-pressed={orientation === 'ship'} onClick={() => selectOrientation('ship')}>Ship up</button>
+        <button style={button} aria-pressed={!shipUp} onClick={() => selectOrientation('north')}>North up</button>
+        <button style={button} aria-pressed={shipUp} onClick={() => selectOrientation('ship')}>Ship up</button>
       </div>
     </div>
     <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 12 }}>
       <div style={{ font: '600 48px var(--f-number)', lineHeight: 1 }}>{speed?.toFixed(1) ?? '—'}
-        <span style={{ fontSize: 22 }}> {config.unit}</span></div>
-      <div style={{ fontSize: 18 }}>From <strong>{direction === undefined ? '—' : `${Math.round(direction)}° ${compassPoint(direction)}`}</strong></div>
-      <div style={{ fontSize: 18 }}>Relative to bow <strong>{'reason' in relative ? `— (${relative.reason})` :
-        `${Math.round(relative.angle)}° ${relative.side}`}</strong></div>
-      {gust !== undefined && <div style={{ fontSize: 16 }}>Gust {gust.toFixed(1)} {config.unit}</div>}
-      {config.average_label && <div style={{ color: 'var(--muted)', fontSize: 16 }}>{config.average_label}</div>}
+        <span style={{ fontSize: 22 }}> {config.unit}</span><ReadingState state={speedState} /></div>
+      <div style={{ fontSize: 18 }}>From <strong>{direction === undefined ? '—' : `${Math.round(direction)}° ${compassPoint(direction)}`}</strong>
+        <ReadingState state={directionState} /></div>
+      <div style={{ fontSize: 18 }}>Relative to bow <strong>{relative && 'angle' in relative ?
+        `${Math.round(relative.angle)}° ${relative.side}` : `— (${relativeIssue})`}</strong>
+        <ReadingState state={headingState} /></div>
+      {gustState && <div style={{ fontSize: 16 }}>Gust <span>{gust?.toFixed(1) ?? '—'} {config.unit}</span><ReadingState state={gustState} /></div>}
+      {windLabel && <div style={{ color: 'var(--muted)', fontSize: 16 }}>{windLabel}</div>}
       <div style={{ color: 'var(--muted)', font: '16px var(--f-mono)' }}>Source {speedState.field} / {directionState.field}</div>
     </div>
   </article>
@@ -102,15 +137,19 @@ function WindDial({ cfg, ctx }: { cfg: TileConfig; ctx: ConsoleContext }) {
 function Nav({ cfg, ctx }: { cfg: TileConfig; ctx: ConsoleContext }) {
   const config = cfg as NavConfig
   useUpdates(ctx, [config.heading, config.cog, config.sog])
-  const heading = number(ctx.store.get(config.heading))
-  const cog = number(ctx.store.get(config.cog))
-  const sog = number(ctx.store.get(config.sog))
+  const headingState = ctx.store.get(config.heading)
+  const cogState = ctx.store.get(config.cog)
+  const sogState = ctx.store.get(config.sog)
+  const heading = number(headingState)
+  const cog = number(cogState)
+  const sog = number(sogState)
   return <article style={panel}>
     <h2 style={{ margin: 0, fontSize: 18 }}>{config.label}</h2>
-    <div style={{ font: '600 48px var(--f-number)' }}>{heading === undefined ? '—' : `${Math.round(heading)}° T`}</div>
+    <div style={{ font: '600 48px var(--f-number)' }}>{heading === undefined ? '—' : `${Math.round(heading)}° T`}
+      <ReadingState state={headingState} /></div>
     <div style={{ display: 'flex', gap: 24, fontSize: 18 }}>
-      <span>Course over ground <strong>{cog === undefined ? '—' : `${Math.round(cog)}° T`}</strong></span>
-      <span>Speed over ground <strong>{sog === undefined ? '—' : sog.toFixed(1)} kn</strong></span>
+      <span>Course over ground <strong>{cog === undefined ? '—' : `${Math.round(cog)}° T`}</strong><ReadingState state={cogState} /></span>
+      <span>Speed over ground <strong>{sog === undefined ? '—' : sog.toFixed(1)} kn</strong><ReadingState state={sogState} /></span>
     </div>
   </article>
 }

@@ -1,5 +1,5 @@
-import { useSyncExternalStore } from 'react'
-import type { ConsoleContext } from '../../contract'
+import { useEffect, useState } from 'react'
+import type { ConsoleContext, FieldState, Page } from '../../contract'
 
 type Result = { label: string; pass: boolean; detail: string }
 
@@ -18,40 +18,58 @@ function State({ pass }: { pass: boolean }) {
 }
 
 function objectValue(value: unknown, key: string): unknown {
-  return value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>)[key] : undefined
+}
+
+function isLive(state: FieldState) {
+  return state.freshness === 'LIVE' && state.quality !== 'FAIL' && state.quality !== 'MISSING' && state.value != null
+}
+
+function loadedPage(page: Page) {
+  // Core's parser includes order (possibly undefined), even for an empty page.
+  // Its failed-file placeholder contains no order, and has the ID as its title.
+  return page.tiles.length > 0 || Object.hasOwn(page, 'order') || page.title !== page.id
 }
 
 function results(ctx: ConsoleContext): Result[] {
   const fields = ctx.store.listFields()
-  const loggerValue = ctx.store.get('status:logger_status').value
-  const loggerCount = loggerValue && typeof loggerValue === 'object'
+  const logger = ctx.store.get('status:logger_status')
+  const loggerValue = logger.value
+  const loggerCount = loggerValue && typeof loggerValue === 'object' && !Array.isArray(loggerValue)
     ? Object.keys(loggerValue).length : 0
-  const cruise = objectValue(ctx.store.get('status:cruise_mode').value, 'active_mode')
-  const newest = fields.reduce<number | undefined>((latest, field) => {
-    const time = ctx.store.get(field).sourceTime
-    return time === undefined ? latest : Math.max(latest ?? time, time)
+  const cruiseState = ctx.store.get('status:cruise_mode')
+  const cruise = objectValue(cruiseState.value, 'active_mode')
+  const hasMode = typeof cruise === 'string' && cruise.trim().length > 0
+  const statusDetail = (state: FieldState) => state.freshness.replace('_', ' ')
+  const newest = fields.reduce<FieldState | undefined>((latest, field) => {
+    const record = ctx.store.get(field)
+    return record.sourceTime !== undefined && (latest?.sourceTime === undefined || record.sourceTime > latest.sourceTime ||
+      (record.sourceTime === latest.sourceTime && isLive(record))) ? record : latest
   }, undefined)
-  const pageCount = ctx.pages.list().length
+  const files = ctx.pages.list().filter((page) => page.source?.startsWith('file:'))
+  const failed = files.filter((page) => !loadedPage(page))
+  const pageCount = files.length - failed.length
+  const pageDetail = pageCount > 0 ? `${pageCount} page${pageCount === 1 ? '' : 's'} loaded` : 'No page files loaded'
   return [
     {
       label: 'Cache connection', pass: ctx.store.connection() === 'connected',
       detail: ctx.store.connection() === 'connected' ? 'Connected' : 'Disconnected',
     },
     { label: 'Cache fields', pass: fields.length > 0, detail: `${fields.length} fields` },
-    { label: 'Logger status', pass: loggerCount > 0, detail: `${loggerCount} loggers` },
+    { label: 'Logger status', pass: isLive(logger) && loggerCount > 0,
+      detail: `${loggerCount} loggers${logger.freshness !== 'LIVE' ? ` · ${statusDetail(logger)}` : ''}` },
     {
-      label: 'Cruise mode', pass: typeof cruise === 'string' && cruise.length > 0,
-      detail: typeof cruise === 'string' && cruise.length > 0 ? cruise : 'No active cruise mode',
+      label: 'Cruise mode', pass: isLive(cruiseState) && hasMode,
+      detail: cruiseState.freshness !== 'LIVE' ? statusDetail(cruiseState) : hasMode ? cruise : 'No active cruise mode',
     },
     {
-      label: 'Newest record', pass: newest !== undefined,
-      detail: newest === undefined
-        ? 'No records received' : `${Math.max(0, Math.floor(ctx.clock.now() - newest))} seconds`,
+      label: 'Newest record', pass: newest !== undefined && isLive(newest),
+      detail: newest?.sourceTime === undefined ? 'No records received'
+        : `${Math.max(0, Math.floor(ctx.clock.now() - newest.sourceTime))} seconds${newest.freshness !== 'LIVE' ? ` · ${statusDetail(newest)}` : ''}`,
     },
     {
-      label: 'Page files', pass: pageCount > 0,
-      detail: pageCount > 0
-        ? `${pageCount} page${pageCount === 1 ? '' : 's'} loaded` : 'No page files loaded',
+      label: 'Page files', pass: pageCount > 0 && failed.length === 0,
+      detail: failed.length ? `${pageDetail} · Failed to load ${failed.map((page) => page.source!.slice(5)).join(', ')}` : pageDetail,
     },
   ]
 }
@@ -65,14 +83,10 @@ function reportText(ctx: ConsoleContext, rows: Result[]): string {
 }
 
 export function SelfTest({ ctx }: { ctx: ConsoleContext }) {
-  useSyncExternalStore(
-    (notify) => {
-      const stopStore = ctx.store.subscribe([], notify)
-      const stopLighting = ctx.lighting.subscribe(notify)
-      return () => { stopStore(); stopLighting() }
-    },
-    () => `${ctx.store.connection()}:${ctx.store.lastMessageAgeS()}:${ctx.lighting.get().mode}`,
-  )
+  const [, redraw] = useState(0)
+  const fields = JSON.stringify([...new Set([...ctx.store.listFields(), 'status:logger_status', 'status:cruise_mode'])])
+  useEffect(() => ctx.store.subscribe(JSON.parse(fields) as string[], () => redraw((value) => value + 1)), [ctx, fields])
+  useEffect(() => ctx.lighting.subscribe(() => redraw((value) => value + 1)), [ctx])
   const rows = results(ctx)
   const report = reportText(ctx, rows)
   const lighting = ctx.lighting.get()

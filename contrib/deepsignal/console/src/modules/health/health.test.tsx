@@ -147,3 +147,18 @@ describe('health logger adapter and route', () => {
     expect(button).toHaveTextContent(malicious)
   })
 })
+
+it.each([
+  ['malformed snapshot', { mwx1: { config: 'mwx', status: 'BROKEN' } }],
+  ['omitted logger', { knud1: { config: 'science', status: 'STARTING' } }],
+])('clears shared OK after a %s and restores it on a valid report', (_case, value) => {
+  const f = fakeContext()
+  const field = 'status:logger_status'
+  const running = { mwx1: { config: 'mwx', status: 'RUNNING' } }
+  f.send({ t: 1, field, value: running })
+  expect(f.health.get('mwx1')?.health).toBe('OK')
+  f.send({ t: 2, field, value })
+  expect(f.health.get('mwx1')?.health).toBe('UNKNOWN')
+  f.send({ t: 3, field, value: running })
+  expect(f.health.get('mwx1')?.health).toBe('OK')
+})

@@ -84,3 +84,19 @@ describe('stale-alerts', () => {
     const rows = screen.getAllByTestId(/^alert-/); expect(rows[0]).toHaveTextContent('Warning ◆'); expect(rows[1]).toHaveTextContent('Caution ▲'); stop()
   })
 })
+
+it('ignores never-observed catalog entries and preserves the outage time of an observed field', () => {
+  const latent: FieldState = { field: 'latent', value: undefined, freshness: 'NO_DATA',
+    health: 'UNKNOWN', quality: 'NOT_EVALUATED' }
+  const failed: FieldState = { ...latent, field: 'failed', health: 'FAILED' }
+  const f = context({ latent, failed, gone: state('gone', 'NO_DATA', 'OK', 400) },
+    { latent: 'quiet', failed: 'other', gone: 'one' })
+  const stop = start(f.ctx)
+  act(() => vi.advanceTimersByTime(1000))
+  const outage = f.alerts().find(({ groupKey }) => groupKey === 'one')
+  expect.soft(f.alerts().map(({ groupKey }) => groupKey)).toEqual(['one'])
+  f.setNow(f.ctx.clock.now() + 60)
+  act(() => vi.advanceTimersByTime(1000))
+  expect(f.alerts()).toEqual([outage])
+  stop()
+})
