@@ -1,0 +1,12 @@
+writers:
+  shore_snapshot:
+    class: ShoreSnapshotWriter
+    module: contrib.deepsignal.shore_snapshot.shore_snapshot_writer
+    kwargs:
+      ship: R/V Example
+      out_dir: /var/lib/openrvdas/shore
+      period_s: 60
+      max_bytes: 4096
+      fields:
+        - {name: air_temp, label: Air temp, units: degC, decimals: 1}
+        - {name: wind_speed, label: Wind speed, units: m/s, decimals: 1}
