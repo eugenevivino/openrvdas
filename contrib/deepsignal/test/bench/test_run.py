@@ -1,11 +1,16 @@
 import json
 import copy
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from datetime import datetime, timezone
+from itertools import permutations
 from pathlib import Path
+from unittest.mock import patch
 
 from logger.utils.das_record import DASRecord
+from contrib.deepsignal.bench import faults
 from contrib.deepsignal.bench.run import main, run, score_flags
 from contrib.deepsignal.bench.stub import StubThresholdDetector
 
@@ -13,6 +18,7 @@ from contrib.deepsignal.bench.stub import StubThresholdDetector
 MODULE = __name__
 SAMPLE_LAYOUTS = ('mwx1/raw', 'data/mwx1/raw')
 ROW_START = datetime(2014, 8, 1, tzinfo=timezone.utc).timestamp()
+SCRATCH = Path('/private/tmp/deepsignal/fault-bench')
 
 
 class TimingDetector:
@@ -85,6 +91,58 @@ class TimestampChangeDetector:
         self.previous = record.timestamp
         record.fields['MwxAirTemp_DG'] = 4 if changed else 1
         return record
+
+
+class NoFlagDetector:
+    def transform(self, record):
+        return record
+
+
+class RepeatVerdictDetector:
+    def __init__(self):
+        self.first = None
+
+    def transform(self, record):
+        if self.first is None:
+            self.first = record
+            self.first.fields['MwxAirTemp_QC'] = 4
+        else:
+            self.first.fields['MwxAirTemp_QC'] = 1
+        return self.first
+
+
+class RebuiltBufferedDetector:
+    def __init__(self):
+        self.pending = None
+
+    def transform(self, record):
+        result = self.pending
+        self.pending = DASRecord(timestamp=record.timestamp, fields={
+            'MwxAirTemp_QC': 4 if record.fields['MwxAirTemp'] > 21 else 1})
+        return result
+
+
+class PermutedVerdictDetector:
+    def __init__(self, order):
+        self.order = iter(order)
+        self.buffer = []
+
+    def transform(self, record):
+        self.buffer.append(record)
+        if len(self.buffer) < 3:
+            return None
+        result = self.buffer[next(self.order)]
+        result.fields['MwxAirTemp_QC'] = 4
+        return result
+
+
+def overlapping_steps(series, *, intervals, seed):
+    injected = series
+    truth = []
+    for start, end in intervals:
+        injected, labels = faults.step(injected, start=start, end=end, bias=5, seed=seed)
+        truth.extend(labels)
+    return injected, truth
 
 
 def plugin(series, *, start, end, seed, offset):
@@ -188,19 +246,22 @@ class ScoringTests(unittest.TestCase):
 
 
 class ReplayTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        SCRATCH.mkdir(parents=True, exist_ok=True)
+
     def fixture(self):
-        tmp = tempfile.TemporaryDirectory()
+        tmp = tempfile.TemporaryDirectory(dir=SCRATCH)
         self.addCleanup(tmp.cleanup)
         return Path(tmp.name)
 
-    def sample(self, root, layout):
+    def sample(self, root, layout, readings=(19, 20, 19)):
         raw = root / layout
         raw.mkdir(parents=True)
         sample = raw / 'NBP1406_mwx1-2014-08-01'
         sample.write_text(
-            '2014-08-01T00:00:00.000000Z MET,12,22,19,64,7,0,0,295,294,1023\n'
-            '2014-08-01T00:00:01.000000Z MET,12,22,20,64,7,0,0,295,294,1023\n'
-            '2014-08-01T00:00:02.000000Z MET,12,22,19,64,7,0,0,295,294,1023\n',
+            ''.join(f'2014-08-01T00:00:{i:02}.000000Z MET,12,22,{v},64,7,0,0,295,294,1023\n'
+                    for i, v in enumerate(readings)),
             encoding='utf-8')
         return sample
 
@@ -365,3 +426,109 @@ class ReplayTests(unittest.TestCase):
               f'{StubThresholdDetector.__module__}:StubThresholdDetector',
               '--sample-root', str(root), '--output-dir', str(output)])
         self.assertTrue((output / 'results.json').is_file())
+
+    def test_empty_flag_suffix(self):
+        root = self.fixture()
+        self.sample(root, SAMPLE_LAYOUTS[0], readings=(4,))
+        scenarios = root / 'scenarios.yaml'
+        scenarios.write_text('step: {field: MwxAirTemp, fault: step, params: {bias: 0}}\n')
+        errors = io.StringIO()
+        with redirect_stderr(errors), self.assertRaises(SystemExit):
+            main(['run', '--scenarios', str(scenarios), '--detector', f'{MODULE}:NoFlagDetector',
+                  '--sample-root', str(root), '--output-dir', str(root), '--flag-suffix', ''])
+        self.assertIn('nonempty', errors.getvalue())
+
+    def test_step_covers_duplicate_rows(self):
+        root = self.fixture()
+        self.duplicate_sample(root)
+        scenario = {'field': 'MwxAirTemp', 'fault': 'step',
+                    'params': {'start': 1, 'end': 1, 'bias': 5}}
+        result = run(scenario, StubThresholdDetector.__module__, 'StubThresholdDetector', {},
+                     sample_root=root)
+        self.assertEqual(result['false_flags'], 0)
+        self.assertEqual([event['latency_seconds'] for event in result['faults']], [0])
+
+    def test_overlapping_faults_match_both_alarms(self):
+        root = self.fixture()
+        self.sample(root, SAMPLE_LAYOUTS[0])
+        for intervals in permutations([(0, 1), (0, 0)]):
+            scenario = {'field': 'MwxAirTemp', 'injector': f'{MODULE}:overlapping_steps',
+                        'params': {'intervals': intervals}}
+            result = run(scenario, StubThresholdDetector.__module__, 'StubThresholdDetector', {},
+                         sample_root=root)
+            self.assertEqual(result['missed'], 0)
+            by_end = {event['end']: event['latency_seconds'] for event in result['faults']}
+            self.assertEqual(by_end, {ROW_START: 0, ROW_START + 1: 1})
+
+    def test_permuted_truth_and_verdicts(self):
+        root = self.fixture()
+        self.sample(root, SAMPLE_LAYOUTS[0], readings=(19,) * 5)
+        for intervals in permutations([(0, 1), (0, 0), (4, 4)]):
+            scenario = {'field': 'MwxAirTemp', 'injector': f'{MODULE}:overlapping_steps',
+                        'params': {'intervals': intervals}}
+            for order in permutations(range(3)):
+                result = run(scenario, MODULE, 'PermutedVerdictDetector', {'order': order},
+                             sample_root=root)
+                detected = sum(event['latency_seconds'] is not None for event in result['faults'])
+                self.assertEqual((result['missed'], detected, result['false_flags']), (1, 2, 1),
+                                 (intervals, order))
+
+    def test_plugin_clock_reset_recovery(self):
+        root = self.fixture()
+        self.sample(root, SAMPLE_LAYOUTS[0])
+        scenario = {'field': 'MwxAirTemp', 'injector': f'{faults.__name__}:clock_reset',
+                    'params': {'start': 1, 'end': 1, 'seconds': 5}}
+        result = run(scenario, MODULE, 'TimestampChangeDetector', {}, flag_suffix='_DG',
+                     sample_root=root)
+        self.assertEqual(result['faults'][0]['latency_seconds'], 0)
+        self.assertEqual(result['false_flags'], 0)
+
+    def test_duplicate_verdict_rejected(self):
+        root = self.fixture()
+        self.sample(root, SAMPLE_LAYOUTS[0])
+        scenario = {'field': 'MwxAirTemp', 'fault': 'step',
+                    'params': {'start': 0, 'end': 0, 'bias': 5}}
+        with self.assertRaisesRegex(ValueError, '(?i)duplicate verdict'):
+            run(scenario, MODULE, 'RepeatVerdictDetector', {}, sample_root=root)
+
+    def test_rebuilt_buffered_verdict(self):
+        root = self.fixture()
+        self.sample(root, SAMPLE_LAYOUTS[0], readings=(19, 24, 19))
+        scenario = {'field': 'MwxAirTemp', 'fault': 'clock_reset',
+                    'params': {'start': 1, 'end': 1, 'seconds': 5}}
+        result = run(scenario, MODULE, 'RebuiltBufferedDetector', {}, sample_root=root)
+        self.assertEqual(result['faults'][0]['latency_seconds'], 0)
+        self.assertEqual(result['missing_flag_samples'], 1)
+        self.assertEqual(result['false_flags'], 0)
+
+    def test_nonfinite_step_bias(self):
+        root = self.fixture()
+        self.sample(root, SAMPLE_LAYOUTS[0])
+        scenario = {'field': 'MwxAirTemp', 'fault': 'step', 'params': {'bias': float('nan')}}
+        with self.assertRaisesRegex(ValueError, 'bias.*finite'):
+            run(scenario, StubThresholdDetector.__module__, 'StubThresholdDetector', {},
+                sample_root=root)
+
+    def test_duplicate_in_inline_merge(self):
+        root = self.fixture()
+        self.sample(root, SAMPLE_LAYOUTS[0])
+        scenarios = root / 'scenarios.yaml'
+        scenarios.write_text('<<: {same: {field: MwxAirTemp, fault: flatline}, '
+                             'same: {field: MwxAirTemp, fault: dropout}}\n')
+        errors = io.StringIO()
+        with redirect_stderr(errors), self.assertRaises(SystemExit):
+            main(['run', '--scenarios', str(scenarios), '--detector', f'{MODULE}:NoFlagDetector',
+                  '--sample-root', str(root), '--output-dir', str(root)])
+        self.assertIn("Duplicate scenario name 'same'", errors.getvalue())
+
+    def test_fixture_ignores_system_tempdir(self):
+        with tempfile.TemporaryDirectory(dir=SCRATCH) as system_temp:
+            with patch.object(tempfile, 'tempdir', system_temp):
+                fixture = self.fixture().resolve()
+                self.assertTrue(fixture.is_relative_to(SCRATCH))
+                self.assertFalse(fixture.is_relative_to(system_temp))
+
+    def test_guide_counts_unchecked_as_missing(self):
+        guide = Path(__file__).resolve().parents[2] / 'docs' / 'fault_bench.md'
+        summary = guide.read_text().split('**Missing flag samples**', 1)[1].split('\n\n', 1)[0]
+        self.assertRegex(summary, r'\b2\b')

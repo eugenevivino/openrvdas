@@ -49,6 +49,33 @@ class FaultTests(unittest.TestCase):
                              [(100, 10), (110, 13), (120, 15), (130, 11), (140, 15)],
                              rising_offset=1, falling_offset=-2)
 
+    def test_lag_after_nan_boundary(self):
+        series = [(0, float('nan')), (1, 20), (2, 19)]
+        output, truth = faults.lag(series, start=1, tau_seconds=1)
+        self.assertTrue(math.isnan(output[0][1]))
+        self.assertEqual(output[1], (1, 20))
+        self.assertAlmostEqual(output[2][1], 19 + 1 / math.e)
+        self.assertEqual(truth, [(1, 2, 'lag')])
+
+    def test_spikes_skip_nan_candidates(self):
+        series = [(0, 19), (1, float('nan'))]
+        output, truth = faults.spikes(series, count=1, size=5, seed=0)
+        self.assertEqual(truth, [(0, 0, 'spikes')])
+        self.assertEqual(output[0], (0, 24))
+        self.assertTrue(math.isnan(output[1][1]))
+
+    def test_hysteresis_resets_direction_at_gap(self):
+        for gap in (None, float('nan')):
+            with self.subTest(gap=gap):
+                series = [(0, 10), (1, 12), (2, gap), (3, 15), (4, 14)]
+                output, _ = faults.hysteresis(series, rising_offset=3, falling_offset=-2)
+                self.assertEqual(output[1], (1, 15))
+                if gap is None:
+                    self.assertIsNone(output[2][1])
+                else:
+                    self.assertTrue(math.isnan(output[2][1]))
+                self.assertEqual(output[3:], [(3, 15), (4, 12)])
+
     def test_clock_jump(self):
         self.check_injection(faults.clock_jump,
                              [(100, 10), (140, 12), (150, 14), (160, 13), (140, 15)],

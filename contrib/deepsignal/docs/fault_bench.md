@@ -26,14 +26,18 @@ constructor arguments in the `--kwargs` JSON object. The transform receives one
 DASRecord at a time with the fields from the source field's mwx1 message and
 returns a DASRecord with a flag such as `MwxAirTemp_QC`. The stub uses sample
 range limits with `{}`. Optional `minimum` and `maximum` kwargs set explicit
-range limits.
+range limits. Buffered verdicts belong to the source record they describe.
+A newly constructed verdict can use the timestamp it received during replay
+when that timestamp identifies one input seen so far. For repeated timestamps,
+copy the source record's metadata to preserve its identity. A second verdict
+for the same source record stops the scenario.
 
 Set `--flag-suffix _DG` or `--flag-suffix _SHIP` to read a different output
 field, and `--threshold` to select its minimum alarm value. Verdict semantics
 are independent of the suffix. The default threshold of 3 counts QARTOD
-suspect (3) and bad (4), while a threshold of 4 counts bad only. Missing (9)
-and an absent verdict are reported as missing verdicts and never count as an
-alarm or detection. Other numeric QARTOD codes are configuration errors.
+suspect (3) and bad (4), while a threshold of 4 counts bad only. Good (1)
+contributes evaluated time. Not checked (2), missing (9), and absent verdicts
+count as missing verdicts. Other numeric QARTOD codes are configuration errors.
 
 ## Scenarios
 
@@ -75,7 +79,9 @@ and executed.
 
 - **Median latency** is the time to the first qualifying flag within each fault,
   summarized over detected faults. **Missed/total** counts intervals without a
-  qualifying flag, with each spike scored as its own interval.
+  qualifying flag, with each spike scored as its own interval. For overlapping
+  faults, the interval ending first gets the earliest available alarm. Each
+  alarm can detect one fault.
 - **False flags/h** counts flagged samples per observed hour outside fault
   intervals, including samples in traps. **False alarms/ship-day** scales that
   rate to 24 hours. Consecutive flagged samples count individually. Point
@@ -83,10 +89,10 @@ and executed.
 - **Trap flags** counts flagged samples in traps. **Trap flags/h** uses time
   within traps as its denominator. Both hourly rates assign elapsed time to
   the preceding source sample. Rates with zero observed time show as `n/a`.
-- **Missing flag samples** counts absent, nonnumeric, and QARTOD 9 verdicts,
-  including when the configured suffix is wrong. Time following a missing
-  verdict is not included in a rate denominator. Unsupported numeric QARTOD
-  codes stop the scenario rather than silently contributing no alarms.
+- **Missing flag samples** counts absent or nonnumeric verdicts, QARTOD 2
+  (not checked), and QARTOD 9 (missing). This includes samples for which the
+  configured suffix has no verdict. Rates exclude the time following these
+  samples. Unsupported numeric QARTOD codes stop the scenario.
 
 The sample spans part of a single cruise and the injected faults are
 idealized. The 24-hour rate is an extrapolation from the replay. These results

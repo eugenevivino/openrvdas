@@ -6,7 +6,9 @@ import importlib
 import json
 import math
 from bisect import bisect_left, bisect_right
+from collections import defaultdict
 from datetime import datetime
+from operator import itemgetter
 from pathlib import Path
 from statistics import median
 
@@ -95,7 +97,10 @@ def score_flags(flags, truth, *, threshold=3, flag_suffix='_QC', truth_samples=N
 
     timestamps = [timestamp for timestamp, _ in flags]
     if any(current < previous for previous, current in zip(timestamps, timestamps[1:])):
-        raise ValueError('Score timestamps must be in source order')
+        if truth_samples is not None or ignored_samples:
+            raise ValueError('Indexed verdicts must be in source order')
+        flags = sorted(flags, key=itemgetter(0))
+        timestamps.sort()
     del flag_suffix  # Verdict semantics do not depend on the field spelling.
     numeric = [_flag_number(flag) for _, flag in flags]
     invalid = sorted({flag for _, flag in flags
@@ -124,8 +129,8 @@ def score_flags(flags, truth, *, threshold=3, flag_suffix='_QC', truth_samples=N
         stop = bisect_right(timestamps, end)
         if first == stop:
             raise ValueError(f'Truth interval {start!r}, {end!r} has no source samples')
-        selected = (list(range(first, stop)) if truth_samples is None else
-                    list(truth_samples[truth_index]))
+        samples = None if truth_samples is None else truth_samples[truth_index]
+        selected = range(first, stop) if samples is None else sorted(samples)
         if not selected:
             raise ValueError(f'Truth interval {start!r}, {end!r} has no injected samples')
         if name == 'trap':
@@ -139,7 +144,10 @@ def score_flags(flags, truth, *, threshold=3, flag_suffix='_QC', truth_samples=N
             events.append(event)
             fault_events.append((event, selected))
 
-    # A verdict is one alarm and can detect at most one truth event.
+    # Each replay event covers a contiguous run of source rows (one row for
+    # a spike). Give the earliest available row to the event that ends first:
+    # a later-ending interval can use a later alarm, but the converse can fail.
+    fault_events.sort(key=lambda item: (item[1][-1], item[1][0], item[0]['name']))
     available_alarms = {i for i, raised in enumerate(flagged) if raised and i not in ignored}
     for event, selected in fault_events:
         detected = next((i for i in selected if i in available_alarms), None)
@@ -230,21 +238,31 @@ def _inject(scenario, series, rows):
         raise ValueError('Injection produced no truth intervals')
     if len(injected) != len(rows) or (linked is not None and len(linked) != len(rows)):
         raise ValueError('Injection must preserve the number and source order of samples')
-    return injected, linked, truth
+    ignored = []
+    if inject in (faults.clock_jump, faults.clock_reset):
+        altered = [i for i, (before, after) in enumerate(zip(series, injected))
+                   if before[0] != after[0]]
+        if altered and altered[-1] + 1 < len(rows):
+            ignored.append(altered[-1] + 1)
+    return injected, linked, truth, ignored
 
 
 def run(scenario, detector_module, detector_class, kwargs, *,
         sample_root=SAMPLE_ROOT, flag_suffix='_QC', threshold=3):
     """Replay one scenario in source order and return scores plus injector truth."""
+    if not isinstance(flag_suffix, str) or not flag_suffix:
+        raise ValueError('flag_suffix must be a nonempty string')
     field = scenario['field']
     rows = _sample_rows(Path(sample_root), field)
     series = [(timestamp, fields[field]) for timestamp, _, fields in rows]
-    injected, linked, truth = _inject(scenario, series, rows)
+    injected, linked, truth, ignored = _inject(scenario, series, rows)
     detector = _resolve(detector_module, detector_class)(**kwargs)
 
     flags = [[source_time, None] for source_time, _, _ in rows]
-    record_sources = {}
+    sources_by_timestamp = defaultdict(list)
+    returned_verdicts = set()
     source_key = '__deepsignal_bench_source_index__'
+    flag_field = field + flag_suffix
     for i, ((source_time, message, fields), (timestamp, value)) in enumerate(zip(rows, injected)):
         record_fields = dict(fields)
         record_fields[field] = value
@@ -253,39 +271,32 @@ def run(scenario, detector_module, detector_class, kwargs, *,
         record = DASRecord(timestamp=timestamp, fields=record_fields, data_id='mwx1',
                            message_type=message)
         record.metadata[source_key] = i
-        record_sources[i] = i
+        sources_by_timestamp[timestamp].append(i)
         if timestamp == 0:
             record.timestamp = timestamp
         result = detector.transform(record)
-        if result is not None:
-            result_index = record_sources.get(getattr(result, 'metadata', {}).get(source_key))
-            if result_index is None:
-                raise ValueError('Detector returned a record that was not supplied by the replay')
-            flags[result_index][1] = result.fields.get(field + flag_suffix)
+        if result is None or flag_field not in result.fields:
+            continue
+        result_index = result.metadata.get(source_key)
+        if result_index is None:
+            candidates = sources_by_timestamp.get(result.timestamp, ())
+            if len(candidates) != 1:
+                raise ValueError(f'Cannot identify a unique source for verdict at '
+                                 f'timestamp {result.timestamp!r}')
+            result_index, = candidates
+        if type(result_index) is not int or not 0 <= result_index <= i:
+            raise ValueError('Detector returned an invalid replay source index')
+        if result_index in returned_verdicts:
+            raise ValueError(f'Duplicate verdict for source record {result_index}')
+        returned_verdicts.add(result_index)
+        flags[result_index][1] = result.fields[flag_field]
 
-    changed = [original != modified for original, modified in zip(series, injected)]
-    truth_samples = []
-    claimed_points = set()
-    for start, end, _ in truth:
-        selected = [index for index, (timestamp, _) in enumerate(series)
-                    if start <= timestamp <= end]
-        if start == end and len(selected) > 1:
-            choices = [index for index in selected
-                       if changed[index] and index not in claimed_points]
-            choices.extend(index for index in selected if index not in claimed_points
-                           and index not in choices)
-            selected = choices[:1]
-            claimed_points.update(selected)
-        truth_samples.append(selected)
-    ignored = []
-    if scenario.get('fault') in ('clock_jump', 'clock_reset'):
-        altered = [index for index, value in enumerate(changed) if value]
-        if altered and altered[-1] + 1 < len(rows):
-            ignored.append(altered[-1] + 1)
+    truth_samples = [[interval.sample_index] if isinstance(interval, faults._SpikeInterval)
+                     else None for interval in truth]
     scores = score_flags([tuple(item) for item in flags], truth, threshold=threshold,
                          flag_suffix=flag_suffix, truth_samples=truth_samples,
                          ignored_samples=ignored)
-    return {'field': field, 'flag_field': field + flag_suffix, 'threshold': threshold,
+    return {'field': field, 'flag_field': flag_field, 'threshold': threshold,
             'truth': truth, **scores}
 
 
@@ -320,21 +331,25 @@ def main(argv=None):
     class UniqueKeyLoader(yaml.SafeLoader):
         """Safe YAML loader that rejects silently overwritten scenario names."""
 
-        def construct_mapping(self, node, deep=False):
+        def __init__(self, stream):
+            super().__init__(stream)
+            self.flattened = set()
+
+        def flatten_mapping(self, node):
+            # PyYAML also calls this recursively for inline merge sources.
+            # Validate each original mapping once, before merges add inherited keys.
+            if node in self.flattened:
+                return
+            self.flattened.add(node)
             explicit = set()
             for key_node, _ in node.value:
                 if key_node.tag == 'tag:yaml.org,2002:merge':
                     continue
-                key = self.construct_object(key_node, deep=deep)
+                key = self.construct_object(key_node)
                 if key in explicit:
                     raise ValueError(f'Duplicate scenario name {key!r}')
                 explicit.add(key)
-            self.flatten_mapping(node)
-            mapping = {}
-            for key_node, value_node in node.value:
-                key = self.construct_object(key_node, deep=deep)
-                mapping[key] = self.construct_object(value_node, deep=deep)
-            return mapping
+            super().flatten_mapping(node)
 
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)

@@ -31,6 +31,10 @@ def _replace(series, window, values, label):
     return output, truth
 
 
+def _missing(value):
+    return value is None or not math.isfinite(value)
+
+
 def drift(series, *, rate_per_hour, start=0, end=None, seed=0):
     """Add a linear bias that starts at zero at the first sample in the window."""
     window = _window(series, start, end)
@@ -42,6 +46,8 @@ def drift(series, *, rate_per_hour, start=0, end=None, seed=0):
 
 def step(series, *, bias, start=0, end=None, seed=0):
     """Add a constant bias within the window."""
+    if not math.isfinite(bias):
+        raise ValueError('step bias must be finite')
     window = _window(series, start, end)
     values = [(t, None if v is None else v + bias) for t, v in series[window]]
     return _replace(series, window, values, 'step')
@@ -55,10 +61,10 @@ def lag(series, *, tau_seconds, start=0, end=None, seed=0):
     previous_time, filtered = series[window.start - 1] if window.start else (0, None)
     values = []
     for timestamp, value in series[window]:
-        if value is None or (isinstance(value, float) and not math.isfinite(value)):
+        if _missing(value):
             values.append((timestamp, value))
             continue
-        if filtered is None:
+        if _missing(filtered):
             filtered = value
         else:
             alpha = -math.expm1(-(timestamp - previous_time) / tau_seconds)
@@ -75,13 +81,17 @@ def hysteresis(series, *, rising_offset, falling_offset, start=0, end=None, seed
     offset = 0
     values = []
     for timestamp, value in series[window]:
-        if value is None or previous is None:
+        if _missing(value):
+            values.append((timestamp, value))
+            previous = None
+            continue
+        if _missing(previous):
             offset = 0
         elif value > previous:
             offset = rising_offset
         elif value < previous:
             offset = falling_offset
-        values.append((timestamp, None if value is None else value + offset))
+        values.append((timestamp, value + offset))
         previous = value
     return _replace(series, window, values, 'hysteresis')
 
@@ -111,19 +121,27 @@ def _shift(series, window, seconds, label):
     return _replace(series, window, values, label)
 
 
+class _SpikeInterval(tuple):
+    """A truth triple carrying the source row of one possibly coincident spike."""
+
+    sample_index: int
+
+
 def spikes(series, *, count, size, start=0, end=None, seed=0):
     """Add signed spikes to distinct nonmissing samples chosen with a local RNG."""
     if seed is None:
         raise ValueError('spikes requires a deterministic seed')
     window = _window(series, start, end)
-    candidates = [i for i in range(window.start, window.stop) if series[i][1] is not None]
+    candidates = [i for i in range(window.start, window.stop) if not _missing(series[i][1])]
     indices = sorted(random.Random(seed).sample(candidates, count))
     output = series.copy()
     truth = []
     for index in indices:
         timestamp, value = series[index]
         output[index] = timestamp, value + size
-        truth.append((timestamp, timestamp, 'spikes'))
+        interval = _SpikeInterval((timestamp, timestamp, 'spikes'))
+        interval.sample_index = index
+        truth.append(interval)
     return output, truth
 
 
@@ -133,8 +151,7 @@ def flatline(series, *, start=0, end=None, seed=0):
     held = None
     values = []
     for timestamp, value in series[window]:
-        missing = value is None or (isinstance(value, float) and not math.isfinite(value))
-        if missing:
+        if _missing(value):
             values.append((timestamp, value))
         else:
             if held is None:

@@ -1,0 +1,351 @@
+{
+  "air_temperature_drift": {
+    "field": "MwxAirTemp",
+    "flag_field": "MwxAirTemp_QC",
+    "threshold": 3,
+    "truth": [
+      [
+        1406851500.274,
+        1406851859.273,
+        "drift"
+      ]
+    ],
+    "faults": [
+      {
+        "name": "drift",
+        "start": 1406851500.274,
+        "end": 1406851859.273,
+        "latency_seconds": 222.99399995803833
+      }
+    ],
+    "missed": 0,
+    "samples": 1667,
+    "missing_flag_samples": 0,
+    "outside_fault_seconds": 1307.0039999485016,
+    "false_flags": 0,
+    "false_flags_per_hour": 0.0,
+    "false_alarms_per_ship_day": 0.0,
+    "trap_seconds": 0,
+    "trap_flags": 0,
+    "trap_flags_per_hour": null
+  },
+  "air_temperature_step": {
+    "field": "MwxAirTemp",
+    "flag_field": "MwxAirTemp_QC",
+    "threshold": 3,
+    "truth": [
+      [
+        1406851500.274,
+        1406851859.273,
+        "step"
+      ]
+    ],
+    "faults": [
+      {
+        "name": "step",
+        "start": 1406851500.274,
+        "end": 1406851859.273,
+        "latency_seconds": 0.0
+      }
+    ],
+    "missed": 0,
+    "samples": 1667,
+    "missing_flag_samples": 0,
+    "outside_fault_seconds": 1307.0039999485016,
+    "false_flags": 0,
+    "false_flags_per_hour": 0.0,
+    "false_alarms_per_ship_day": 0.0,
+    "trap_seconds": 0,
+    "trap_flags": 0,
+    "trap_flags_per_hour": null
+  },
+  "air_temperature_lag": {
+    "field": "MwxAirTemp",
+    "flag_field": "MwxAirTemp_QC",
+    "threshold": 3,
+    "truth": [
+      [
+        1406851500.274,
+        1406851859.273,
+        "lag"
+      ]
+    ],
+    "faults": [
+      {
+        "name": "lag",
+        "start": 1406851500.274,
+        "end": 1406851859.273,
+        "latency_seconds": null
+      }
+    ],
+    "missed": 1,
+    "samples": 1667,
+    "missing_flag_samples": 0,
+    "outside_fault_seconds": 1307.0039999485016,
+    "false_flags": 0,
+    "false_flags_per_hour": 0.0,
+    "false_alarms_per_ship_day": 0.0,
+    "trap_seconds": 0,
+    "trap_flags": 0,
+    "trap_flags_per_hour": null
+  },
+  "air_temperature_hysteresis": {
+    "field": "MwxAirTemp",
+    "flag_field": "MwxAirTemp_QC",
+    "threshold": 3,
+    "truth": [
+      [
+        1406851500.274,
+        1406851859.273,
+        "hysteresis"
+      ]
+    ],
+    "faults": [
+      {
+        "name": "hysteresis",
+        "start": 1406851500.274,
+        "end": 1406851859.273,
+        "latency_seconds": 0.0
+      }
+    ],
+    "missed": 0,
+    "samples": 1667,
+    "missing_flag_samples": 0,
+    "outside_fault_seconds": 1307.0039999485016,
+    "false_flags": 0,
+    "false_flags_per_hour": 0.0,
+    "false_alarms_per_ship_day": 0.0,
+    "trap_seconds": 0,
+    "trap_flags": 0,
+    "trap_flags_per_hour": null
+  },
+  "mwx_clock_jump": {
+    "field": "MwxAirTemp",
+    "flag_field": "MwxAirTemp_QC",
+    "threshold": 3,
+    "truth": [
+      [
+        1406851500.274,
+        1406851859.273,
+        "clock_jump"
+      ]
+    ],
+    "faults": [
+      {
+        "name": "clock_jump",
+        "start": 1406851500.274,
+        "end": 1406851859.273,
+        "latency_seconds": null
+      }
+    ],
+    "missed": 1,
+    "samples": 1667,
+    "missing_flag_samples": 0,
+    "outside_fault_seconds": 1307.0039999485016,
+    "false_flags": 0,
+    "false_flags_per_hour": 0.0,
+    "false_alarms_per_ship_day": 0.0,
+    "trap_seconds": 0,
+    "trap_flags": 0,
+    "trap_flags_per_hour": null
+  },
+  "mwx_clock_reset": {
+    "field": "MwxAirTemp",
+    "flag_field": "MwxAirTemp_QC",
+    "threshold": 3,
+    "truth": [
+      [
+        1406851500.274,
+        1406851859.273,
+        "clock_reset"
+      ]
+    ],
+    "faults": [
+      {
+        "name": "clock_reset",
+        "start": 1406851500.274,
+        "end": 1406851859.273,
+        "latency_seconds": null
+      }
+    ],
+    "missed": 1,
+    "samples": 1667,
+    "missing_flag_samples": 0,
+    "outside_fault_seconds": 1307.0039999485016,
+    "false_flags": 0,
+    "false_flags_per_hour": 0.0,
+    "false_alarms_per_ship_day": 0.0,
+    "trap_seconds": 0,
+    "trap_flags": 0,
+    "trap_flags_per_hour": null
+  },
+  "air_temperature_spikes": {
+    "field": "MwxAirTemp",
+    "flag_field": "MwxAirTemp_QC",
+    "threshold": 3,
+    "truth": [
+      [
+        1406851577.273,
+        1406851577.273,
+        "spikes"
+      ],
+      [
+        1406851665.272,
+        1406851665.272,
+        "spikes"
+      ],
+      [
+        1406851702.274,
+        1406851702.274,
+        "spikes"
+      ],
+      [
+        1406851833.272,
+        1406851833.272,
+        "spikes"
+      ]
+    ],
+    "faults": [
+      {
+        "name": "spikes",
+        "start": 1406851577.273,
+        "end": 1406851577.273,
+        "latency_seconds": 0.0
+      },
+      {
+        "name": "spikes",
+        "start": 1406851665.272,
+        "end": 1406851665.272,
+        "latency_seconds": 0.0
+      },
+      {
+        "name": "spikes",
+        "start": 1406851702.274,
+        "end": 1406851702.274,
+        "latency_seconds": 0.0
+      },
+      {
+        "name": "spikes",
+        "start": 1406851833.272,
+        "end": 1406851833.272,
+        "latency_seconds": 0.0
+      }
+    ],
+    "missed": 0,
+    "samples": 1667,
+    "missing_flag_samples": 0,
+    "outside_fault_seconds": 1666.0030000209808,
+    "false_flags": 0,
+    "false_flags_per_hour": 0.0,
+    "false_alarms_per_ship_day": 0.0,
+    "trap_seconds": 0,
+    "trap_flags": 0,
+    "trap_flags_per_hour": null
+  },
+  "air_temperature_flatline": {
+    "field": "MwxAirTemp",
+    "flag_field": "MwxAirTemp_QC",
+    "threshold": 3,
+    "truth": [
+      [
+        1406851500.274,
+        1406851859.273,
+        "flatline"
+      ]
+    ],
+    "faults": [
+      {
+        "name": "flatline",
+        "start": 1406851500.274,
+        "end": 1406851859.273,
+        "latency_seconds": null
+      }
+    ],
+    "missed": 1,
+    "samples": 1667,
+    "missing_flag_samples": 0,
+    "outside_fault_seconds": 1307.0039999485016,
+    "false_flags": 0,
+    "false_flags_per_hour": 0.0,
+    "false_alarms_per_ship_day": 0.0,
+    "trap_seconds": 0,
+    "trap_flags": 0,
+    "trap_flags_per_hour": null
+  },
+  "air_temperature_dropout": {
+    "field": "MwxAirTemp",
+    "flag_field": "MwxAirTemp_QC",
+    "threshold": 3,
+    "truth": [
+      [
+        1406851500.274,
+        1406851859.273,
+        "dropout"
+      ]
+    ],
+    "faults": [
+      {
+        "name": "dropout",
+        "start": 1406851500.274,
+        "end": 1406851859.273,
+        "latency_seconds": null
+      }
+    ],
+    "missed": 1,
+    "samples": 1667,
+    "missing_flag_samples": 360,
+    "outside_fault_seconds": 1306.0019998550415,
+    "false_flags": 0,
+    "false_flags_per_hour": 0.0,
+    "false_alarms_per_ship_day": 0.0,
+    "trap_seconds": 0,
+    "trap_flags": 0,
+    "trap_flags_per_hour": null
+  },
+  "pir_temperature_front": {
+    "field": "MwxPIRCaseTemp",
+    "flag_field": "MwxPIRCaseTemp_QC",
+    "threshold": 3,
+    "truth": [
+      [
+        1406851500.274,
+        1406851859.273,
+        "trap"
+      ]
+    ],
+    "faults": [],
+    "missed": 0,
+    "samples": 1667,
+    "missing_flag_samples": 0,
+    "outside_fault_seconds": 1666.0030000209808,
+    "false_flags": 0,
+    "false_flags_per_hour": 0.0,
+    "false_alarms_per_ship_day": 0.0,
+    "trap_seconds": 358.99900007247925,
+    "trap_flags": 0,
+    "trap_flags_per_hour": 0.0
+  },
+  "port_wind_direction_turn": {
+    "field": "MwxPortRelWindDir",
+    "flag_field": "MwxPortRelWindDir_QC",
+    "threshold": 3,
+    "truth": [
+      [
+        1406851500.839,
+        1406851859.868,
+        "trap"
+      ]
+    ],
+    "faults": [],
+    "missed": 0,
+    "samples": 1666,
+    "missing_flag_samples": 0,
+    "outside_fault_seconds": 1665.1189999580383,
+    "false_flags": 0,
+    "false_flags_per_hour": 0.0,
+    "false_alarms_per_ship_day": 0.0,
+    "trap_seconds": 359.029000043869,
+    "trap_flags": 0,
+    "trap_flags_per_hour": 0.0
+  }
+}
