@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
+from unittest import mock
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 
@@ -197,6 +198,29 @@ class LedgerTest(LedgerTestCase):
             self.add_proposal(fit_refs=['shared1', 'shared2'],
                               validation_refs=['shared2', 'shared1'])
 
+    def test_reference_comparison_ignores_surrounding_space_and_case(self):
+        with self.assertRaisesRegex(ValueError, 'cast-7'):
+            self.add_proposal(fit_refs=['cast-7'], validation_refs=[' CAST-7 '])
+
+    def test_append_fails_if_locked_inode_is_replaced(self):
+        entry = self.add_proposal()
+        replacement = self.path.with_suffix('.replacement')
+        replacement.write_bytes(self.path.read_bytes())
+        original_check = Ledger._require_live_file
+        checks = 0
+
+        def replace_before_final_check(path, file):
+            nonlocal checks
+            checks += 1
+            if checks == 2:
+                replacement.replace(path)
+            return original_check(path, file)
+
+        with mock.patch.object(Ledger, '_require_live_file', replace_before_final_check):
+            with self.assertRaisesRegex(ValueError, 'replaced'):
+                self.add_transition('approve', entry)
+        self.assertEqual(Ledger.load(self.path).entries[entry['id']]['status'], 'proposed')
+
     def test_noncorrectable_state_rejected(self):
         with self.assertRaisesRegex(ValueError, 'must be CORRECTABLE'):
             self.add_proposal(correction_state='SUSPECT')
@@ -257,3 +281,12 @@ class LedgerTest(LedgerTestCase):
         self.assertIn('verified', cli('verify').stdout.lower())
         self.assertEqual(Ledger.load(self.path).active('temperature', WHEN), [])
         self.assertNotEqual(cli('reject', *review, check=False).returncode, 0)
+
+    def test_cli_rejects_numeric_underflow(self):
+        result = subprocess.run(
+            [sys.executable, '-m', 'contrib.deepsignal.corrections', 'propose',
+             '--ledger', str(self.path), '--standard-uncertainty', '1e-400'],
+            text=True, capture_output=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('too small', result.stderr)

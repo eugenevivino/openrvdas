@@ -72,7 +72,9 @@ class CorrectionApplyTransform(Transform):
             entries = ledger._active_at(field, seconds)
             if len(entries) == 1:
                 outputs = _corrected_fields(field, fields[field], seconds, entries[0])
-                if outputs.keys().isdisjoint(fields) and outputs.keys().isdisjoint(additions):
+                prefix = f'{field}_corr'
+                reserved = {prefix, f'{prefix}_id', f'{prefix}_u', f'{prefix}_time'}
+                if reserved.isdisjoint(fields) and reserved.isdisjoint(additions):
                     additions.update(outputs)
                 else:
                     _LOG.warning('Skipping correction %s for %s: output fields already exist',
@@ -106,11 +108,12 @@ def _corrected_fields(field, raw, seconds, entry):
     outputs = {prefix: raw, f'{prefix}_id': entry['id'],
                f'{prefix}_u': entry['standard_uncertainty']}
     try:
+        if not _is_number(raw):
+            raise ValueError('raw value is not a finite number')
         if method == 'time_shift':
-            outputs[f'{prefix}_time'] = float(seconds + Fraction(str(entry['seconds'])))
+            outputs[f'{prefix}_time'] = _exact_number(
+                seconds + Fraction(str(entry['seconds'])))
         else:
-            if not _is_number(raw):
-                raise ValueError('raw value is not a finite number')
             corrected = _correct_value(raw, seconds, entry)
             if not _is_number(corrected):
                 raise ValueError('corrected value is non-finite')
@@ -129,7 +132,9 @@ def _correct_value(raw, seconds, entry):
         days = float((seconds - _utc_seconds(entry['t0'], 't0')) / 86400)
         return raw + entry['rate_per_day'] * days
     if method == 'gain_offset':
-        return (raw - entry['offset']) / entry['gain']
+        value = ((Fraction(raw) if isinstance(raw, int) else Fraction(str(raw)))
+                 - Fraction(str(entry['offset']))) / Fraction(str(entry['gain']))
+        return _exact_number(value)
 
     # Polynomial evaluated by Horner's method, from highest to lowest order.
     coefficients = entry['coefficients']
@@ -137,3 +142,31 @@ def _correct_value(raw, seconds, entry):
     for coefficient in reversed(coefficients[:-1]):
         result = result * raw + coefficient
     return result
+
+
+def _exact_number(value):
+    """Use a conventional number only when it represents the fraction exactly."""
+    if value.denominator == 1:
+        return value.numerator
+    approximate = float(value)
+    if Fraction.from_float(approximate) == value:
+        return approximate
+    numerator, denominator = value.numerator, value.denominator
+    places = 0
+    while denominator > 1:
+        if denominator % 10 == 0:
+            denominator //= 10
+            places += 1
+        elif denominator % 5 == 0:
+            numerator *= 2
+            denominator //= 5
+            places += 1
+        elif denominator % 2 == 0:
+            numerator *= 5
+            denominator //= 2
+            places += 1
+        else:
+            return f'{value.numerator}/{value.denominator}'
+    digits = str(abs(numerator)).zfill(places + 1)
+    sign = '-' if numerator < 0 else ''
+    return f'{sign}{digits[:-places]}.{digits[-places:]}'

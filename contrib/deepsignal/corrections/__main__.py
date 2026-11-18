@@ -2,6 +2,7 @@
 
 import argparse
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
 from .ledger import Ledger, _METHOD_FIELDS
@@ -11,7 +12,14 @@ def _cli_number(value):
     try:
         return int(value, 10)
     except ValueError:
-        return float(value)
+        try:
+            decimal = Decimal(value)
+            converted = float(decimal)
+        except (InvalidOperation, OverflowError, ValueError):
+            raise argparse.ArgumentTypeError('must be a finite number') from None
+        if decimal.is_finite() and decimal != 0 and converted == 0:
+            raise argparse.ArgumentTypeError('number is too small to represent')
+        return converted
 
 
 def _display(text):

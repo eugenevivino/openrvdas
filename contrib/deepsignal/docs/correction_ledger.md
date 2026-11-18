@@ -93,7 +93,7 @@ All method parameters that represent numbers must be finite.
 | `offset` | `value` | `raw + value` |
 | `linear_drift` | `rate_per_day`, UTC ISO timestamp `t0` | `raw + rate_per_day * (timestamp - t0) / 86400`, using elapsed seconds |
 | `polynomial` | Nonempty `coefficients` array, lowest order first | `coefficients[0] + coefficients[1] * raw + coefficients[2] * raw**2 + ...` |
-| `time_shift` | `seconds` | Copies the raw value into `<field>_corr` and puts the shifted Unix timestamp in `<field>_corr_time` |
+| `time_shift` | `seconds` | Copies the raw value into `<field>_corr` and puts the shifted Unix timestamp in `<field>_corr_time`. A shift too precise for a lossless JSON float is emitted as an exact decimal string. |
 | `gain_offset` | `offset`, nonzero `gain` | `(raw - offset) / gain` |
 
 ### Review events and approval rule
@@ -122,7 +122,8 @@ Reload verifies the chain and requires the previously verified history to be
 present. An invalid ledger raises an error. Multiple active entries for a field
 suppress the correction and log a warning once per overlapping pair. A human
 resolves overlaps through review events. Existing output names are preserved
-and cause that correction to be skipped.
+and cause that correction to be skipped. This includes a pre-existing
+`<field>_corr_time`, even when the active method does not produce one.
 
 ## What it does not do
 

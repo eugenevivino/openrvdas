@@ -144,6 +144,43 @@ class ApplyTest(LedgerTestCase):
         with self.assertLogs(level=logging.WARNING):
             self.assertEqual(transform.transform(record), record)
 
+    def test_gain_offset_preserves_integer_precision(self):
+        entry = proposal(method='gain_offset', offset=9007199254740992.0, gain=1)
+        del entry['value']
+        Ledger.append(self.path, entry)
+        self.add_transition('approve', entry)
+        fields = CorrectionApplyTransform(self.path, ['temperature']).transform(
+            self.record(raw=9007199254740993))['fields']
+        self.assertEqual(fields['temperature_corr'], 1)
+
+    def test_time_shift_rejects_missing_and_nonfinite_readings(self):
+        entry = proposal(method='time_shift', seconds=1)
+        del entry['value']
+        Ledger.append(self.path, entry)
+        self.add_transition('approve', entry)
+        transform = CorrectionApplyTransform(self.path, ['temperature'])
+        for raw in (None, float('nan')):
+            with self.subTest(raw=raw), self.assertLogs(level=logging.WARNING):
+                self.assertEqual(transform.transform(self.record(raw=raw)), self.record(raw=raw))
+
+    def test_time_shift_does_not_discard_sub_float_increment(self):
+        entry = proposal(method='time_shift', seconds=0.00000001)
+        del entry['value']
+        Ledger.append(self.path, entry)
+        self.add_transition('approve', entry)
+        shifted = CorrectionApplyTransform(self.path, ['temperature']).transform(
+            self.record())['fields']['temperature_corr_time']
+        self.assertEqual(shifted, '1406937600.00000001')
+        self.assertNotEqual(shifted, TIMESTAMP)
+
+    def test_stale_time_output_suppresses_non_time_correction(self):
+        self.approve_entry()
+        transform = CorrectionApplyTransform(self.path, ['temperature'])
+        record = self.record()
+        record['fields']['temperature_corr_time'] = 0
+        with self.assertLogs(level=logging.WARNING):
+            self.assertEqual(transform.transform(record), record)
+
     def test_reload_replacement_with_same_mtime_and_size(self):
         entry = self.approve_entry()
         transform = CorrectionApplyTransform(self.path, ['temperature'])

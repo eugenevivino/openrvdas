@@ -111,7 +111,7 @@ def _refs(event, name):
     refs = event[name]
     if not isinstance(refs, list):
         raise ValueError(f'{name} must be a list of non-empty strings')
-    return {_text(ref, name) for ref in refs}
+    return {_text(ref, name).strip().casefold() for ref in refs}
 
 
 def _validate_proposal(event):
@@ -216,6 +216,7 @@ class Ledger:
         _validate_event(event)
         with open(path, 'a+b') as file:
             fcntl.flock(file, fcntl.LOCK_EX)
+            cls._require_live_file(path, file)
             file.seek(0)
             ledger = cls._read(file)
             ledger._apply_event(event)
@@ -224,6 +225,15 @@ class Ledger:
             file.write(_canonical(payload) + b'\n')
             file.flush()
             os.fsync(file.fileno())
+            cls._require_live_file(path, file)
+
+    @staticmethod
+    def _require_live_file(path, file):
+        """Require the locked descriptor to still be the path's live inode."""
+        descriptor = os.fstat(file.fileno())
+        live = os.stat(path)
+        if (descriptor.st_dev, descriptor.st_ino) != (live.st_dev, live.st_ino):
+            raise ValueError(f'{path}: ledger path was replaced during append')
 
     @classmethod
     def _read(cls, file, previous=None):
