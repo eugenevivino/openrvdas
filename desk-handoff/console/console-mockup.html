@@ -1,0 +1,484 @@
+<title>DeepSignal Console</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@400;500;600;700&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: sticky instrument bar on top, one page of tiles below; three lighting modes (Day, Dusk, Night red) remap every token. */
+:root{
+  --bg:#e9eef0; --panel:#ffffff; --panel2:#f3f6f7; --line:#c9d3d7;
+  --fg:#0a151a; --muted:#4c5f68; --accent:#006a7c; --accent-fg:#ffffff;
+  --ok:#1d7f50; --check:#a86a00; --stale:#6b5bb5; --down:#b3261e;
+  --chart:#006a7c; --chart2:#b35a00; --grid:#d8e0e3;
+  --f-num:"Barlow Semi Condensed","Arial Narrow",system-ui,sans-serif;
+  --f-body:"Barlow",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+  color-scheme:light;
+}
+:root[data-mode="dusk"]{
+  --bg:#081014; --panel:#0e191f; --panel2:#132229; --line:#1f323b;
+  --fg:#dde8ec; --muted:#8aa2ad; --accent:#56c3d3; --accent-fg:#04161b;
+  --ok:#4cc38a; --check:#e5b440; --stale:#a99cf0; --down:#ff6b5e;
+  --chart:#56c3d3; --chart2:#f0a35c; --grid:#18282f;
+  color-scheme:dark;
+}
+/* Night red tokens are written by script from the dimmer value; these are the 60% defaults. */
+:root[data-mode="night"]{
+  --bg:#000000; --panel:#070000; --panel2:#0b0000; --line:#2a0503;
+  --fg:#d0200e; --muted:#7a1408; --accent:#d0200e; --accent-fg:#000000;
+  --ok:#d0200e; --check:#d0200e; --stale:#7a1408; --down:#ff3a1e;
+  --chart:#d0200e; --chart2:#8a1a0a; --grid:#1a0302;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{background:var(--bg)}
+body{color:var(--fg);font-family:var(--f-body);font-size:15px;line-height:1.4;min-height:100%;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:0 32px}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--bg)}
+button,input,select{font:inherit;color:inherit}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+
+/* Top bar */
+.bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--bg);
+  display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;padding-block:12px;border-bottom:1px solid var(--line);margin-bottom:16px}
+.brand{font-family:var(--f-num);font-weight:700;font-size:20px;letter-spacing:.02em;display:flex;align-items:center;gap:8px}
+.brand svg{width:22px;height:22px}
+.ship{font-size:13px;color:var(--muted);font-weight:500}
+.tabs{display:flex;gap:4px;overflow-x:auto;min-width:0;flex:1 1 auto;scrollbar-width:none}
+.tab{border:1px solid transparent;background:none;padding:8px 14px;border-radius:8px;cursor:pointer;
+  font-family:var(--f-num);font-weight:600;font-size:17px;letter-spacing:.03em;color:var(--muted);white-space:nowrap;min-height:44px}
+.tab:hover{color:var(--fg);border-color:var(--line)}
+.tab[aria-current="page"]{background:var(--panel);color:var(--fg);border-color:var(--line);box-shadow:inset 0 -3px 0 var(--accent)}
+.right{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.clock{font-family:var(--f-mono);font-size:13px;color:var(--muted);text-align:right;line-height:1.25}
+.clock b{color:var(--fg);font-weight:500;font-size:15px}
+.live{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);font-family:var(--f-mono)}
+.live i{width:9px;height:9px;border-radius:50%;background:var(--ok)}
+.modes{display:flex;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.modes button{background:var(--panel);border:0;padding:8px 12px;cursor:pointer;font-family:var(--f-num);font-weight:600;font-size:15px;min-height:44px;color:var(--muted)}
+.modes button[aria-pressed="true"]{background:var(--accent);color:var(--accent-fg)}
+.nightbtn{display:flex;align-items:center;gap:8px;background:#000;color:#d0200e;border:2px solid #5a0e05;border-radius:10px;
+  padding:8px 14px;font-family:var(--f-num);font-weight:700;font-size:16px;cursor:pointer;min-height:44px}
+.nightbtn svg{width:18px;height:18px}
+:root[data-mode="night"] .nightbtn{border-color:var(--fg)}
+.dim{display:none;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+:root[data-mode="night"] .dim{display:flex}
+.dim input{accent-color:var(--fg);width:110px}
+
+/* Page */
+.pagehead{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:8px 16px;margin-bottom:14px}
+h1{font-family:var(--f-num);font-weight:600;font-size:26px;margin:0;letter-spacing:.01em;text-wrap:balance}
+.sub{color:var(--muted);font-size:14px}
+.tools{display:flex;gap:8px}
+.ghost{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 12px;cursor:pointer;font-size:14px;min-height:40px}
+.ghost:hover{border-color:var(--accent)}
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(220px,1fr))}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:6px;min-width:0;position:relative}
+.tile.wide{grid-column:span 2}
+.tile.tall{grid-row:span 2}
+@media (max-width:520px){.tile.wide{grid-column:auto}.tile.tall{grid-row:auto}}
+.lbl{font-family:var(--f-num);font-weight:600;text-transform:uppercase;letter-spacing:.08em;font-size:13px;color:var(--muted);display:flex;justify-content:space-between;gap:8px}
+.val{font-family:var(--f-num);font-weight:600;font-size:56px;line-height:1;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.val small{font-size:20px;font-weight:500;color:var(--muted);margin-left:4px;letter-spacing:0}
+.val.md{font-size:40px}
+.meta{display:flex;justify-content:space-between;gap:8px;font-size:13px;color:var(--muted);font-family:var(--f-mono);flex-wrap:wrap}
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.stale .val{opacity:.45;text-decoration:line-through;text-decoration-thickness:2px}
+.chip{display:inline-flex;align-items:center;gap:5px;font-family:var(--f-num);font-weight:700;font-size:13px;letter-spacing:.06em;text-transform:uppercase;
+  padding:2px 8px;border-radius:6px;border:1.5px solid currentColor;line-height:1.3}
+.chip svg{width:11px;height:11px}
+.s-ok{color:var(--ok)} .s-check{color:var(--check)} .s-stale{color:var(--stale)} .s-down{color:var(--down)}
+canvas{width:100%;display:block}
+.spark{height:46px}
+.chart{height:150px}
+
+/* Wind dial */
+.dialwrap{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:12px;align-items:center}
+@media (max-width:620px){.dialwrap{grid-template-columns:1fr}}
+.dial{width:100%;max-width:300px;aspect-ratio:1;justify-self:center}
+.dial text{fill:var(--muted);font-family:var(--f-num);font-size:12px;font-weight:600}
+.windnums{display:flex;flex-direction:column;gap:12px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;align-self:flex-start}
+.seg button{background:none;border:0;padding:5px 10px;font-size:13px;cursor:pointer;color:var(--muted);min-height:32px}
+.seg button[aria-pressed="true"]{background:var(--panel2);color:var(--fg);font-weight:600}
+
+/* Health */
+.summary{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px}
+.summary .tile{flex:1 1 140px;flex-direction:row;align-items:center;gap:12px}
+.summary .n{font-family:var(--f-num);font-size:40px;font-weight:700;line-height:1}
+table{width:100%;border-collapse:collapse;font-size:14px}
+.tablewrap{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px}
+th{text-align:left;font-family:var(--f-num);font-weight:600;text-transform:uppercase;letter-spacing:.07em;font-size:12px;color:var(--muted);padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:0}
+td.num{font-family:var(--f-mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.fix{color:var(--muted);font-size:13px;margin-top:2px}
+
+/* Events */
+.evbtns{display:flex;flex-wrap:wrap;gap:8px}
+.evbtns button{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;cursor:pointer;min-height:44px;font-weight:500}
+.evbtns button:hover{border-color:var(--accent)}
+.evlist{list-style:none;margin:0;padding:0;font-size:14px;display:flex;flex-direction:column;gap:6px;max-height:170px;overflow:auto}
+.evlist li{display:flex;gap:10px}
+.evlist time{font-family:var(--f-mono);color:var(--muted);flex:none}
+
+/* Map */
+.map{width:100%;height:220px;display:block}
+.map .coast{fill:var(--panel2);stroke:var(--line)}
+.map .track{fill:none;stroke:var(--chart);stroke-width:2.5}
+.map text{fill:var(--muted);font-family:var(--f-mono);font-size:11px}
+
+/* Drawer */
+.drawer{position:fixed;right:0;top:0;bottom:0;width:min(440px,100%);background:var(--panel);border-left:1px solid var(--line);z-index:20;
+  padding:calc(20px + env(safe-area-inset-top,0px)) calc(20px + env(safe-area-inset-right,0px)) 20px 20px;overflow:auto;display:flex;flex-direction:column;gap:12px}
+.drawer h2{font-family:var(--f-num);margin:0;font-size:22px}
+pre{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px;font-family:var(--f-mono);font-size:12.5px;overflow:auto;margin:0;line-height:1.5}
+.note{font-size:14px;color:var(--muted)}
+.field{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;min-height:44px}
+.h3{font-family:var(--f-num);font-size:17px;margin:8px 0 0}
+.ainote{border:1px dashed var(--accent);border-radius:8px;padding:8px 10px;font-size:13.5px}
+.ainote b{font-family:var(--f-num);text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin-right:4px}
+.demo{font-size:12px;color:var(--muted);text-align:center;margin-top:24px;font-family:var(--f-mono)}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<header class="bar">
+  <div class="brand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 14c3-4 5-4 8 0s5 4 8 0 3-3 4-2"/><path d="M2 19c3-3 5-3 8 0s5 3 8 0"/><circle cx="12" cy="6" r="2.5" fill="currentColor"/></svg>DeepSignal <span class="ship">R/V Example</span></div>
+  <nav class="tabs" aria-label="Pages">
+    <button class="tab" data-page="bridge">Bridge</button>
+    <button class="tab" data-page="science">Science</button>
+    <button class="tab" data-page="health">Health</button>
+    <button class="tab" data-page="shore">Shore</button>
+  </nav>
+  <div class="right">
+    <div class="live" title="Connected to the ship's data cache"><i></i><span id="lat">Live 0.4 s</span></div>
+    <div class="clock"><b id="utc">--:--:--</b> UTC<br><span id="loc">--:--</span> ship</div>
+    <div class="modes" role="group" aria-label="Lighting">
+      <button data-mode="day">Day</button><button data-mode="dusk">Dusk</button>
+    </div>
+    <button class="nightbtn" id="night" aria-pressed="false" title="Night red mode (key N)"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 15.5A8.5 8.5 0 0 1 8.5 4a8.5 8.5 0 1 0 11.5 11.5z"/></svg>Night</button>
+    <label class="dim">Dim <input type="range" id="dim" min="15" max="100" value="60" aria-label="Night brightness"></label>
+  </div>
+</header>
+
+<main id="app"></main>
+<div class="drawer" id="drawer" hidden></div>
+<p class="demo">Mockup with simulated data. Values move once a second the way they would from the ship's data cache.</p>
+
+<script>
+(function(){
+const $=s=>document.querySelector(s);
+const root=document.documentElement;
+const store={get(k){try{return localStorage.getItem(k)}catch(e){return null}},set(k,v){try{localStorage.setItem(k,v)}catch(e){}}};
+
+/* ---------- simulated feed (stands in for CachedDataServer subscribe) ---------- */
+const N=1800; // 30 min at 1 Hz
+function walk(start,step,lo,hi){const a=[];let v=start;for(let i=0;i<N;i++){v+= (Math.random()-.5)*step; v=Math.max(lo,Math.min(hi,v)); a.push(v)}return a}
+const S={
+  hdg:{v:247.3}, cog:{v:249.1}, sog:{v:10.4},
+  tws:{v:18.6,h:walk(17,0.6,10,26)}, twd:{v:312},
+  depth:{v:3842,h:walk(3900,12,3500,4300)},
+  air:{v:18.7,h:walk(18.6,.05,17,20)}, baro:{v:1013.2,h:walk(1015,.04,1008,1018)},
+  rh:{v:74,h:walk(74,.3,60,90)}, sst:{v:19.84,h:walk(19.9,.02,18.5,21)},
+  sal:{v:33.612,h:walk(33.6,.004,33.3,33.9)}, flr:{v:0.82,h:walk(.8,.02,.3,1.4)},
+  lat:32.418, lon:-118.062
+};
+for(const k in S){if(S[k]&&S[k].h)S[k].v=S[k].h[S[k].h.length-1]}
+for(let i=N-372;i<N;i++)S.flr.h[i]=NaN;
+const age={flr:372}; // fluorometer has been silent 6 min 12 s
+const track=[];{let la=32.62,lo=-117.70;for(let i=0;i<120;i++){la-=0.0017;lo-=0.0030+Math.sin(i/14)*0.0008;track.push([lo,la])}}
+
+function tick(){
+  const j=(k,s,lo,hi)=>{S[k].v=Math.max(lo,Math.min(hi,S[k].v+(Math.random()-.5)*s)); if(S[k].h){S[k].h.push(S[k].v);S[k].h.shift()}};
+  j('hdg',.6,230,265); j('cog',.5,232,266); j('sog',.08,9.2,11.4); j('tws',.5,10,26); j('twd',2,280,340);
+  j('depth',10,3500,4300); j('air',.03,17,20); j('baro',.03,1008,1018); j('rh',.2,60,90); j('sst',.01,18.5,21); j('sal',.002,33.3,33.9);
+  age.flr++; S.flr.h.push(NaN); S.flr.h.shift();
+  S.lat-=0.00005; S.lon-=0.00009;
+  render();
+}
+
+/* ---------- helpers ---------- */
+const css=n=>getComputedStyle(root).getPropertyValue(n).trim();
+const fmtAge=s=>s<60?s+' s':Math.floor(s/60)+' min '+(s%60)+' s';
+const pad=n=>String(n).padStart(2,'0');
+const shapes={
+  ok:'<svg viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="currentColor"/></svg>',
+  check:'<svg viewBox="0 0 12 12"><path d="M6 1 11 11H1z" fill="currentColor"/></svg>',
+  stale:'<svg viewBox="0 0 12 12"><rect x="1.5" y="1.5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
+  down:'<svg viewBox="0 0 12 12"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="2.4"/></svg>'
+};
+const chip=(s,txt)=>`<span class="chip s-${s}">${shapes[s]}${txt||({ok:'OK',check:'Check',stale:'Stale',down:'Down'})[s]}</span>`;
+function trend(h,mins){const n=Math.min(h.length-1,mins*60);return h[h.length-1]-h[h.length-1-n]}
+function arrow(d,eps){return Math.abs(d)<eps?'steady':(d>0?'rising':'falling')}
+function deg(x){return String(Math.round((x+360)%360)).padStart(3,'0')+'°'}
+function compass(x){return['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'][Math.round(((x%360)+360)%360/22.5)%16]}
+
+function draw(cv,data,opts={}){
+  if(!cv)return;
+  const r=window.devicePixelRatio||1,w=cv.clientWidth,h=cv.clientHeight; if(!w)return;
+  if(cv.width!==w*r){cv.width=w*r;cv.height=h*r}
+  const g=cv.getContext('2d');g.setTransform(r,0,0,r,0,0);g.clearRect(0,0,w,h);
+  const pts=data.filter(x=>!isNaN(x)); if(!pts.length)return;
+  let lo=Math.min(...pts),hi=Math.max(...pts); if(hi-lo<1e-9){hi+=1;lo-=1} const m=(hi-lo)*.12;lo-=m;hi+=m;
+  const X=i=>i/(data.length-1)*w, Y=v=>h-(v-lo)/(hi-lo)*h;
+  if(opts.grid){g.strokeStyle=css('--grid');g.lineWidth=1;for(let k=1;k<4;k++){const y=Math.round(h*k/4)+.5;g.beginPath();g.moveTo(0,y);g.lineTo(w,y);g.stroke()}
+    g.fillStyle=css('--muted');g.font='11px '+css('--f-mono');g.fillText(hi.toFixed(opts.dp??1),4,12);g.fillText(lo.toFixed(opts.dp??1),4,h-4)}
+  const col=css(opts.color||'--chart');
+  g.beginPath();let started=false,lastX=0,lastY=0;
+  data.forEach((v,i)=>{if(isNaN(v)){return}const x=X(i),y=Y(v);if(!started){g.moveTo(x,y);started=true}else g.lineTo(x,y);lastX=x;lastY=y});
+  g.strokeStyle=col;g.lineWidth=1.8;g.stroke();
+  g.lineTo(lastX,h);g.lineTo(0,h);g.closePath();g.globalAlpha=.12;g.fillStyle=col;g.fill();g.globalAlpha=1;
+  g.beginPath();g.arc(lastX,lastY,3.2,0,7);g.fillStyle=col;g.fill();
+  if(lastX<w-2 && opts.gapLabel){g.fillStyle=css('--stale');g.font='600 12px '+css('--f-num');g.textAlign='right';g.fillText('NO DATA',w-6,h/2);g.textAlign='left'}
+}
+
+/* ---------- pages ---------- */
+let windView=store.get('ds.windview')||'north';
+const pages={
+bridge:{title:'Bridge',sub:'Navigation and weather at a glance. Readable from the chart table.',html:()=>`
+<div class="grid">
+  <section class="tile wide tall" aria-label="Wind">
+    <div class="lbl"><span>Wind, true</span><span class="seg" role="group" aria-label="Dial orientation"><button data-wv="north" aria-pressed="${windView==='north'}">North up</button><button data-wv="ship" aria-pressed="${windView==='ship'}">Ship up</button></span></div>
+    <div class="dialwrap">
+      <svg class="dial" id="dial" viewBox="-120 -120 240 240" role="img" aria-label="Wind dial"></svg>
+      <div class="windnums">
+        <div><div class="lbl">Speed, 2 min vector mean</div><div class="val" id="tws"></div></div>
+        <div><div class="lbl">From</div><div class="val md" id="twd"></div></div>
+        <div><div class="lbl">Relative to bow</div><div class="val md" id="rwd"></div></div>
+        <canvas class="spark" id="sp-tws" aria-label="True wind speed, last 30 minutes"></canvas>
+        <div class="meta"><span>Last 30 min</span><span id="tws-age">1 s ago</span></div>
+      </div>
+    </div>
+  </section>
+  <section class="tile"><div class="lbl"><span>Heading, true</span></div><div class="val" id="hdg"></div>
+    <div class="pair"><div><div class="lbl">COG</div><div class="val md" id="cog"></div></div><div><div class="lbl">SOG</div><div class="val md" id="sog"></div></div></div>
+    <div class="meta"><span>Gyro + GNSS</span><span>1 s ago</span></div></section>
+  <section class="tile"><div class="lbl"><span>Depth</span></div><div class="val" id="depth"></div><canvas class="spark" id="sp-depth"></canvas><div class="meta"><span>Multibeam centre beam</span><span>2 s ago</span></div></section>
+  <section class="tile"><div class="lbl"><span>Barometer</span></div><div class="val" id="baro"></div><canvas class="spark" id="sp-baro"></canvas><div class="meta"><span id="baro-tr"></span><span>1 s ago</span></div></section>
+  <section class="tile"><div class="lbl"><span>Air temp</span></div><div class="val" id="air"></div><div class="meta"><span id="rh"></span><span>1 s ago</span></div></section>
+  <section class="tile"><div class="lbl"><span>Sea surface temp</span></div><div class="val" id="sst"></div><div class="meta"><span>Hull intake, 5 m</span><span>1 s ago</span></div></section>
+  <section class="tile"><div class="lbl"><span>Position</span></div><div class="val md" id="pos" style="font-size:28px;line-height:1.2"></div><div class="meta"><span>GNSS, 3D fix, 14 sats</span><span>1 s ago</span></div></section>
+</div>`},
+science:{title:'Science',sub:'Underway data for the watch. Gaps show as gaps, never as smooth lines.',html:()=>`
+<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(300px,1fr))">
+  ${['sst|Sea surface temp|°C|2|Hull intake 5 m','sal|Salinity|PSU|3|TSG, flow 1.4 L/min','flr|Chlorophyll fluorescence|µg/L|2|Fluorometer on TSG line','depth|Depth|m|0|Multibeam centre beam'].map(r=>{const[k,l,u,dp,src]=r.split('|');return`
+  <section class="tile ${k==='flr'?'stale':''}"><div class="lbl"><span>${l}</span>${k==='flr'?chip('stale'):''}</div>
+  <div class="val md" id="sc-${k}" data-dp="${dp}" data-u="${u}"></div><canvas class="chart" id="ch-${k}" data-dp="${dp}"></canvas>
+  <div class="meta"><span>${src}</span><span id="age-${k}">1 s ago</span></div>${k==='flr'&&aiOn()?`<div class="ainote"><b>AI note</b> TSG flow fell 12% at 03:55, one minute before the fluorometer went quiet. A blocked intake is the likely cause. <span class="fix">Suggestion only. Check before acting.</span></div>`:''}</section>`}).join('')}
+  <section class="tile wide"><div class="lbl"><span>Cruise track, last 2 h</span><span id="pos2" style="text-transform:none;letter-spacing:0;font-family:var(--f-mono)"></span></div>
+    <svg class="map" id="map" viewBox="0 0 600 220" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Track map"></svg>
+    <div class="meta"><span>Offline basemap. No internet needed.</span><span>Station 14 in 3.1 nm</span></div></section>
+  <section class="tile"><div class="lbl"><span>Event log</span></div>
+    <div class="evbtns"><button data-ev="CTD in water">CTD in water</button><button data-ev="CTD on deck">CTD on deck</button><button data-ev="Net deployed">Net deployed</button><button data-ev="Note">Note…</button></div>
+    <ul class="evlist" id="evlist"><li><time>03:41</time><span>CTD on deck, station 13</span></li><li><time>02:58</time><span>CTD in water, station 13</span></li></ul>
+    <div class="meta"><span>Each event stamps position and all current values.</span></div></section>
+</div>`},
+health:{title:'Health',sub:'Every logger and sensor, worst first. Each problem says what to try.',html:()=>{
+  const rows=[
+    ['stale','Fluorometer','flr_logger','0 / s','6 min','No new data since 03:56. Check the TSG flow and the fluorometer serial cable at the wet lab panel.'],
+    ['check','Gyro clock','gyro_logger','10 / s','1 s','Timestamps run 0.8 s behind GNSS. Data is fine; check NTP on the gyro PC.'],
+    ['ok','GNSS (primary)','gnss_logger','1 / s','1 s',''],['ok','Gyrocompass','gyro_logger','10 / s','1 s',''],
+    ['ok','Met station, port','met_port','1 / s','1 s',''],['ok','Met station, stbd','met_stbd','1 / s','1 s',''],
+    ['ok','TSG','tsg_logger','1 / s','1 s',''],['ok','Multibeam depth','mb_logger','0.5 / s','2 s',''],
+    ['ok','Barometer','met_port','1 / s','1 s',''],['ok','Radiometers','rad_logger','1 / s','1 s',''],
+    ['ok','Winch, CTD','winch_logger','5 / s','1 s',''],['ok','pCO2','pco2_logger','1 / 2 min','48 s','']
+  ];
+  const c=s=>rows.filter(r=>r[0]===s).length;
+  return `<div class="summary">${['ok','check','stale','down'].map(s=>`<div class="tile"><span class="n s-${s}">${c(s)}</span>${chip(s)}</div>`).join('')}
+  <div class="tile"><span class="n">71%</span><span class="sub">disk free on data drive, 9 days at this rate</span></div></div>
+  <div class="tablewrap"><table><thead><tr><th>State</th><th>Sensor</th><th>Rate</th><th>Last data</th><th>Logger</th></tr></thead><tbody>
+  ${rows.map(r=>`<tr><td>${chip(r[0])}</td><td><b>${r[1]}</b>${r[5]?`<div class="fix">${r[5]}</div>`:''}</td><td class="num">${r[3]}</td><td class="num" ${r[1]==='Fluorometer'?'id="hl-age"':''}>${r[4]}</td><td class="num">${r[2]}</td></tr>`).join('')}
+  </tbody></table></div>`}},
+shore:{title:'Shore',sub:'A light view for people ashore. Sends a 2 KB snapshot every 5 minutes, so it works on a thin link.',html:()=>`
+<div class="grid">
+  <section class="tile wide"><div class="lbl"><span>Ship now</span><span class="sub" style="text-transform:none;letter-spacing:0">snapshot 1 min ago</span></div>
+    <div class="val md" id="sh-pos" style="font-size:30px"></div>
+    <div class="meta"><span id="sh-nav"></span><span>Station 14 ETA 04:32 UTC</span></div></section>
+  <section class="tile"><div class="lbl"><span>Systems</span></div><div style="display:flex;gap:8px;flex-wrap:wrap">${chip('ok','10 OK')}${chip('check','1 Check')}${chip('stale','1 Stale')}</div><div class="meta"><span>Fluorometer silent 6 min</span></div></section>
+  <section class="tile"><div class="lbl"><span>Weather</span></div><div class="val md" id="sh-wx"></div><div class="meta"><span id="sh-wx2"></span></div></section>
+  <section class="tile wide"><div class="lbl"><span>Last 24 h</span></div>
+    <table><tbody><tr><td>Distance run</td><td class="num">231 nm</td></tr><tr><td>CTD casts</td><td class="num">6</td></tr><tr><td>Data logged</td><td class="num">4.8 GB, 0 gaps over 5 min</td></tr><tr><td>Max wind</td><td class="num">24 kn from NW</td></tr></tbody></table></section>
+</div>`}
+};
+
+/* ---------- render ---------- */
+let page='bridge';
+function mount(){
+  const p=pages[page];
+  $('#app').innerHTML=`<div class="pagehead"><div><h1>${p.title}</h1><div class="sub">${p.sub}</div></div><div class="tools"><button class="ghost" id="ask">Ask for a view</button><button class="ghost" id="edit">Edit this page</button><button class="ghost" id="settings">Settings</button></div></div>${typeof p.html==='function'?p.html():p.html}`;
+  document.querySelectorAll('.tab').forEach(b=>b.setAttribute('aria-current',b.dataset.page===page?'page':'false'));
+  $('#edit').onclick=openDrawer;$('#ask').onclick=openAsk;$('#settings').onclick=openSettings;
+  document.querySelectorAll('[data-wv]').forEach(b=>b.onclick=()=>{windView=b.dataset.wv;store.set('ds.windview',windView);mount()});
+  document.querySelectorAll('[data-ev]').forEach(b=>b.onclick=()=>{const d=new Date();const li=document.createElement('li');
+    li.innerHTML=`<time>${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}</time><span>${b.dataset.ev}, at ${S.lat.toFixed(3)}° N ${(-S.lon).toFixed(3)}° W</span>`;$('#evlist').prepend(li)});
+  if(page==='bridge')buildDial();
+  if(page==='science')buildMap();
+  render();
+}
+function set(id,html){const e=document.getElementById(id);if(e)e.innerHTML=html}
+function render(){
+  const d=new Date();set('utc',`${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`);set('loc',`${pad((d.getUTCHours()+16)%24)}:${pad(d.getUTCMinutes())}`);
+  const rel=((S.twd.v-S.hdg.v)%360+360)%360, side=rel<=180?'starboard':'port', relAbs=rel<=180?rel:360-rel;
+  const posTxt=`${S.lat.toFixed(4)}° N<br>${(-S.lon).toFixed(4)}° W`;
+  if(page==='bridge'){
+    set('tws',`${S.tws.v.toFixed(1)}<small>kn</small>`);set('twd',`${deg(S.twd.v)}<small>${compass(S.twd.v)}</small>`);
+    set('rwd',`${Math.round(relAbs)}°<small>${side}</small>`);
+    set('hdg',`${deg(S.hdg.v)}<small>T</small>`);set('cog',`${deg(S.cog.v)}`);set('sog',`${S.sog.v.toFixed(1)}<small>kn</small>`);
+    set('depth',`${Math.round(S.depth.v).toLocaleString()}<small>m</small>`);
+    const bt=trend(S.baro.h,30)*0.15;set('baro',`${S.baro.v.toFixed(1)}<small>hPa</small>`);set('baro-tr',`${arrow(bt,.3)} ${bt>=0?'+':''}${bt.toFixed(1)} hPa / 3 h`);
+    set('air',`${S.air.v.toFixed(1)}<small>°C</small>`);set('rh',`Humidity ${Math.round(S.rh.v)} %`);
+    set('sst',`${S.sst.v.toFixed(2)}<small>°C</small>`);set('pos',posTxt);
+    draw($('#sp-tws'),S.tws.h);draw($('#sp-depth'),S.depth.h);draw($('#sp-baro'),S.baro.h);
+    updateDial(rel);
+  }
+  if(page==='science'){
+    ['sst','sal','flr','depth'].forEach(k=>{const e=$('#sc-'+k);if(!e)return;const dp=+e.dataset.dp;
+      e.innerHTML=`${k==='depth'?Math.round(S[k].v).toLocaleString():S[k].v.toFixed(dp)}<small>${e.dataset.u}</small>`;
+      draw($('#ch-'+k),S[k].h,{grid:true,dp,gapLabel:k==='flr'})});
+    set('age-flr',`last seen ${fmtAge(age.flr)} ago`);set('pos2',`${S.lat.toFixed(3)}° N ${(-S.lon).toFixed(3)}° W`);
+  }
+  if(page==='health')set('hl-age',fmtAge(age.flr));
+  if(page==='shore'){set('sh-pos',`${S.lat.toFixed(3)}° N, ${(-S.lon).toFixed(3)}° W`);set('sh-nav',`Heading ${deg(S.hdg.v)} at ${S.sog.v.toFixed(1)} kn`);
+    set('sh-wx',`${S.tws.v.toFixed(0)}<small>kn ${compass(S.twd.v)}</small>`);set('sh-wx2',`Air ${S.air.v.toFixed(1)} °C, sea ${S.sst.v.toFixed(1)} °C, ${S.baro.v.toFixed(0)} hPa`)}
+}
+
+/* ---------- wind dial ---------- */
+function buildDial(){
+  const sv=$('#dial');let s='<g id="ring">';
+  for(let a=0;a<360;a+=10){const r1=a%30?104:98,rad=(a-90)*Math.PI/180;s+=`<line x1="${Math.cos(rad)*r1}" y1="${Math.sin(rad)*r1}" x2="${Math.cos(rad)*110}" y2="${Math.sin(rad)*110}" stroke="var(--muted)" stroke-width="${a%90?1:2}"/>`;
+    if(a%90===0){const lab=windView==='north'?['N','E','S','W'][a/90]:['Bow','Stbd','Stern','Port'][a/90];s+=`<text x="${Math.cos(rad)*84}" y="${Math.sin(rad)*84+4}" text-anchor="middle">${lab}</text>`}}
+  s+=`<circle r="110" fill="none" stroke="var(--line)"/></g>`;
+  s+=`<g id="shipg"><path d="M0 -40 C12 -22 13 10 11 34 L-11 34 C-13 10 -12 -22 0 -40Z" fill="var(--panel2)" stroke="var(--fg)" stroke-width="2"/><line x1="0" y1="-40" x2="0" y2="-62" stroke="var(--fg)" stroke-width="1.5" stroke-dasharray="3 3"/></g>`;
+  s+=`<g id="windg"><line x1="0" y1="-108" x2="0" y2="-66" stroke="var(--accent)" stroke-width="5" stroke-linecap="round"/><path d="M0 -58 L-9 -74 L9 -74Z" fill="var(--accent)"/></g>`;
+  sv.innerHTML=s;
+}
+function updateDial(rel){
+  const sh=$('#shipg'),wg=$('#windg');if(!sh)return;
+  if(windView==='north'){sh.setAttribute('transform',`rotate(${S.hdg.v})`);wg.setAttribute('transform',`rotate(${S.twd.v})`)}
+  else{sh.setAttribute('transform','rotate(0)');wg.setAttribute('transform',`rotate(${rel})`)}
+}
+
+/* ---------- map ---------- */
+function buildMap(){
+  const W=600,H=220,lo0=-118.6,lo1=-117.1,la0=32.2,la1=32.9;
+  const X=lo=>(lo-lo0)/(lo1-lo0)*W,Y=la=>H-(la-la0)/(la1-la0)*H;
+  const coast=[[-117.1,32.9],[-117.25,32.84],[-117.28,32.72],[-117.24,32.68],[-117.13,32.55],[-117.12,32.2],[-117.1,32.2]];
+  const isl=[[-118.36,32.82],[-118.42,32.88],[-118.5,32.86],[-118.58,32.8],[-118.5,32.78]];
+  const P=a=>a.map(p=>X(p[0]).toFixed(1)+','+Y(p[1]).toFixed(1)).join(' ');
+  const last=track[track.length-1];
+  $('#map').innerHTML=`<polygon class="coast" points="${P(coast)} ${W},${H} ${W},0"/><polygon class="coast" points="${P(isl)}"/>
+  <polyline class="track" points="${P(track)}"/><circle cx="${X(last[0])}" cy="${Y(last[1])}" r="6" fill="var(--chart)"/>
+  <circle cx="${X(-118.32)}" cy="${Y(32.36)}" r="5" fill="none" stroke="var(--chart2)" stroke-width="2"/><text x="${X(-118.32)+9}" y="${Y(32.36)+4}">Stn 14</text>
+  <text x="${W-8}" y="${H-8}" text-anchor="end">San Diego approaches, sample track</text>`;
+}
+
+/* ---------- AI: optional, needs a key ---------- */
+function aiOn(){return store.get('ds.ai')==='set'}
+function openAsk(){
+  const dr=$('#drawer');dr.hidden=false;
+  dr.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center"><h2>Ask for a view</h2><button class="ghost" id="close">Close</button></div>
+  <label class="note" for="q">Say what you want to see, in your own words.</label>
+  <input id="q" class="field" value="Show me wind and sea temp for the last 6 hours, big enough to read from the helm">
+  <button class="ghost" id="go" style="align-self:flex-start">Build it</button><div id="ans"></div>`;
+  $('#close').onclick=()=>{dr.hidden=true};
+  $('#go').onclick=()=>{
+    if(!aiOn()){$('#ans').innerHTML=`<p class="note"><b>AI is off on this ship.</b> Nothing else needs it. To turn it on, an admin adds an AI key in Settings. Meanwhile you can build the same view by hand: Edit this page, then pick sensors from the list.</p>`;return}
+    $('#ans').innerHTML=`<p class="note">Here is a draft. It only uses sensors this ship is logging right now. Nothing changes until you press Add page.</p>
+<pre>page: wind-and-sst
+title: Wind and sea temp, 6 h
+tiles:
+  - chart: {field: MwxTrueWindSpeed, label: True wind, window: 6 h, size: large}
+  - chart: {field: MwxTrueWindDir, label: Wind from, window: 6 h, style: dots}
+  - chart: {field: TsgTemp, label: Sea surface temp, window: 6 h, size: large}</pre>
+<div class="tools"><button class="ghost">Add page</button><button class="ghost">Also make it in Grafana</button></div>
+<p class="note">Checked by the same rules as a hand-made page before it is shown. The AI never starts, stops or changes a logger.</p>`};
+}
+function openSettings(){
+  const dr=$('#drawer');dr.hidden=false;const on=aiOn();
+  dr.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center"><h2>Settings</h2><button class="ghost" id="close">Close</button></div>
+  <h3 class="h3">AI assistant (optional)</h3>
+  <p class="note">The console works fully without AI. A key turns on Ask for a view, AI notes on charts, and Grafana building. The key is kept on the ship's server and is never sent to anyone's browser.</p>
+  <label class="note" for="prov">Provider</label><select id="prov" class="field"><option>Anthropic (Claude)</option><option>OpenAI-compatible</option><option>Local model on the ship (no internet)</option></select>
+  <label class="note" for="key">API key</label><input id="key" class="field" type="password" placeholder="${on?'Saved on server, ends in ...7Qd':'Paste key'}" autocomplete="off">
+  <div class="tools"><button class="ghost" id="savekey">${on?'Replace key':'Save and test'}</button>${on?'<button class="ghost" id="rmkey">Remove key</button>':''}</div>
+  <p class="note">Status: ${on?chip('ok','Working'):chip('stale','Not set')} ${on?'Last test 2 min ago. Sends only field names and summary numbers, never raw files.':''}</p>
+  <h3 class="h3">Grafana</h3><p class="note">Optional. Point to a Grafana server and DeepSignal can create matching Grafana dashboards. Leave blank to skip.</p>
+  <input class="field" id="graf" placeholder="http://grafana.local:3000">`;
+  $('#close').onclick=()=>{dr.hidden=true};
+  $('#savekey').onclick=()=>{store.set('ds.ai','set');openSettings();if(page==='science')mount()};
+  const rm=$('#rmkey');if(rm)rm.onclick=()=>{store.set('ds.ai','');openSettings();if(page==='science')mount()};
+}
+
+/* ---------- edit drawer ---------- */
+function openDrawer(){
+  const yaml={bridge:`page: bridge
+title: Bridge
+tiles:
+  - wind_dial:
+      speed: MwxTrueWindSpeed      # field from the data cache
+      direction: MwxTrueWindDir
+      heading: S330HeadingTrue
+      average: 2 min vector
+  - number: {field: S330HeadingTrue, label: Heading, unit: "°T"}
+  - number: {field: MbDepth, label: Depth, unit: m, spark: 30 min}
+  - number: {field: MwxBaro, label: Barometer, trend: 3 h}
+stale_after: 30 s                  # shows Stale, never an old number as current`,
+  science:`page: science
+tiles:
+  - chart: {field: TsgTemp, label: Sea surface temp, window: 30 min}
+  - chart: {field: TsgSal, label: Salinity}
+  - chart: {field: FlrChl, label: Chlorophyll fluorescence}
+  - map: {lat: GnssLat, lon: GnssLon, basemap: local/charts/socal.mbtiles}
+  - event_buttons: [CTD in water, CTD on deck, Net deployed, Note]`,
+  health:`page: health
+source: logger_status            # comes from OpenRVDAS itself, nothing to add
+sort: worst_first
+hints: contrib/deepsignal/hints.yaml   # plain-language "what to try" text`,
+  shore:`page: shore
+snapshot_every: 5 min
+fields: [GnssLat, GnssLon, S330HeadingTrue, MwxTrueWindSpeed, MwxAirTemp]`}[page];
+  const dr=$('#drawer');dr.hidden=false;
+  dr.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center"><h2>Edit ${pages[page].title}</h2><button class="ghost" id="close">Close</button></div>
+  <p class="note">In the real console a tech drags tiles to arrange them, picks a sensor from a list of what the ship is actually logging, and presses Save. The console writes this plain file, which can also be edited by hand and kept in the cruise folder.</p>
+  <pre>${yaml.replace(/</g,'&lt;')}</pre>
+  <p class="note">Bad values are caught on save with a plain message, for example: "Tile 3 asks for field MbDepht, which the ship is not logging. Did you mean MbDepth?"</p>`;
+  $('#close').onclick=()=>{dr.hidden=true};$('#close').focus();
+}
+
+/* ---------- modes ---------- */
+let lastDay=store.get('ds.daymode')||(matchMedia('(prefers-color-scheme: dark)').matches?'dusk':'day');
+function setMode(m){
+  root.dataset.mode=m;
+  if(m!=='night'){lastDay=m;store.set('ds.daymode',m)}
+  store.set('ds.mode',m);
+  document.querySelectorAll('.modes button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.mode===m));
+  $('#night').setAttribute('aria-pressed',m==='night');$('#night').lastChild.textContent=m==='night'?'Night on':'Night';
+  if(m==='night')applyDim();else ['--bg','--panel','--panel2','--line','--fg','--muted','--accent','--ok','--check','--stale','--down','--chart','--chart2','--grid'].forEach(t=>root.style.removeProperty(t));
+  render();
+}
+function applyDim(){
+  const d=$('#dim').value/100, R=(r,g,b)=>`rgb(${Math.round(r*d)},${Math.round(g*d)},${Math.round(b*d)})`;
+  const t={'--fg':R(255,38,16),'--muted':R(150,24,10),'--accent':R(255,38,16),'--ok':R(255,38,16),'--check':R(255,38,16),'--stale':R(150,24,10),'--down':R(255,60,30),
+    '--chart':R(255,38,16),'--chart2':R(150,30,12),'--line':R(70,8,4),'--grid':R(40,4,2),'--panel':'#050000','--panel2':'#0a0000','--bg':'#000000'};
+  for(const k in t)root.style.setProperty(k,t[k]);store.set('ds.dim',$('#dim').value);
+}
+$('#dim').value=store.get('ds.dim')||60;
+$('#dim').oninput=()=>{applyDim();render()};
+document.querySelectorAll('.modes button').forEach(b=>b.onclick=()=>setMode(b.dataset.mode));
+$('#night').onclick=()=>setMode(root.dataset.mode==='night'?lastDay:'night');
+document.addEventListener('keydown',e=>{if(e.target.matches('input,textarea'))return;
+  if(e.key==='n'||e.key==='N')$('#night').click();
+  if(e.key==='Escape')$('#drawer').hidden=true;
+  const i=['1','2','3','4'].indexOf(e.key);if(i>=0)go(['bridge','science','health','shore'][i])});
+
+/* ---------- routing ---------- */
+function go(p){if(!pages[p])p='bridge';page=p;if(location.hash!=='#'+p)history.replaceState(null,'','#'+p);mount()}
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>go(b.dataset.page));
+addEventListener('hashchange',()=>go(location.hash.slice(1)));
+addEventListener('resize',()=>render());
+
+setMode(store.get('ds.mode')==='night'?'night':lastDay);
+go(location.hash.slice(1)||'bridge');
+setInterval(tick,1000);
+})();
+</script>
