@@ -1,0 +1,29 @@
+byte_order: little
+header:
+  id: [127, 127]
+  length: {offset: 2, size: 2, excludes_checksum: true}
+  data_type_count: {offset: 5, size: 1}
+  offsets: {offset: 6, size_each: 2}
+  checksum: {size: 2, algorithm: sum_mod_65536}
+data_types:
+  fixed_leader:
+    id: 0x0000
+    beams: {offset: 8, type: uint8}
+    cells: {offset: 9, type: uint8}
+  variable_leader:
+    id: 0x0080
+    ensemble: {offset: 2, type: uint16}
+    rtc: {offset: 4, size: 7}
+    ensemble_msb: {offset: 11, type: uint8}
+    bit_result: {offset: 12, type: uint16}
+    sound_speed_m_s: {offset: 14, type: uint16}
+    transducer_depth_dm: {offset: 16, type: uint16, scale: 0.1}
+    heading_deg: {offset: 18, type: uint16, scale: 0.01}
+    pitch_deg: {offset: 20, type: int16, scale: 0.01}
+    roll_deg: {offset: 22, type: int16, scale: 0.01}
+    salinity: {offset: 24, type: uint16}
+    temperature_c: {offset: 26, type: int16, scale: 0.01}
+  bottom_track:
+    id: 0x0600
+    beam_ranges_cm: {offset: 16, count: 4, type: uint16, scale: 0.01}
+    beam_percent_good: {offset: 40, count: 4, type: uint8}

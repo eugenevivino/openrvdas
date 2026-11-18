@@ -1,0 +1,39 @@
+# Listen-only example. The reader receives an operator-provided PD0 copy.
+readers:
+  adcp_pd0_copy:
+    class: UDPReader
+    module: logger.readers.udp_reader
+    kwargs:
+      port: 55075
+      encoding: null
+
+transforms:
+  pd0_health:
+    class: PD0SummaryTransform
+    module: contrib.deepsignal.adcp_health.pd0_summary_transform
+    kwargs:
+      beam_angle_deg: 30
+  adcp_cross_checks:
+    class: ADCPCrossCheckTransform
+    module: contrib.deepsignal.adcp_health.adcp_cross_check_transform
+    kwargs:
+      roles:
+        adcp_heading: ADCP_Heading
+        gyro_heading: Gyro_Heading
+        gnss_heading: GNSS_Heading
+        adcp_sv: ADCP_SoundSpeed
+        tsg_sv: TSG_SoundSpeed
+        probe_sv: Probe_SoundSpeed
+        adcp_bt_depth: ADCP_BTDepth
+        mb_depth: MB_NadirDepth
+        adcp_time: ADCP_Time
+        mb_ping_time: MB_PingTime
+        ek_ping_time: EK80_PingTime
+      heading_threshold: 1.0
+      sv_threshold: 2.0
+      depth_threshold_pct: 3.0
+      frozen_s: 60
+      overlap_window_s: 0.1
+      persistence_s: 30
+      clear_s: 30
+      stale_s: 30
