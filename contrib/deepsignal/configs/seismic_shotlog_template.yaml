@@ -1,0 +1,23 @@
+# TEMPLATE ONLY. Replace this example with a definition matching the ship's capture.
+# It does not describe a real vendor format.
+ShotLogTemplate:
+  category: device_type
+  description: Vendor-neutral example seismic shot record
+  format: "SHOT,{ShotNumber:d},{FireTime:g},{Gun1Error_ms:g},{Gun2Error_ms:g},{Pressure_psi:g}"
+  fields:
+    ShotNumber: {units: count, description: Shot sequence number}
+    FireTime: {units: UNIX seconds, description: Controller fire time}
+    Gun1Error_ms: {units: ms, description: Gun 1 timing error}
+    Gun2Error_ms: {units: ms, description: Gun 2 timing error}
+    Pressure_psi: {units: psi, description: Optional source pressure}
+
+shotlog:
+  category: device
+  device_type: ShotLogTemplate
+  description: Template shot logger, replace with the ship's capture mapping
+  fields:
+    ShotNumber: ShotNumber
+    FireTime: FireTime
+    Gun1Error_ms: Gun1Error_ms
+    Gun2Error_ms: Gun2Error_ms
+    Pressure_psi: Pressure_psi

@@ -1,0 +1,6 @@
+# P1/11 subset, verify with the processing team before delivery
+# CRS: WGS 84 (EPSG:4326)
+# Units: degrees, UTC
+# Ship: R/V Test
+shot_number,fire_time_utc,latitude_deg,longitude_deg
+7,1970-01-01T00:16:40.500Z,10.50000000,-20.25000000
