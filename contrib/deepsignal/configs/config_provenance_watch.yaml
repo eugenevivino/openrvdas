@@ -1,0 +1,6 @@
+config_provenance:
+  store: /var/lib/deepsignal/config-history/
+  poll_seconds: 30
+  paths:
+    - /etc/openrvdas/cruise.yaml
+    - /etc/openrvdas/device_definitions.yaml
