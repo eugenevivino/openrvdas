@@ -1,0 +1,16 @@
+name: generic_ascii
+description: Plain text line for a terminal or any board that accepts one line.
+verified: unverified
+codec: text
+limits:
+  lines: 1
+  chars_per_line: 16
+  charset: ascii
+framing:
+  template: '{line}\r\n'
+transport_defaults:
+  type: serial
+  baudrate: 9600
+  bytesize: 8
+  parity: N
+  stopbits: 1

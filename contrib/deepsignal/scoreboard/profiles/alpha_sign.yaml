@@ -1,0 +1,22 @@
+# 7E1 and other rates exist; set the serial settings for the sign.
+name: alpha_sign
+description: Adaptive-compatible Alpha protocol sign.
+source: Alpha Communications Protocol Rev D (Adaptive Micro Systems, 2002)
+verified: datasheet
+codec: alpha
+limits:
+  lines: 1
+  chars_per_line: 16
+  charset: ascii
+framing:
+  type_code: Z
+  file_label: A
+  checksum: true
+  # Multi-line separation must be confirmed on a bench.
+  line_separator: ' '
+transport_defaults:
+  type: serial
+  baudrate: 9600
+  bytesize: 8
+  parity: N
+  stopbits: 1

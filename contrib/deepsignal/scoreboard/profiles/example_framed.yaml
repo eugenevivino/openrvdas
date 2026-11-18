@@ -1,0 +1,16 @@
+# Example only. Not a real product.
+name: example_framed
+verified: unverified
+codec: text
+limits:
+  lines: 1
+  chars_per_line: 8
+  charset: ascii
+addressing:
+  default: 1
+  range: [0, 99]
+framing:
+  template: '\x02{address:02d}{line}\x03{checksum}'
+  checksum: xor8
+  checksum_format: hex2
+  checksum_from: '\x02'

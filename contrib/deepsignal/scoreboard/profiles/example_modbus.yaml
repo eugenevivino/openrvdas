@@ -1,0 +1,19 @@
+# Example only. Not a real product.
+name: example_modbus
+verified: unverified
+codec: modbus
+limits:
+  lines: 1
+  chars_per_line: 6
+  charset: digits_sign_point
+  replace_char: ' '
+addressing:
+  default: 1
+  range: [1, 247]
+framing:
+  registers:
+    - line: 1
+      register: 0
+      type: int16
+      scale: 10
+      stale_value: -32768
