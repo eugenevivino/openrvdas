@@ -3,6 +3,7 @@ import argparse
 import getpass
 
 from contrib.deepsignal.ai_triage import setup
+from contrib.deepsignal.ai_triage.vault import VaultUnavailable
 
 
 def main():
@@ -15,8 +16,11 @@ def main():
             print("%d. %s (%s)" % (number, choice["name"], choice["url"]))
         selected = int(input("Provider number: ")) - 1
         key = getpass.getpass("API key: ")
-        result = setup.store_key(choices[selected]["name"].lower(), key)
-        print(result.get("warning") or "Key stored securely")
+        try:
+            result = setup.store_key(choices[selected]["name"].lower(), key)
+            print(result["message"])
+        except VaultUnavailable as error:
+            print(error)
 
 
 if __name__ == "__main__":

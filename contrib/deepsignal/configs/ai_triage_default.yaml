@@ -1,5 +1,5 @@
 api:
-  enabled: true
+  enabled: false
   provider: openai
   url: https://api.openai.com/v1/chat/completions
   allowed_hosts:

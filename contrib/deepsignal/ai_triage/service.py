@@ -9,12 +9,13 @@ import uuid
 from contrib.deepsignal.ai_guard.audit import AuditLog
 from contrib.deepsignal.ai_guard.budget import BudgetMeter
 from contrib.deepsignal.ai_triage import context, schema
+from contrib.deepsignal.ai_triage.vault import VaultUnavailable, VAULT_REQUIRED
 from contrib.deepsignal.ai_triage.triggers import signature
 
 
 class TriageService:
     def __init__(self, state_dir, api_model=None, local_model=None,
-                 api_enabled=True, local_enabled=False, cache_hours=6,
+                 api_enabled=False, local_enabled=False, cache_hours=6,
                  max_context_tokens=6000, caps=None):
         self.state_dir = state_dir
         os.makedirs(state_dir, exist_ok=True)
@@ -82,6 +83,7 @@ class TriageService:
         usage = {}
         started = time.monotonic()
         answer = None
+        vault_missing = False
         if self.api_enabled and self.api_model and self.link_up:
             reservation = self.meter.check_and_reserve(0, "usd", "ship")
             if reservation:
@@ -89,6 +91,9 @@ class TriageService:
                     answer, usage = self._call(self.api_model, pack)
                     self.meter.settle(reservation, 0)
                     label = "API model"
+                except VaultUnavailable:
+                    vault_missing = True
+                    self.meter.settle(reservation, 0)
                 except (ValueError, KeyError, TypeError, OSError):
                     self.meter.settle(reservation, 0)
         if answer is None and self.local_enabled and self.local_model:
@@ -106,6 +111,8 @@ class TriageService:
             else:
                 label = "no AI used"
             answer = self._fallback(stream, snapshot, label)
+            if vault_missing:
+                answer["message"] = VAULT_REQUIRED
         briefing_id = uuid.uuid4().hex
         answer.update({"label": label, "briefing_id": briefing_id,
                        "same_as_before": False})

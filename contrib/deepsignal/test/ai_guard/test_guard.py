@@ -42,28 +42,6 @@ class GuardTest(unittest.TestCase):
         self.assertTrue(secrets.check_token("not-plaintext", stored))
         self.assertFalse(secrets.check_token("wrong", stored))
 
-    def test_secret_store_paths(self):
-        class Runner:
-            def __init__(self, present):
-                self.present = present
-
-            def has_systemd_creds(self):
-                return self.present
-
-            def encrypt(self, source, target):
-                with open(target, "wb") as encrypted:
-                    encrypted.write(b"encrypted")
-
-        with tempfile.TemporaryDirectory() as root:
-            result = secrets.store_key("provider", "secret", root, Runner(True))
-            self.assertTrue(result["encrypted"])
-            self.assertEqual("secret", secrets.load_key(
-                "provider", root, runner=lambda path: b"secret"))
-            plain = secrets.store_key("other", "value", root, Runner(False))
-            self.assertIn("without encryption", plain["warning"])
-            mode = os.stat(plain["path"]).st_mode & 0o777
-            self.assertEqual(0o600, mode)
-
 
 if __name__ == "__main__":
     unittest.main()

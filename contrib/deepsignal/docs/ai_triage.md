@@ -33,7 +33,10 @@ redaction, budget, secret-storage, and audit guard package only.
 Run `python -m contrib.deepsignal.ai_triage setup` and complete these steps:
 
 1. Select a built-in API provider and request shape.
-2. Enter the key without terminal echo. The key is stored outside YAML.
+2. Enter the key without terminal echo. The key is stored only through the #192
+   key vault and never in YAML. Until that vault is installed, AI assist is
+   disabled and reports: "AI assist needs the key vault (#192), not installed
+   yet."
 3. Set daily and monthly spending caps and the ship's token prices.
 4. Send one small test request and review its plain-language result.
 5. Preview the exact redacted context pack and removal counts for a stream.
@@ -69,7 +72,9 @@ failing stage and lists its runbook causes in order with `no AI used`.
 Only the compact context pack leaves the ship. Redaction removes credentials,
 tokens, passwords, private keys, email addresses, phone numbers, globally held
 fields, and EEZ-held fields. Positions are rounded while inside an EEZ. Setting
-`api.enabled: false` disables all provider calls for stricter cruise terms.
+`api.enabled` defaults to `false` until #192 merges. After the vault is installed,
+a ship may enable it explicitly. Leaving it `false` disables all provider calls
+for stricter cruise terms.
 
 Briefings are hash-chained into the timeline with pack hash, model, token use,
 cost, latency, and output. Recorded outcomes can produce proposed runbook diffs;

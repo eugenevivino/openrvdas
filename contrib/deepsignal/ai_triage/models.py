@@ -4,7 +4,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from contrib.deepsignal.ai_guard import secrets
+from contrib.deepsignal.ai_triage import vault as key_vault
 
 
 class HostNotAllowed(ValueError):
@@ -23,23 +23,25 @@ class UrlClient:
 
 
 class ApiModel:
-    def __init__(self, provider, url, model, key_env, client=None,
-                 allowed_hosts=None, proxy=None, timeout=60, key_loader=None):
+    def __init__(self, provider, url, model, key_name, client=None,
+                 allowed_hosts=None, proxy=None, timeout=60, vault=None,
+                 vault_loader=key_vault.installed_vault):
         self.provider = provider
         self.url = url
         self.model = model
-        self.key_env = key_env
+        self.key_name = key_name
         self.client = client or UrlClient()
         self.allowed_hosts = set(allowed_hosts or ())
         self.proxy = proxy
         self.timeout = timeout
-        self.key_loader = key_loader or secrets.load_key
+        self.vault = vault
+        self.vault_loader = vault_loader
 
     def complete(self, pack, max_output_tokens=1000):
         host = urllib.parse.urlparse(self.url).hostname
         if host not in self.allowed_hosts:
             raise HostNotAllowed("api.allowed_hosts does not allow %s" % host)
-        key = self.key_loader(self.key_env)
+        key = key_vault.get(self.key_name, self.vault, self.vault_loader)
         headers = {"Content-Type": "application/json"}
         content = json.dumps(pack, sort_keys=True)
         if self.provider == "anthropic":
@@ -62,5 +64,11 @@ class ApiModel:
 class LocalModel(ApiModel):
     def __init__(self, url, model, client=None, timeout=60):
         host = urllib.parse.urlparse(url).hostname
+
+        class LocalVault:
+            @staticmethod
+            def get(namespace, name):
+                return "local"
+
         super().__init__("openai", url, model, "local", client, [host],
-                         timeout=timeout, key_loader=lambda unused: "local")
+                         timeout=timeout, vault=LocalVault())

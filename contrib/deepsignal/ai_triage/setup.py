@@ -5,8 +5,11 @@ import urllib.error
 
 import yaml
 
-from contrib.deepsignal.ai_guard import secrets
 from contrib.deepsignal.ai_triage.context import build_pack
+from contrib.deepsignal.ai_triage import vault as key_vault
+
+
+VAULT_REQUIRED = key_vault.VAULT_REQUIRED
 
 
 def providers():
@@ -17,8 +20,14 @@ def providers():
              "shape": "messages"}]
 
 
-def store_key(provider, key, directory="/etc/deepsignal/credentials", runner=None):
-    return secrets.store_key(provider, key, directory, runner)
+def store_key(provider, key, vault=None, vault_loader=key_vault.installed_vault):
+    protector = key_vault.put(provider, key, vault, vault_loader)
+    return {"ok": True, "protector": protector,
+            "message": "Key stored using %s protector" % protector}
+
+
+def load_key(provider, vault=None, vault_loader=key_vault.installed_vault):
+    return key_vault.get(provider, vault, vault_loader)
 
 
 def set_caps(path, daily_usd, monthly_usd, prices):
@@ -56,6 +65,8 @@ def test_call(model, meter=None):
                    if error.errno in (errno.EAI_NONAME, -2) else str(error))
     except ValueError as error:
         message = str(error)
+    except key_vault.VaultUnavailable:
+        message = VAULT_REQUIRED
     return {"ok": False, "error": message,
             "latency": time.monotonic() - started, "tokens": {}, "cost": 0}
 

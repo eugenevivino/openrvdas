@@ -21,6 +21,21 @@ class FakeClient:
         return response
 
 
+class FakeVault:
+    def __init__(self, protector):
+        self.kind = protector
+        self.values = {}
+
+    def put(self, namespace, name, value):
+        self.values[(namespace, name)] = value
+
+    def get(self, namespace, name):
+        return self.values[(namespace, name)]
+
+    def protector(self):
+        return self.kind
+
+
 GOOD = {"summary": "Stage failed. Check it.", "causes": [
     {"cause": "cable", "likelihood": "high", "evidence": ["r1"]}],
     "checks": [{"step": "inspect", "kind": "look", "runbook_ref": "r1"}],
@@ -60,23 +75,23 @@ class TriageTest(unittest.TestCase):
         self.assertTrue(valid["checks"][1]["needs_approval"])
 
     def test_models_shapes_and_host_guard(self):
+        vault = FakeVault("tpm2")
+        vault.put("ai-triage", "openai", "secret")
         client = FakeClient([{"choices": [{"message": {"content": "{}"}}],
                               "usage": {}}])
         model = models.ApiModel("openai", "https://api.example/v1/chat/completions",
-                                "m", "KEY", client, ["api.example"],
-                                key_loader=lambda name: "secret")
+                                "m", "openai", client, ["api.example"],
+                                vault=vault)
         model.complete({"a": 1})
         body = json.loads(client.calls[0][2])
         self.assertIn("messages", body)
         anth = FakeClient([{"content": [{"text": "{}"}], "usage": {}}])
         models.ApiModel("anthropic", "https://anth.example/v1/messages", "m",
-                        "KEY", anth, ["anth.example"],
-                        key_loader=lambda name: "secret").complete({})
+                        "openai", anth, ["anth.example"], vault=vault).complete({})
         self.assertIn("max_tokens", json.loads(anth.calls[0][2]))
         refused = FakeClient([])
         bad = models.ApiModel("openai", "https://bad.example/v1/chat/completions",
-                              "m", "KEY", refused, ["good.example"],
-                              key_loader=lambda name: "secret")
+                              "m", "openai", refused, ["good.example"], vault=vault)
         with self.assertRaises(models.HostNotAllowed):
             bad.complete({})
         self.assertFalse(refused.calls)
@@ -95,12 +110,13 @@ class TriageTest(unittest.TestCase):
 
     def test_service_retry_fallback_offline_queue_cache_and_local(self):
         with tempfile.TemporaryDirectory() as root:
+            vault = FakeVault("hostkey")
+            vault.put("ai-triage", "openai", "secret")
             bad = FakeClient([{"choices": [{"message": {"content": "bad"}}]},
                               {"choices": [{"message": {"content": "bad"}}]}])
             api = models.ApiModel("openai", "https://api.example/v1/chat/completions",
-                                  "m", "KEY", bad, ["api.example"],
-                                  key_loader=lambda name: "secret")
-            service = TriageService(root, api_model=api)
+                                  "m", "openai", bad, ["api.example"], vault=vault)
+            service = TriageService(root, api_model=api, api_enabled=True)
             snapshot = {"stream": "s", "failing_stage": "reader",
                         "runbook_causes": ["power", "cable"],
                         "refs": [{"id": "r1", "text": "reader failed"}]}
@@ -139,6 +155,22 @@ class TriageTest(unittest.TestCase):
             self.assertEqual(2, len(setup.providers()))
             preview = setup.preview(snapshot, 100)
             self.assertIn("removals", preview)
+
+    def test_vault_round_trip_and_missing_vault_disables_ai(self):
+        for kind in ("tpm2", "hostkey"):
+            vault = FakeVault(kind)
+            result = setup.store_key("openai", "ship-secret", vault=vault)
+            self.assertEqual("ship-secret", setup.load_key("openai", vault=vault))
+            self.assertIn(kind, result["message"])
+        client = FakeClient([])
+        model = models.ApiModel(
+            "openai", "https://api.example/v1/chat/completions", "m",
+            "openai", client, ["api.example"], vault_loader=lambda: None)
+        with tempfile.TemporaryDirectory() as root:
+            answer = TriageService(root, api_model=model, api_enabled=True).briefing(
+                "s", {"failing_stage": "reader", "runbook_causes": ["power"]})
+        self.assertEqual(setup.VAULT_REQUIRED, answer["message"])
+        self.assertFalse(client.calls)
 
 
 if __name__ == "__main__":
