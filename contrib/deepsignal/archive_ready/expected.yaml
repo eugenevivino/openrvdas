@@ -1,0 +1,8 @@
+datasets:
+  - name: example_met
+    glob: met/EXAMPLE_met-*
+    cadence_seconds: 60
+    time_field: 0
+    filename_date_pattern: '(\d{4}-\d{2}-\d{2})$'
+    required: true
+    parser: delimited

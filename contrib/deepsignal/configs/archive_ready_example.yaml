@@ -1,0 +1,7 @@
+cruise_id: EXAMPLE
+start: '2024-01-01T00:00:00Z'
+end: '2024-02-01T00:00:00Z'
+ports:
+  - Hobart
+  - Lyttelton
+config_version: v1
