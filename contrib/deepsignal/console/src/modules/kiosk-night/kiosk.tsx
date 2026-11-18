@@ -9,8 +9,8 @@ function configuredPage(ctx: ConsoleContext): string | undefined {
 }
 
 export function KioskSlot({ ctx }: { ctx: ConsoleContext }) {
-  const page = parseKioskHash(window.location.hash) ?? configuredPage(ctx)
-  const [active, setActive] = useState(Boolean(page))
+  const [page] = useState(() => parseKioskHash(window.location.hash) ?? configuredPage(ctx))
+  const [active, setActive] = useState(() => Boolean(page))
   const [wakeFailed, setWakeFailed] = useState(false)
   const autoStatus = useSyncExternalStore(
     (listener) => subscribeAutoNightStatus(ctx, listener),

@@ -8,6 +8,7 @@ import { makeContext } from './testkit'
 
 afterEach(() => {
   cleanup()
+  window.history.replaceState(null, '', '/')
   vi.unstubAllGlobals()
 })
 
@@ -32,6 +33,19 @@ describe('kiosk mode', () => {
     clock.step(2)
     fireEvent.pointerUp(screen.getByRole('button', { name: /exit kiosk/i }))
     expect(route.go).toHaveBeenCalledWith('bridge')
+  })
+
+  it('stays active after the router removes the kiosk hash suffix', () => {
+    window.location.hash = '#bridge-kiosk'
+    const { ctx } = makeContext()
+    const view = render(<KioskSlot ctx={ctx} />)
+    expect(document.querySelector('style')?.textContent).toContain('.tabs{display:none')
+
+    window.location.hash = '#bridge'
+    view.rerender(<KioskSlot ctx={ctx} />)
+
+    expect(document.querySelector('style')?.textContent).toContain('.tabs{display:none')
+    expect(screen.getByRole('button', { name: /exit kiosk/i })).toBeInTheDocument()
   })
 
   it('requests a wake lock and reports rejection', async () => {

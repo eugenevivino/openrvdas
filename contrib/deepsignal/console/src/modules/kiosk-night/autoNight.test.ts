@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { AutoNight } from './autoNight'
+import kioskNight from './index'
 import { makeContext } from './testkit'
 
 describe('automatic Night', () => {
+  it('requests the configured position fields from the data server', () => {
+    const { ctx } = makeContext({ latitude_field: 'GpsLat', longitude_field: 'GpsLon' })
+    expect(kioskNight.adapters?.[0]?.fields(ctx)).toEqual(['GpsLat', 'GpsLon'])
+  })
+
   it('switches on crossings and applies half-degree hysteresis', () => {
     const { ctx, store, lighting } = makeContext({ auto_night: true })
     const auto = new AutoNight(ctx, () => -6.1)
