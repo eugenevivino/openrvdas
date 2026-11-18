@@ -1,0 +1,12 @@
+readers:
+  class: HostHealthReader
+  module: contrib.deepsignal.host_health.host_health_reader
+  kwargs:
+    interval: 30
+    restart_window: 300
+    disk_paths:
+      root: /
+      log: /var/log/openrvdas
+
+writers:
+  class: CachedDataWriter
