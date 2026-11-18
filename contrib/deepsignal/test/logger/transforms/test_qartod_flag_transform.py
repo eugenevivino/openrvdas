@@ -149,6 +149,23 @@ class QartodFlagTransformTest(unittest.TestCase):
         fields = transform.transform(record(106, SeaTemp=12))['fields']
         self.assertEqual(fields['SeaTemp_QC_rate_of_change'], 1)
 
+    def test_rejected_repeated_timestamp_preserves_flat_line_history(self):
+        settings = dict(gross_range={'fail_span': [0, 20]},
+                        flat_line={'tolerance': 1, 'suspect_seconds': 1,
+                                   'fail_seconds': 1})
+        transform = transform_for(**settings)
+        for timestamp, value in [(100, 10), (100, 99)]:
+            transform.transform(record(timestamp, SeaTemp=value))
+        fields = transform.transform(record(101, SeaTemp=10))['fields']
+        self.assertEqual(fields['SeaTemp_QC'], 4)
+        self.assertEqual(fields['SeaTemp_QC_flat_line'], 4)
+
+        transform = transform_for(**settings)
+        for timestamp, value in [(100, 10), (100, 20)]:
+            transform.transform(record(timestamp, SeaTemp=value))
+        fields = transform.transform(record(101, SeaTemp=10))['fields']
+        self.assertEqual(fields['SeaTemp_QC_flat_line'], 1)
+
     def test_preserves_record_type_timestamp_field_order_and_input(self):
         transform = transform_for(gross_range={'fail_span': [-2, 40]})
         timestamp = 100.123456789
@@ -737,6 +754,26 @@ class QartodFlagTransformTest(unittest.TestCase):
         fields = transform.transform(parser.transform('103,10'))['fields']
         self.assertEqual(fields['SeaTemp_QC_flat_line'], 2)
         self.assertEqual(fields['SeaTemp_QC_rate_of_change'], 2)
+
+    def test_stock_parse_record_without_timestamp_passes_through(self):
+        parser = ParseTransform(record_format='{field_string}',
+                                field_patterns=['{T:of},{S:of}'])
+        transform = QartodFlagTransform(fields={
+            'T': {'flat_line': {'tolerance': 1, 'suspect_seconds': 1,
+                                'fail_seconds': 2},
+                  'timing': {}, 'rate_of_change': {'max_rate': 1}},
+        }, per_test_flags=True)
+        sample = parser.transform('10,30')
+        self.assertEqual(sample, {'fields': {'T': 10.0, 'S': 30.0}})
+
+        result = transform.transform(sample)
+
+        self.assertNotIn('timestamp', result)
+        self.assertIs(result['fields']['T'], sample['fields']['T'])
+        self.assertIs(result['fields']['S'], sample['fields']['S'])
+        self.assertEqual((result['fields']['T'], result['fields']['S']), (10.0, 30.0))
+        for suffix in ('', '_flat_line', '_timing', '_rate_of_change'):
+            self.assertEqual(result['fields']['T_QC' + suffix], 2)
 
     def test_fix3_stock_csv_extreme_spike(self):
         parser = ParseTransform(record_format='{timestamp:of},{field_string}',

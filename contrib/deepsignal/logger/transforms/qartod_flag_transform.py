@@ -514,11 +514,11 @@ class QartodFlagTransform(Transform):
             return record
         if isinstance(record, DASRecord):
             output = copy(record)
-            output.fields = self._flag_fields(record.timestamp, record.fields)
+            output.fields = self._flag_fields(getattr(record, 'timestamp', None), record.fields)
             return output
         if isinstance(record, dict):
             output = record.copy()
-            output['fields'] = self._flag_fields(record['timestamp'], record['fields'])
+            output['fields'] = self._flag_fields(record.get('timestamp'), record['fields'])
             return output
         return record
 
@@ -547,6 +547,10 @@ class QartodFlagTransform(Transform):
 
     def _evaluate(self, field, value, status, timestamp, now):
         checks = {}
+        gross = self.tests[field].get('gross_range')
+        history_eligible = (status == PASS and timestamp is not None
+                            and (gross is None or _range_result(
+                                'gross_range', value, gross['fail_span'], FAIL)[0] != FAIL))
         for test, settings in self.tests[field].items():
             if test == 'timing':
                 result = _timing(settings, timestamp, self.previous_timestamp, now)
@@ -565,8 +569,10 @@ class QartodFlagTransform(Transform):
                 result = _spike(settings, value, self.history[field])
             elif test == 'rate_of_change':
                 result = _rate_of_change(settings, timestamp, value, self.history[field])
-            else:
+            elif history_eligible:
                 result = self.flat_history[field].evaluate(timestamp, value)
+            else:
+                result = _verdict(NOT_EVALUATED)
             checks[test] = result
         return checks
 
