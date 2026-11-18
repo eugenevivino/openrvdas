@@ -1,5 +1,9 @@
 import unittest
+from copy import deepcopy
 from datetime import datetime, timezone
+from decimal import Decimal
+from pathlib import Path
+import re
 from unittest.mock import patch
 
 from logger.utils.das_record import DASRecord
@@ -178,9 +182,15 @@ class QartodFlagTransformTest(unittest.TestCase):
     def test_existing_qc_field_is_preserved(self):
         transform = transform_for(gross_range={'fail_span': [0, 40]})
         original = record(SeaTemp=50, SeaTemp_QC='original', SeaTemp_QC_reason='original reason')
-        fields = transform.transform(original)['fields']
-        self.assertEqual(list(fields.items())[:3], list(original['fields'].items()))
-        self.assertEqual(fields['SeaTemp_QC_gross_range'], 4)
+        snapshot = deepcopy(original)
+        with self.assertRaisesRegex(ValueError, 'SeaTemp_QC'):
+            transform.transform(original)
+        self.assertEqual(list(original['fields'].items()), list(snapshot['fields'].items()))
+        retry = QartodFlagTransform(fields={'SeaTemp': {'gross_range': {'fail_span': [0, 40]}}},
+                                    flag_suffix='_quality', per_test_flags=True)
+        fields = retry.transform(original)['fields']
+        self.assertEqual(list(fields.items())[:3], list(snapshot['fields'].items()))
+        self.assertEqual(fields['SeaTemp_quality_gross_range'], 4)
 
     def test_raw_string_passes_through_with_one_warning(self):
         transform = transform_for()
@@ -335,6 +345,257 @@ class QartodFlagTransformTest(unittest.TestCase):
                 for text in ['SeaTemp', setting, value, 'expected', 'example']:
                     self.assertIn(text, message)
                 self.assertEqual(len(message.splitlines()), 1)
+
+    def test_review_1_output_collision(self):
+        fields = {
+            'T': {'spike': {'suspect': 1, 'fail': 2, 'window': 1},
+                  'timing': {'max_gap_seconds': 10},
+                  'front_check': {'companions': ['S'], 'min_change': {'S': 1}}},
+            'S': {},
+        }
+        for name, collision in [('T_QC', record(110, T=None, T_QC=1, T_QC_2=1)),
+                                ('S_QC', record(110, T=14, S=31, S_QC=4)),
+                                ('T_QC_reason', record(110, T=None, T_QC_reason='raw')),
+                                ('T_QC_spike', record(110, T=None, T_QC_spike=1))]:
+            with self.subTest(name=name):
+                transform = QartodFlagTransform(fields=fields, per_test_flags=True)
+                transform.transform(record(100, T=10, S=30))
+                snapshot = deepcopy(collision)
+                with self.assertRaisesRegex(ValueError, name) as error:
+                    transform.transform([record(105, T=11, S=29), collision])
+                self.assertEqual(collision, snapshot)
+                self.assertEqual(list(collision['fields']), list(snapshot['fields']))
+                suffix = re.search(r"flag_suffix: '([^']+)'", str(error.exception))[1]
+                retry = QartodFlagTransform(fields=fields, flag_suffix=suffix, per_test_flags=True)
+                output = retry.transform(collision)['fields']
+                if collision['fields']['T'] is None:
+                    self.assertEqual(output['T' + suffix], 9)
+                output = transform.transform(record(112, T=14, S=30))['fields']
+                self.assertEqual(output['T_QC_timing'], 3)
+                self.assertEqual(output['T_QC_spike'], 4)
+
+    def test_review_2_decimal_values(self):
+        transform = transform_for(gross_range={'fail_span': [0, 40]},
+                                  spike={'suspect': 1, 'fail': 2, 'window': 2},
+                                  rate_of_change={'max_rate': 1},
+                                  flat_line={'tolerance': 1, 'suspect_seconds': 4,
+                                             'fail_seconds': 6})
+        transform.transform(record(98, SeaTemp=1.5))
+        transform.transform(record(99, SeaTemp=1.6))
+        for timestamp, value, flag in [(100, Decimal('NaN'), 9), (101, Decimal('1.5'), 1)]:
+            with self.subTest(value=value):
+                sample = record(timestamp, SeaTemp=value)
+                fields = transform.transform(sample)['fields']
+                self.assertIs(fields['SeaTemp'], value)
+                self.assertIs(sample['fields']['SeaTemp'], value)
+                self.assertEqual(fields['SeaTemp_QC'], flag)
+                for test in ('gross_range', 'spike', 'rate_of_change', 'flat_line'):
+                    self.assertEqual(fields['SeaTemp_QC_' + test], 1 if flag == 1 else 2)
+
+    def test_review_3_rate_overflow(self):
+        transform = transform_for(gross_range={'fail_span': [0, 40]},
+                                  rate_of_change={'max_rate': 1})
+        transform.transform(record(100, SeaTemp=1))
+        value = 10**400
+        fields = transform.transform(record(101, SeaTemp=value))['fields']
+        self.assertIs(fields['SeaTemp'], value)
+        self.assertEqual(fields['SeaTemp_QC_gross_range'], 4)
+        self.assertEqual(fields['SeaTemp_QC_rate_of_change'], 3)
+        self.assertTrue(fields['SeaTemp_QC_reason'].startswith('FAIL: gross_range'))
+
+    def test_review_4_roundoff_boundaries(self):
+        for baseline, current, expected in [(30.0, 30.2, 3), (30.2, 30.0, 3),
+                                            (30.0, 30.1999999999, 4)]:
+            with self.subTest(companion=(baseline, current)):
+                transform = QartodFlagTransform(fields={
+                    'T': {'spike': {'suspect': 1, 'fail': 2, 'window': 1},
+                          'front_check': {'companions': ['S'], 'min_change': {'S': 0.2}}},
+                    'S': {},
+                })
+                transform.transform(record(100, T=10, S=baseline))
+                fields = transform.transform(record(101, T=14, S=current))['fields']
+                self.assertEqual(fields['T_QC'], expected)
+                if expected == 3:
+                    self.assertIn('AMBIGUOUS: jump matches a change in S;', fields['T_QC_reason'])
+        for baseline, current, expected in [(1.0, 1.1, 1), (1.1, 1.0, 1),
+                                            (1.0, 1.1000000001, 3)]:
+            with self.subTest(rate=(baseline, current)):
+                transform = transform_for(rate_of_change={'max_rate': 0.1})
+                transform.transform(record(100, SeaTemp=baseline))
+                fields = transform.transform(record(101, SeaTemp=current))['fields']
+                self.assertEqual(fields['SeaTemp_QC_rate_of_change'], expected)
+        transform = transform_for(rate_of_change={'max_rate': 0.1})
+        transform.transform(record(100.1, SeaTemp=1))
+        fields = transform.transform(record(Decimal('100.1'), SeaTemp=2))['fields']
+        self.assertEqual(fields['SeaTemp_QC_rate_of_change'], 2)
+
+    def test_review_5_even_median(self):
+        for values in [(1e308, 1e308, 1e308), (-1e308, 1e308, 0)]:
+            with self.subTest(values=values):
+                transform = transform_for(spike={'suspect': 1, 'fail': 2, 'window': 2})
+                for timestamp, value in enumerate(values, start=100):
+                    fields = transform.transform(record(timestamp, SeaTemp=value))['fields']
+                self.assertEqual(fields['SeaTemp_QC_spike'], 1)
+                self.assertNotIn('SeaTemp_QC_reason', fields)
+
+    def test_review_6_unusable_timestamp_breaks_baseline(self):
+        transform = transform_for(timing={'max_gap_seconds': 10})
+        with patch('time.time', return_value=120):
+            for timestamp, expected in [(100, 1), (None, 2), (120, 1), (None, 2), (181, 4)]:
+                with self.subTest(timestamp=timestamp):
+                    fields = transform.transform(record(timestamp, SeaTemp=10))['fields']
+                    self.assertEqual(fields['SeaTemp_QC_timing'], expected)
+        self.assertIn('ahead of wall time', fields['SeaTemp_QC_reason'])
+
+    def test_review_7_companion_chains_and_cycles(self):
+        cases = [(['C'], 1, (3, 3)), (['A'], 1, (4, 4)),
+                 (['A', 'C'], 1, (3, 3)), (['A', 'C'], 0, (4, 4))]
+        for b_companions, c_change, expected in cases:
+            for as_configured in ('ABC', 'CBA'):
+                with self.subTest(companions=b_companions, change=c_change, order=as_configured):
+                    settings = {}
+                    for name, companions in [('A', ['B']), ('B', b_companions)]:
+                        settings[name] = {
+                            'spike': {'suspect': 1, 'fail': 2, 'window': 1},
+                            'front_check': {'companions': companions,
+                                            'min_change': dict.fromkeys(companions, 1)},
+                        }
+                    settings['C'] = {}
+                    transform = QartodFlagTransform(fields={n: settings[n] for n in as_configured})
+                    transform.transform(record(100, A=0, B=0, C=0))
+                    flags = transform.transform(record(101, A=4, B=4, C=c_change))['fields']
+                    self.assertEqual((flags['A_QC'], flags['B_QC']), expected)
+                    if expected == (3, 3):
+                        self.assertIn('matches a change in B;', flags['A_QC_reason'])
+                        self.assertIn('matches a change in C;', flags['B_QC_reason'])
+                        flags = transform.transform(record(102, A=0, B=3, C=c_change))['fields']
+                        self.assertEqual(flags['A_QC'], 3)
+
+    def test_review_8_hard_failure_reason(self):
+        transform = QartodFlagTransform(fields={
+            'T': {'gross_range': {'fail_span': [0, 20]},
+                  'spike': {'suspect': 1, 'fail': 2, 'window': 1},
+                  'front_check': {'companions': ['S'], 'min_change': {'S': 1}}},
+            'S': {'gross_range': {'fail_span': [0, 40]}},
+        })
+        transform.transform(record(100, T=10, S=30))
+        for timestamp, companion, expected in [(101, {}, 'S missing'), (102, {'S': 50}, 'S bad')]:
+            with self.subTest(companion=companion):
+                fields = transform.transform(record(timestamp, T=25, **companion))['fields']
+                self.assertEqual(fields['T_QC'], 4)
+                self.assertEqual(fields['T_QC_reason'], f'FAIL: gross_range 25 outside [0, 20]; '
+                                 f'{expected}')
+
+    def test_review_9_configuration_diagnostics(self):
+        for fields, kwargs, setting, example in [
+            ({'T': {}}, {'per_test_flag': True}, 'per_test_flag', 'per_test_flags: true'),
+            ({'T': {}}, {'per_test\nflag': True}, r'per_test\nflag', 'per_test_flags: true'),
+            ({'T': {'typo\nname': {}}}, {}, r'typo\nname', 'gross_range:'),
+            ({'T': {'spike': {'odd\nkey': 2}}}, {}, r'spike.odd\nkey', 'window: 3'),
+            ({'T': {}, 'T_QC': {}, 'T_QC_2': {}}, {}, 'flag_suffix', 'flag_suffix:'),
+            ({'T': {'spike': {'window': 1, 'suspect': 1, 'fail': 2}}, 'T_alt_spike': {}},
+             {'flag_suffix': '_alt', 'per_test_flags': True}, 'flag_suffix', 'flag_suffix:'),
+        ]:
+            with self.subTest(fields=fields, kwargs=kwargs):
+                with self.assertRaises(ValueError) as error:
+                    QartodFlagTransform(fields=fields, **kwargs)
+                message = str(error.exception)
+                self.assertEqual(len(message.splitlines()), 1)
+                for part in (setting, 'got', 'expected', 'Good example', example):
+                    self.assertIn(part, message)
+                if setting == 'flag_suffix':
+                    suffix = re.search(r"flag_suffix: '([^']+)'", message)[1]
+                    QartodFlagTransform(fields=fields, **dict(kwargs, flag_suffix=suffix))
+
+    def test_review_10_full_input_snapshot(self):
+        values = {'Z': [1, 2], 'SeaTemp': 10.125, 'Salt': 32}
+        inputs = [DASRecord(data_id='mwx1', message_type='MET', timestamp=100.125,
+                            fields=deepcopy(values), metadata={'unit': 'C'}),
+                  {'source': 'sample', 'fields': deepcopy(values), 'timestamp': 101.125}]
+        transform = transform_for(gross_range={'fail_span': [0, 40]})
+        for sample in inputs:
+            with self.subTest(record_type=type(sample)):
+                source = vars(sample) if isinstance(sample, DASRecord) else sample
+                snapshot = deepcopy(source)
+                result = transform.transform(sample)
+                output = vars(result) if isinstance(result, DASRecord) else result
+                self.assertEqual(list(source.items()), list(snapshot.items()))
+                self.assertEqual(list(source['fields'].items()), list(snapshot['fields'].items()))
+                self.assertEqual(output['timestamp'], snapshot['timestamp'])
+                self.assertEqual(list(output['fields'].items())[:len(values)], list(values.items()))
+
+    def test_review_11_history_and_config_guards(self):
+        transform = transform_for(flat_line={'tolerance': 1, 'suspect_seconds': 2,
+                                             'fail_seconds': 4})
+        for timestamp in range(100, 120):
+            transform.transform(record(timestamp, SeaTemp=10))
+        self.assertEqual([stamp for stamp, _ in transform.flat_history['SeaTemp']],
+                         [115, 116, 117, 118, 119])
+
+        transform = QartodFlagTransform(fields={
+            'T': {'spike': {'suspect': 1, 'fail': 2, 'window': 3},
+                  'rate_of_change': {'max_rate': 1},
+                  'front_check': {'companions': ['S'], 'min_change': {'S': 1}}},
+            'S': {},
+        })
+        transform.transform(record(100, T=10, S=30))
+        transform.transform(record(101, T=10))
+        output = transform.transform(record(102, T=14, S=31))['fields']
+        self.assertEqual(output['T_QC_reason'],
+                         'SUSPECT: rate_of_change 4 per second over limit 1; '
+                         'S has no previous good value in the jump window')
+
+        transform = QartodFlagTransform(fields={
+            'T': {'spike': {'suspect': 1, 'fail': 2, 'window': 1},
+                  'rate_of_change': {'max_rate': 1},
+                  'flat_line': {'tolerance': 1, 'suspect_seconds': 1, 'fail_seconds': 2},
+                  'front_check': {'companions': ['S'], 'min_change': {'S': 1}}},
+            'S': {},
+        }, per_test_flags=True)
+        transform.transform(record(100, T=10, S=30))
+        for timestamp, flat_flag in [(101, 3), (102, 4)]:
+            output = transform.transform(record(timestamp, T=10, S=30 + timestamp - 100))['fields']
+            self.assertEqual((output['T_QC_spike'], output['T_QC_rate_of_change']), (1, 1))
+            self.assertEqual(output['T_QC_flat_line'], flat_flag)
+            self.assertEqual(output['T_QC'], flat_flag)
+            self.assertIn('flat_line', output['T_QC_reason'])
+
+        with self.assertRaisesRegex(ValueError, 'distinct months'):
+            transform_for(climatology={'months': [
+                {'months': [1], 'suspect_span': [0, 10]},
+                {'months': [1], 'suspect_span': [10, 20]},
+            ]})
+        with self.assertRaisesRegex(ValueError, 'distinct months'):
+            transform_for(climatology={'months': [{'months': [1, 1], 'suspect_span': [0, 10]}]})
+        with self.assertRaisesRegex(ValueError, 'flag_suffix.*nonempty string'):
+            QartodFlagTransform(fields={'T': {}}, flag_suffix='')
+
+    def test_review_12_quickstart_and_worked_error(self):
+        guide = Path(qartod_flag_transform.__file__).parents[2] / 'docs' / 'qartod_flags.md'
+        content = guide.read_text(encoding='utf-8')
+        with self.subTest(section='quickstart'):
+            self.assertIn('test/NBP1406/data/mwx1', content)
+            self.assertLess(content.index('test/NBP1406/data/mwx1'),
+                            content.index('python logger/listener/listen.py'))
+        with self.subTest(section='worked error'):
+            with self.assertRaises(ValueError) as error:
+                transform_for(rate_of_change={'max_rate': 0})
+            self.assertIn(str(error.exception), content)
+            self.assertRegex(content, r'(?m)^ +max_rate: 0\.5$')
+
+    def test_review_13_utc_conversion_diagnostic(self):
+        transform = transform_for(
+            climatology={'months': [{'months': [1], 'suspect_span': [0, 10]}]}, timing={})
+        timestamp = -10**20
+        with (patch('time.monotonic', side_effect=[0, 1, 59, 60]),
+              self.assertLogs(level='WARNING') as messages):
+            for _ in range(4):
+                outcome = transform.transform(record(timestamp, SeaTemp=5))
+                self.assertIs(outcome['timestamp'], timestamp)
+                self.assertEqual(outcome['fields']['SeaTemp_QC_climatology'], 2)
+        self.assertEqual(len(messages.output), 2)
+        self.assertIn('UTC', messages.output[0])
+        self.assertIn(str(timestamp), messages.output[0])
 
 
 if __name__ == '__main__':

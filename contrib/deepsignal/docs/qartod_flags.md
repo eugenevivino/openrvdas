@@ -5,8 +5,10 @@ every original value and timestamp.
 
 ## Turn it on in 5 minutes
 
-1. From the top of an OpenRVDAS installation with this contrib module, run the sample using
-   the same Python environment you use for your logger.
+1. Open `contrib/deepsignal/configs/qartod_flags_logger.yaml` and check its `file_spec`.
+   In a contrib checkout, keep `test/NBP1406/mwx1`. In a current core checkout, use
+   `test/NBP1406/data/mwx1` in its place. From the top of the checkout, run the sample
+   using the same Python environment you use for your logger.
 
    ```sh
    python logger/listener/listen.py --config_file contrib/deepsignal/configs/qartod_flags_logger.yaml
@@ -14,8 +16,7 @@ every original value and timestamp.
 
    Look for `MwxAirTemp_QC` and `MwxAirRelHumid_QC` in the printed records alongside their
    sensor values. The first few temperatures should have a spike flag of 2 while the logger
-   collects enough prior readings. When using a current core checkout, insert `data/` before
-   `mwx1/` in the sample's `file_spec`.
+   collects enough prior readings.
 2. Copy the `QartodFlagTransform` entry to your own logger after the parse step and before any
    step that turns the records into text. Change `fields` to the names from your parser and
    set limits in the sensor's units. If your parser can output text or parsed records, choose
@@ -37,8 +38,9 @@ every original value and timestamp.
 Missing takes priority. For a numeric value, fail takes priority over suspect, then pass,
 then not evaluated. Numeric-looking strings and true/false values fail the syntax check.
 A field absent from the record gets no flag. The transform appends new fields in the copied
-record and preserves any field already using one of the output names. Choose a different
-suffix if those fields already exist in your feed.
+record. If an input field already uses a reserved flag or reason name, the transform raises
+an error before adding flags or updating history. The error names the field in use and
+suggests a free `flag_suffix`.
 
 ## Settings
 
@@ -65,6 +67,21 @@ limit must be less than the upper limit. Thresholds and durations must be above 
 | `front_check.companions` | Other field names from `fields` that should also move during a front. | Front check is off by default. |
 | `front_check.min_change` | Minimum change needed in each companion, in that companion's units. | Required for every named companion. |
 
+Setting `max_rate: 0` under `SeaTemp` produces this message.
+
+```text
+Field 'SeaTemp', rate_of_change.max_rate: got 0, expected a finite number greater than zero. Good example: {max_rate: 0.5}.
+```
+
+Use a positive limit in the transform's `kwargs`.
+
+```yaml
+fields:
+  SeaTemp:
+    rate_of_change:
+      max_rate: 0.5
+```
+
 ## How to pick thresholds
 
 Use the instrument limits for the fail span and typical readings for the suspect span.
@@ -86,8 +103,10 @@ at the previous usable reading. In either case the companion needs a previous us
 in that window. A missing companion or one that failed a check is skipped, both when
 checking the current record and when saving a reading to compare against later. If no other companion
 confirms it, the original flag stands and the reason names the jump check and any missing or
-bad companions. Two readings that both fail their jump checks cannot confirm each other.
-A gross-range, syntax or timing failure still makes the overall flag 4.
+bad companions. A companion whose jump is independently corroborated can then confirm another
+reading. Two readings that both fail their jump checks need evidence from another companion.
+A gross-range, syntax or timing failure still makes the overall flag 4. When a hard failure
+and unavailable companions both contribute to the result, the reason starts with the failure.
 
 ## What it does not do
 
@@ -98,3 +117,5 @@ A gross-range, syntax or timing failure still makes the overall flag 4.
 - History is kept in memory for each field, with a limited number of readings for spike and
   rate and a limited time window for flat line. Readings that fail syntax or gross range are
   left out of history. Restarting the logger clears the history and the checks warm up again.
+- Monthly climatology gives 2 if the timestamp cannot be converted to a UTC month. The
+  transform logs this conversion failure at most once per minute.
