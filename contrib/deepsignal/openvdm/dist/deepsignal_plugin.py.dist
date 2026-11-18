@@ -1,0 +1,19 @@
+"""OpenVDM 2.17 plugin for DeepSignal quality products."""
+
+from server.lib.openvdm_plugin import OpenVDMPlugin
+
+from deepsignal_quality_parser import DeepSignalQualityParser
+
+
+PARSER_MAP = {"deepsignal_quality": DeepSignalQualityParser}
+
+
+class DeepSignalPlugin(OpenVDMPlugin):
+    fileTypeFilters = [{
+        "data_type": "DeepSignal quality",
+        "regex": "*-quality-????-??-??.csv",
+        "parser": "deepsignal_quality",
+        "parser_options": {"fail_share": 0.01, "warn_share": 0.05},
+    }]
+
+    PARSER_MAP = PARSER_MAP

@@ -1,0 +1,71 @@
+"""OpenVDM 2.17 parser for DeepSignal daily quality CSV files."""
+
+import csv
+from collections import defaultdict
+from datetime import datetime, timezone
+
+from server.lib.openvdm_csv_parser import OpenVDMCSVParser
+
+
+class DeepSignalQualityParser(OpenVDMCSVParser):
+    """Turn QARTOD flags into OpenVDM quality results and visualizations."""
+
+    def parse(self):
+        fail_share = float(self.parser_options.get("fail_share", 0.01))
+        warn_share = float(self.parser_options.get("warn_share", 0.05))
+        if not 0 <= fail_share <= 1:
+            raise ValueError("fail_share saw %r; expected 0 through 1, for example 0.01" % fail_share)
+        if not 0 <= warn_share <= 1:
+            raise ValueError("warn_share saw %r; expected 0 through 1, for example 0.05" % warn_share)
+
+        flags = defaultdict(list)
+        hourly = defaultdict(lambda: defaultdict(list))
+        times = []
+        total = 0
+        valid = 0
+        with open(self.filename, newline="", encoding="utf-8") as stream:
+            for row in csv.DictReader(stream):
+                total += 1
+                try:
+                    timestamp = self._milliseconds(row["timestamp"])
+                    field = row["field"].strip()
+                    flag = int(row["flag"])
+                    if not field or flag not in (1, 2, 3, 4, 9):
+                        raise ValueError
+                except (KeyError, TypeError, ValueError):
+                    continue
+                valid += 1
+                times.append(timestamp)
+                flags[field].append(flag)
+                hour = timestamp - timestamp % 3600000
+                hourly[field][hour].append(flag)
+
+        for field in sorted(flags):
+            values = flags[field]
+            failed = sum(flag == 4 for flag in values) / len(values)
+            warning = sum(flag in (3, 9) for flag in values) / len(values)
+            if failed > fail_share:
+                self.add_quality_test_failed(field)
+            elif warning > warn_share:
+                self.add_quality_test_warning(field)
+            else:
+                self.add_quality_test_passed(field)
+            data = []
+            for hour, hour_flags in sorted(hourly[field].items()):
+                share = sum(flag != 1 for flag in hour_flags) / len(hour_flags)
+                data.append([hour, share])
+            self.add_visualization_data({"label": field + " flag share",
+                                         "unit": "share", "data": data})
+
+        self.add_row_validity_stat(valid, total)
+        if times:
+            self.add_time_bounds_stat(min(times), max(times))
+        self.add_total_value_stat(valid)
+        return self.output
+
+    @staticmethod
+    def _milliseconds(text):
+        value = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return int(value.timestamp() * 1000)

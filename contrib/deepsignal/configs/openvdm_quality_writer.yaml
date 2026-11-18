@@ -1,0 +1,5 @@
+class: QualityDayWriter
+module: contrib.deepsignal.openvdm.quality_day_writer
+kwargs:
+  root: /var/lib/openrvdas/quality
+  data_id: ctd
