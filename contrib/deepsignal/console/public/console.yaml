@@ -4,4 +4,4 @@ ship_timezone: UTC
 # websocket: ws://localhost:8766
 pages: [example]
 history: 300
-stale_after: 30
+night_palette: red

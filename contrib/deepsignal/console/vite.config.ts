@@ -19,8 +19,8 @@ export default defineConfig({
         handler(html) {
           return html.replace('/* console lighting boot */',
             `(() => {
-              const { mode, dim } = (${readLighting.toString()})();
-              (${paintLighting.toString()})(document.documentElement, mode, dim);
+              const { mode, dim, palette, defaultPalette } = (${readLighting.toString()})();
+              (${paintLighting.toString()})(document.documentElement, mode, dim, palette ?? defaultPalette);
             })();`)
         },
       },

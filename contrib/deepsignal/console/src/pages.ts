@@ -1,4 +1,5 @@
 import { JSON_SCHEMA, load } from 'js-yaml'
+import type { NightPalette } from './lighting-paint'
 
 export interface NumberTileConfig {
   type: 'number'
@@ -7,7 +8,7 @@ export interface NumberTileConfig {
   unit: string
   decimals: number
   sparkline?: number
-  stale_after: number
+  period?: number
   wide: boolean
 }
 
@@ -23,7 +24,7 @@ export interface ConsoleConfig {
   websocket: string
   pages: string[]
   history: number
-  stale_after: number
+  night_palette: NightPalette
 }
 
 const pageIdPattern = /^[a-z0-9][a-z0-9-]*$/
@@ -79,11 +80,12 @@ const between = (min: number, max: number) =>
   (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) &&
     value >= min && value <= max
 
-function parseTile(raw: unknown, location: string, staleAfter: number): NumberTileConfig {
+function parseTile(raw: unknown, location: string): NumberTileConfig {
   const values = mapping(raw, location, 'tile', 'type: number')
   const type = setting(location, values, 'type', (value): value is 'number' => value === 'number',
     '"number"', 'type: number')
-  exactKeys(values, ['type', 'label', 'field', 'unit', 'decimals', 'sparkline', 'stale_after', 'wide'], location)
+  // Accept settings files deployed with v1. Freshness uses period in v2.
+  exactKeys(values, ['type', 'label', 'field', 'unit', 'decimals', 'sparkline', 'period', 'wide', 'stale_after'], location)
   const label = setting(location, values, 'label', isText, 'a text label', 'label: Depth')
   const field = setting(location, values, 'field', (value): value is string => isText(value) && fieldPattern.test(value),
     'an exact field name using letters, numbers, underscores, periods or hyphens', 'field: DepthMeters')
@@ -92,13 +94,16 @@ function parseTile(raw: unknown, location: string, staleAfter: number): NumberTi
   const sparkline = Object.hasOwn(values, 'sparkline')
     ? setting(location, values, 'sparkline', between(1, 1440), 'whole minutes from 1 to 1440', 'sparkline: 5')
     : undefined
-  const stale_after = setting(location, values, 'stale_after', between(1, 86400),
-    'whole seconds from 1 to 86400', 'stale_after: 30', staleAfter)
+  const period = Object.hasOwn(values, 'period')
+    ? setting(location, values, 'period', (value): value is number =>
+      typeof value === 'number' && Number.isFinite(value) && value > 0,
+    'a positive period in seconds', 'period: 2')
+    : undefined
   const wide = setting(location, values, 'wide', isBoolean, 'true or false', 'wide: true', false)
-  return { type, label, field, unit, decimals, sparkline, stale_after, wide }
+  return { type, label, field, unit, decimals, sparkline, period, wide }
 }
 
-export function parsePage(file: string, text: string, staleAfter = 30): Page {
+export function parsePage(file: string, text: string): Page {
   const values = mapping(yaml(text, file), file, 'page', 'title: Bridge')
   exactKeys(values, ['title', 'tiles'], file)
   const title = setting(file, values, 'title', isText, 'a page title', 'title: Bridge')
@@ -107,7 +112,7 @@ export function parsePage(file: string, text: string, staleAfter = 30): Page {
   return {
     id: file.split('/').at(-1)!.replace(/\.yaml$/, ''),
     title,
-    tiles: tiles.map((tile, index) => parseTile(tile, `${file}, tile ${index + 1}`, staleAfter)),
+    tiles: tiles.map((tile, index) => parseTile(tile, `${file}, tile ${index + 1}`)),
   }
 }
 
@@ -135,7 +140,7 @@ function isTimeZone(value: unknown): value is string {
 export function parseConsole(text: string, host: string): ConsoleConfig {
   const file = 'console.yaml'
   const values = mapping(yaml(text, file), file, 'console', 'ship: R/V Example')
-  exactKeys(values, ['ship', 'ship_timezone', 'websocket', 'pages', 'history', 'stale_after'], file)
+  exactKeys(values, ['ship', 'ship_timezone', 'websocket', 'pages', 'history', 'night_palette', 'stale_after'], file)
   return {
     ship: setting(file, values, 'ship', isText, 'a ship name', 'ship: R/V Example'),
     ship_timezone: setting(file, values, 'ship_timezone', isTimeZone,
@@ -148,8 +153,9 @@ export function parseConsole(text: string, host: string): ConsoleConfig {
     'a list of unique page IDs using lowercase letters, numbers or hyphens', 'pages: [example]'),
     history: setting(file, values, 'history', between(0, 86400),
       'whole seconds from 0 to 86400', 'history: 300', 0),
-    stale_after: setting(file, values, 'stale_after', between(1, 86400),
-      'whole seconds from 1 to 86400', 'stale_after: 30', 30),
+    night_palette: setting(file, values, 'night_palette',
+      (value): value is NightPalette => value === 'red' || value === 'neutral',
+      'red or neutral', 'night_palette: red', 'red'),
   }
 }
 
@@ -169,7 +175,7 @@ export async function loadConsole(signal: AbortSignal) {
   const pages = await Promise.all(config.pages.map(async (id) => {
     const file = `pages/${id}.yaml`
     try {
-      const page = parsePage(file, await fetchFile(file, signal), config.stale_after)
+      const page = parsePage(file, await fetchFile(file, signal))
       return { id, title: page.title, page }
     } catch (error) {
       return { id, title: id, error: error instanceof Error ? error.message : String(error) }

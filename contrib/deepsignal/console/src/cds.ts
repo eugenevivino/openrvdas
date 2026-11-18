@@ -1,13 +1,11 @@
-export interface Reading {
-  value: number | null
-  timestamp: number
-}
+import { mergeFieldSamples } from './field-data'
+import type { FieldSamples, Reading } from './field-data'
 
 type Connection = 'idle' | 'connecting' | 'connected' | 'reconnecting'
 
 interface Snapshot {
   connection: Connection
-  fields: ReadonlyMap<string, Reading>
+  fields: ReadonlyMap<string, FieldSamples>
   history: ReadonlyMap<string, readonly Reading[]>
   lastData?: number
 }
@@ -15,12 +13,22 @@ interface Snapshot {
 const responseTimeout = 15_000
 const maxHistoryPoints = 10_000
 
-export function isStale(timestamp: number, now: number, staleAfter = 30) {
-  return now - timestamp > staleAfter
-}
-
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function readBatch(batch: Record<string, unknown>, field: string, now: number): Reading[] {
+  const samples = Object.hasOwn(batch, field) ? batch[field] : undefined
+  if (!Array.isArray(samples)) return []
+  const readings: Reading[] = []
+  for (const sample of samples) {
+    if (!Array.isArray(sample) || sample.length !== 2) continue
+    const [timestamp, rawValue] = sample as unknown[]
+    if (typeof timestamp !== 'number' || !Number.isFinite(timestamp) || timestamp <= 0 || timestamp > now + 5) continue
+    const value = typeof rawValue === 'number' && Number.isFinite(rawValue) ? rawValue : null
+    readings.push({ timestamp, value, receivedAt: now })
+  }
+  return readings
 }
 
 export class CdsClient {
@@ -29,12 +37,12 @@ export class CdsClient {
   private snapshot: Snapshot = { connection: 'idle', fields: new Map(), history: new Map() }
   private wanted = new Map<string, number>()
   private subscribed?: Map<string, number>
+  private checkBackfill = false
   private phase: 'opening' | 'subscribe' | 'data' | 'idle' = 'idle'
   private socket?: WebSocket
   private retry?: ReturnType<typeof setTimeout>
   private watchdog?: ReturnType<typeof setTimeout>
   private failures = 0
-  private newSocket = true
 
   constructor(url: string) {
     this.url = url
@@ -81,7 +89,6 @@ export class CdsClient {
 
   private connect() {
     this.phase = 'opening'
-    this.newSocket = true
     this.update({ connection: this.failures ? 'reconnecting' : 'connecting' })
     let socket: WebSocket
     try {
@@ -140,15 +147,20 @@ export class CdsClient {
     }
   }
 
-  private sendSubscription() {
+  private sendSubscription(latest?: ReadonlySet<string>) {
     this.phase = 'subscribe'
     this.subscribed = this.wanted
-    const fields = Object.fromEntries([...this.wanted].map(([field, seconds]) => [
-      field,
-      // With a history window, retain at least one record to show an offline field's age.
+    this.checkBackfill = latest === undefined
+    const requested = new Map(this.wanted)
+    for (const [field, seconds] of this.wanted) {
+      const flag = field + '_QC'
+      requested.set(flag, Math.max(requested.get(flag) ?? -1, seconds))
+    }
+    for (const field of latest ?? []) requested.set(field, -1)
+    const fields = [...requested].map(([field, seconds]) => [field,
       seconds > 0 ? { seconds, back_records: 1 } : { seconds },
-    ]))
-    this.send({ type: 'subscribe', fields })
+    ])
+    this.send({ type: 'subscribe', fields: Object.fromEntries(fields) })
   }
 
   private requestNext() {
@@ -175,43 +187,44 @@ export class CdsClient {
       if (message.status === 200) this.requestNext()
       else this.reconnect()
     } else if (this.phase === 'data' && message.type === 'data') {
-      if (message.status === 200 && object(message.data)) this.accept(message.data)
-      this.requestNext()
+      if (message.status !== 200 || !object(message.data)) {
+        this.reconnect()
+        return
+      }
+      const empty = this.accept(message.data)
+      if (empty.size && this.wanted === this.subscribed) this.sendSubscription(empty)
+      else this.requestNext()
     }
   }
 
   private accept(batch: Record<string, unknown>) {
     // Finish the previous request before subscribing on the same socket.
     // Discard its batch if the operator has moved to another page.
-    if (this.wanted !== this.subscribed) return
-    const fields = new Map(this.newSocket ? undefined : this.snapshot.fields)
-    const history = new Map(this.newSocket ? undefined : this.snapshot.history)
+    const empty = new Set<string>()
+    if (this.wanted !== this.subscribed) return empty
+    const fields = new Map(this.snapshot.fields)
+    const history = new Map(this.snapshot.history)
     const now = Date.now() / 1000
     let { lastData } = this.snapshot
     this.failures = 0
-    this.newSocket = false
     for (const [field, seconds] of this.wanted) {
-      const samples = Object.hasOwn(batch, field) ? batch[field] : undefined
-      if (!Array.isArray(samples)) continue
-      let latest = fields.get(field)
-      const recent = new Map((history.get(field) ?? []).map((point) => [point.timestamp, point]))
-      for (const sample of samples) {
-        if (!Array.isArray(sample)) continue
-        const [timestamp, rawValue] = sample as unknown[]
-        if (typeof timestamp !== 'number' || !Number.isFinite(timestamp) || timestamp <= 0 ||
-            timestamp > now + 5 || sample.length !== 2) continue
-        const value = typeof rawValue === 'number' && Number.isFinite(rawValue) ? rawValue : null
-        const reading = { timestamp, value }
-        if (!latest || timestamp >= latest.timestamp) latest = reading
-        if (seconds > 0 && timestamp >= now - seconds) recent.set(timestamp, reading)
-        lastData = Math.max(lastData ?? 0, timestamp)
+      const flags = readBatch(batch, field + '_QC', now)
+      const readings = readBatch(batch, field, now)
+      if (this.checkBackfill && seconds > 0 && !readings.length) {
+        empty.add(field)
+        if (!flags.length) empty.add(field + '_QC')
       }
-      if (latest) fields.set(field, latest)
-      if (seconds > 0) {
+      if (readings.length || flags.length) fields.set(field, mergeFieldSamples(fields.get(field), readings, flags))
+      if (seconds > 0 && readings.length) {
+        const recent = new Map((history.get(field) ?? []).map((point) => [point.timestamp, point]))
+        for (const reading of readings) recent.set(reading.timestamp, reading)
         history.set(field, [...recent.values()].filter((point) => point.timestamp >= now - seconds)
           .sort((a, b) => a.timestamp - b.timestamp).slice(-maxHistoryPoints))
       }
+      for (const { timestamp } of readings) lastData = Math.max(lastData ?? 0, timestamp)
     }
+    this.checkBackfill = false
     this.update({ connection: 'connected', fields, history, lastData })
+    return empty
   }
 }

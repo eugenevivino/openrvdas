@@ -1,23 +1,36 @@
 import { useEffect, useEffectEvent, useMemo, useState, useSyncExternalStore } from 'react'
-import { CdsClient, isStale } from './cds'
-import type { Reading } from './cds'
+import { CdsClient } from './cds'
+import { fieldData } from './field-data'
+import type { Freshness, Quality, Reading } from './field-data'
 import { LightingControls } from './LightingControls'
 import { isShortcut } from './lighting'
+import type { NightPalette } from './lighting'
 import { loadConsole } from './pages'
 import type { LoadedConsole, NumberTileConfig } from './pages'
 import { Sparkline } from './Sparkline'
 
-type State = 'OK' | 'Check' | 'Stale' | 'Down'
 const emptyHistory: readonly Reading[] = []
 
+const statusStyles = {
+  ok: ['circle', 'ok'], check: ['triangle', 'check'], down: ['cross', 'down'],
+  LIVE: ['circle', 'normal'], AGING: ['triangle', 'check'], STALE: ['square', 'stale'], 'NO DATA': ['dash', 'missing'],
+  PASS: ['circle', 'normal'], 'NOT EVALUATED': ['diamond', 'normal'], SUSPECT: ['triangle', 'check'],
+  FAIL: ['cross', 'down'], MISSING: ['square', 'missing'],
+} satisfies Record<Freshness | Quality | 'ok' | 'check' | 'down', readonly [string, string]>
+
+type State = keyof typeof statusStyles
+
 function Status({ state, children }: { state: State; children?: string }) {
+  const [shape, color] = statusStyles[state]
   return (
-    <span className={'status status-' + state.toLowerCase()}>
+    <span className={'status status-' + color}>
       <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
-        {state === 'OK' && <circle cx="6" cy="6" r="5" fill="currentColor" />}
-        {state === 'Check' && <path d="M6 1 11 11H1Z" fill="currentColor" />}
-        {state === 'Stale' && <rect x="1.5" y="1.5" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="2" />}
-        {state === 'Down' && <path d="M2 2l8 8m0-8-8 8" stroke="currentColor" strokeWidth="2.4" />}
+        {shape === 'circle' && <circle cx="6" cy="6" r="5" fill="currentColor" />}
+        {shape === 'triangle' && <path d="M6 1 11 11H1Z" fill="currentColor" />}
+        {shape === 'square' && <rect x="1.5" y="1.5" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="2" />}
+        {shape === 'cross' && <path d="M2 2l8 8m0-8-8 8" stroke="currentColor" strokeWidth="2.4" />}
+        {shape === 'diamond' && <path d="m6 1 5 5-5 5-5-5Z" fill="none" stroke="currentColor" strokeWidth="1.5" />}
+        {shape === 'dash' && <path d="M1 6h10" stroke="currentColor" strokeWidth="2" />}
       </svg>
       {children ?? state}
     </span>
@@ -41,48 +54,54 @@ function Clock({ now, timeZone }: { now: number; timeZone: string }) {
   )
 }
 
-function NumberTile({ tile, reading, history, now, connected }: {
+function NumberTile({ tile, data, history, now }: {
   tile: NumberTileConfig
-  reading?: Reading
+  data: ReturnType<typeof fieldData>
   history: readonly Reading[]
   now: number
-  connected: boolean
 }) {
-  const stale = reading && isStale(reading.timestamp, now, tile.stale_after)
-  let state: State = 'Check'
-  if (stale) state = 'Stale'
-  else if (!connected) state = 'Down'
-  else if (reading && reading.value !== null) state = 'OK'
-
-  const value = reading?.value
-  const observed = reading ? new Date(reading.timestamp * 1000).toISOString() : undefined
+  const { value, timestamp, freshness, quality, lastGood, expectedPeriod, age: secondsOld } = data
+  const noData = freshness === 'NO DATA'
+  const showValue = !noData && value !== null
+  const observed = timestamp === undefined ? undefined : new Date(timestamp * 1000).toISOString()
+  const lastGoodTime = lastGood && new Date(lastGood.timestamp * 1000).toISOString()
   return (
     <article className={tile.wide ? 'tile wide' : 'tile'}>
       <div className="tile-header">
         <h2>{tile.label}</h2>
-        <Status state={state} />
+        <div className="tile-states">
+          <span className="freshness" role="group" aria-label="Freshness"><Status state={freshness} /></span>
+          <span className="quality" role="group" aria-label="Data quality"><Status state={quality} /></span>
+        </div>
       </div>
-      <div className={state !== 'OK' && typeof value === 'number' ? 'value expired' : 'value'}>
-        {typeof value === 'number' ? value.toFixed(tile.decimals) : '—'}
-        <span className="unit"> {tile.unit}</span>
+      <div className="value">
+        {showValue ? <>{value.toFixed(tile.decimals)}<span className="unit"> {tile.unit}</span></> : '—'}
       </div>
-      {tile.sparkline && <Sparkline history={history} now={now} minutes={tile.sparkline} staleAfter={tile.stale_after} />}
+      {tile.sparkline && <Sparkline history={history} now={now} minutes={tile.sparkline} period={expectedPeriod} />}
       <div className="tile-meta">
         <span>Source {tile.field}</span>
-        {reading
-          ? <span>
-              {value === null && 'Bad reading. '}
-              {state !== 'OK' && 'Last seen '}
-              {age(reading.timestamp, now)} s ago
-              {state !== 'OK' && <time dateTime={observed}> at {observed?.slice(11, 19)} UTC</time>}
+        {secondsOld !== undefined
+          ? <span className={freshness !== 'LIVE' || value === null ? 'reading-exception' : undefined}>
+              {!noData && value === null && 'Bad reading. '}
+              {Math.floor(secondsOld)} s old
+              {freshness !== 'LIVE' && <time dateTime={observed}> · {observed?.slice(11, 19)}Z</time>}
             </span>
           : <span>Waiting for data</span>}
+        {noData && lastGood?.value != null && (
+          <span className="last-reading">Last: {lastGood.value.toFixed(tile.decimals)} {tile.unit} at{' '}
+            <time dateTime={lastGoodTime}>{lastGoodTime?.slice(11, 19)}Z</time>
+          </span>
+        )}
       </div>
     </article>
   )
 }
 
-function Header({ children, ship }: { children?: React.ReactNode; ship?: string }) {
+function Header({ children, ship, defaultPalette }: {
+  children?: React.ReactNode
+  ship?: string
+  defaultPalette?: NightPalette
+}) {
   return (
     <header className="bar">
       <div className="brand">
@@ -93,8 +112,9 @@ function Header({ children, ship }: { children?: React.ReactNode; ship?: string 
         <span>DeepSignal</span>
         {ship && <span className="ship">{ship}</span>}
       </div>
+      <span className="monitoring-label">Research system monitoring</span>
       {children}
-      <LightingControls />
+      <LightingControls defaultPalette={defaultPalette} />
     </header>
   )
 }
@@ -141,21 +161,21 @@ function Console({ config, pages }: LoadedConsole) {
     client.setFields(Object.fromEntries(wanted))
   }, [client, page, config.history])
 
-  const last = (page?.tiles ?? []).reduce<number | undefined>((latest, tile) => {
-    const reading = fields.get(tile.field)
-    if (reading && reading.value !== null && !isStale(reading.timestamp, now, tile.stale_after)) {
-      return Math.max(latest ?? 0, reading.timestamp)
+  const tiles = (page?.tiles ?? []).map((tile) => ({ tile, data: fieldData(fields.get(tile.field), tile.period, now) }))
+  const last = tiles.reduce<number | undefined>((latest, { data }) => {
+    if (data.timestamp !== undefined && data.value !== null && data.freshness === 'LIVE') {
+      return Math.max(latest ?? 0, data.timestamp)
     }
     return latest
   }, undefined)
 
-  let pillState: State = 'Check'
+  let pillState: State = 'check'
   let pill = page ? 'Connecting' : 'Page unavailable'
   if (page && connection === 'reconnecting') {
-    pillState = 'Down'
+    pillState = 'down'
     pill = lastData === undefined ? 'Reconnecting, no data yet' : `Reconnecting, last data ${age(lastData, now)} s ago`
   } else if (page && connected && last !== undefined) {
-    pillState = 'OK'
+    pillState = 'ok'
     pill = `Live ${age(last, now)} s`
   } else if (page && connected) {
     pill = 'Waiting for current data'
@@ -163,7 +183,7 @@ function Console({ config, pages }: LoadedConsole) {
 
   return (
     <>
-      <Header ship={config.ship}>
+      <Header ship={config.ship} defaultPalette={config.night_palette}>
         <nav className="tabs" aria-label="Pages">
           {pages.map(({ id, title }, index) => (
             <a href={'#' + id} key={id} aria-current={id === selected.id ? 'page' : undefined}
@@ -177,9 +197,9 @@ function Console({ config, pages }: LoadedConsole) {
         <h1>{page?.title ?? selected.title}</h1>
         {page ? (
           <div className="tiles">
-            {page.tiles.map((tile, index) => (
-              <NumberTile key={page.id + '/' + index} tile={tile} reading={fields.get(tile.field)}
-                history={history.get(tile.field) ?? emptyHistory} now={now} connected={connected} />
+            {tiles.map(({ tile, data }, index) => (
+              <NumberTile key={page.id + '/' + index} tile={tile} data={data}
+                history={history.get(tile.field) ?? emptyHistory} now={now} />
             ))}
           </div>
         ) : <p className="message" role="alert">{selected.error} Reload this page after correcting the file.</p>}

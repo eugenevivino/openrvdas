@@ -1,14 +1,14 @@
 import { useEffect, useRef } from 'react'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
-import type { Reading } from './cds'
+import type { Reading } from './field-data'
 
-function plotData(history: readonly Reading[], staleAfter: number): uPlot.AlignedData {
+function plotData(history: readonly Reading[], period: number): uPlot.AlignedData {
   const timestamps: number[] = []
   const values: (number | null)[] = []
   for (const { timestamp, value } of history) {
     const previous = timestamps.at(-1)
-    if (previous !== undefined && timestamp - previous > staleAfter) {
+    if (previous !== undefined && timestamp - previous > 5 * period) {
       timestamps.push((previous + timestamp) / 2)
       values.push(null)
     }
@@ -18,11 +18,11 @@ function plotData(history: readonly Reading[], staleAfter: number): uPlot.Aligne
   return [timestamps, values]
 }
 
-export function Sparkline({ history, now, minutes, staleAfter }: {
+export function Sparkline({ history, now, minutes, period }: {
   history: readonly Reading[]
   now: number
   minutes: number
-  staleAfter: number
+  period: number
 }) {
   const container = useRef<HTMLDivElement>(null)
   const chart = useRef<uPlot | null>(null)
@@ -55,12 +55,12 @@ export function Sparkline({ history, now, minutes, staleAfter }: {
   }, [])
 
   useEffect(() => {
-    chart.current?.setData(plotData(history, staleAfter), false)
-  }, [history, staleAfter])
+    chart.current?.setData(plotData(history, period), false)
+  }, [history, period])
 
   useEffect(() => {
     chart.current?.setScale('x', { min: now - minutes * 60, max: now + 1 })
-  }, [history, minutes, now, staleAfter])
+  }, [history, minutes, now, period])
 
   return <div className="sparkline" ref={container} aria-hidden="true" />
 }

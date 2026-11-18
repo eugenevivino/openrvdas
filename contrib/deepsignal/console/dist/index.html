@@ -6,14 +6,18 @@
     <meta name="color-scheme" content="dark light" />
     <title>DeepSignal Console</title>
     <script>(() => {
-              const { mode, dim } = (function readLighting() {
+              const { mode, dim, palette, defaultPalette } = (function readLighting() {
 	const fallback = window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dusk" : "day";
 	let mode = null;
 	let lastDay = null;
-	let dim = .6;
+	let palette = null;
+	let defaultPalette = "red";
+	let dim = .8;
 	try {
 		mode = window.localStorage.getItem("ds.mode");
 		lastDay = window.localStorage.getItem("ds.daymode");
+		palette = window.localStorage.getItem("ds.palette");
+		if (window.localStorage.getItem("ds.defaultPalette") === "neutral") defaultPalette = "neutral";
 		const stored = window.localStorage.getItem("ds.dim");
 		if (stored !== null && Number.isFinite(Number(stored))) dim = Math.max(.15, Math.min(1, Number(stored)));
 	} catch {}
@@ -21,21 +25,23 @@
 	return {
 		mode: mode === "night" ? "night" : active,
 		lastDay: active,
-		dim
+		dim,
+		palette: palette === "red" || palette === "neutral" ? palette : void 0,
+		defaultPalette
 	};
 })();
-              (function paintLighting(root, mode, dim) {
-	const fg = [
+              (function paintLighting(root, mode, dim, palette) {
+	const redFg = [
 		255,
 		38,
 		16
 	];
-	const muted = [
+	const redMuted = [
 		150,
 		24,
 		10
 	];
-	const night = {
+	const red = {
 		bg: [
 			0,
 			0,
@@ -56,26 +62,98 @@
 			8,
 			4
 		],
-		fg,
-		muted,
-		accent: fg,
-		ok: fg,
-		check: fg,
-		stale: muted,
+		fg: redFg,
+		muted: redMuted,
+		accent: redFg,
+		ok: redFg,
+		check: redFg,
+		stale: redMuted,
 		down: [
 			255,
 			60,
 			30
 		],
-		chart: fg,
+		chart: redFg,
 		grid: [
 			40,
 			4,
 			2
 		],
-		"scroll-thumb": muted
+		missing: redMuted,
+		"scroll-thumb": redMuted
 	};
+	const neutralFg = [
+		224,
+		224,
+		224
+	];
+	const night = palette === "neutral" ? {
+		bg: [
+			0,
+			0,
+			0
+		],
+		panel: [
+			8,
+			8,
+			8
+		],
+		panel2: [
+			17,
+			17,
+			17
+		],
+		line: [
+			70,
+			70,
+			70
+		],
+		fg: neutralFg,
+		muted: [
+			184,
+			184,
+			184
+		],
+		accent: neutralFg,
+		ok: [
+			114,
+			180,
+			134
+		],
+		check: [
+			255,
+			212,
+			90
+		],
+		stale: [
+			160,
+			160,
+			160
+		],
+		down: [
+			255,
+			90,
+			90
+		],
+		chart: neutralFg,
+		grid: [
+			40,
+			40,
+			40
+		],
+		missing: [
+			141,
+			141,
+			141
+		],
+		"scroll-thumb": [
+			184,
+			184,
+			184
+		]
+	} : red;
 	root.dataset.mode = mode;
+	root.dataset.nightPalette = palette;
 	root.style.colorScheme = mode === "day" ? "light" : "dark";
 	for (const [token, [r, g, b]] of Object.entries(night)) {
 		if (mode !== "night") {
@@ -83,11 +161,11 @@
 			continue;
 		}
 		const scale = token === "bg" || token === "panel" || token === "panel2" ? 1 : dim;
-		const red = Math.round(r * scale);
-		const ceiling = Math.floor(.15 * red);
+		const redChannel = Math.round(r * scale);
+		const ceiling = palette === "red" ? Math.floor(.075 * redChannel) : 255;
 		const green = Math.min(Math.round(g * scale), ceiling);
 		const blue = Math.min(Math.round(b * scale), ceiling);
-		root.style.setProperty("--" + token, "rgb(" + red + "," + green + "," + blue + ")");
+		root.style.setProperty("--" + token, "rgb(" + redChannel + "," + green + "," + blue + ")");
 	}
 	const background = {
 		day: "#e9eef0",
@@ -95,10 +173,10 @@
 		night: "#000000"
 	};
 	root.style.backgroundColor = background[mode];
-})(document.documentElement, mode, dim);
+})(document.documentElement, mode, dim, palette ?? defaultPalette);
             })();</script>
-    <script type="module" crossorigin src="/console/assets/index-BJfvC7Rp.js"></script>
-    <link rel="stylesheet" crossorigin href="/console/assets/index-Cdk0p1ta.css">
+    <script type="module" crossorigin src="/console/assets/index-DVEb-Q8Y.js"></script>
+    <link rel="stylesheet" crossorigin href="/console/assets/index-DO2M9dJo.css">
   </head>
   <body>
     <div id="root"></div>
