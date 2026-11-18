@@ -83,7 +83,10 @@ h1{font-family:var(--f-num);font-weight:600;font-size:26px;margin:0;letter-spaci
 .val.md{font-size:40px}
 .meta{display:flex;justify-content:space-between;gap:8px;font-size:13px;color:var(--muted);font-family:var(--f-mono);flex-wrap:wrap}
 .pair{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.stale .val{opacity:.45;text-decoration:line-through;text-decoration-thickness:2px}
+.stale .val{color:var(--muted)}
+.rsm{font-family:var(--f-mono);font-size:11px;font-weight:400;letter-spacing:.04em;color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:1px 6px;text-transform:uppercase}
+.axes{font-family:var(--f-mono);font-size:12px;color:var(--muted)}
+.axes b{color:var(--fg);font-weight:500}
 .chip{display:inline-flex;align-items:center;gap:5px;font-family:var(--f-num);font-weight:700;font-size:13px;letter-spacing:.06em;text-transform:uppercase;
   padding:2px 8px;border-radius:6px;border:1.5px solid currentColor;line-height:1.3}
 .chip svg{width:11px;height:11px}
@@ -143,7 +146,7 @@ pre{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padd
 </style>
 
 <header class="bar">
-  <div class="brand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 14c3-4 5-4 8 0s5 4 8 0 3-3 4-2"/><path d="M2 19c3-3 5-3 8 0s5 3 8 0"/><circle cx="12" cy="6" r="2.5" fill="currentColor"/></svg>DeepSignal <span class="ship">R/V Example</span></div>
+  <div class="brand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 14c3-4 5-4 8 0s5 4 8 0 3-3 4-2"/><path d="M2 19c3-3 5-3 8 0s5 3 8 0"/><circle cx="12" cy="6" r="2.5" fill="currentColor"/></svg>DeepSignal <span class="ship">R/V Example</span><span class="rsm">Research system monitoring</span></div>
   <nav class="tabs" aria-label="Pages">
     <button class="tab" data-page="bridge">Bridge</button>
     <button class="tab" data-page="science">Science</button>
@@ -157,7 +160,7 @@ pre{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padd
       <button data-mode="day">Day</button><button data-mode="dusk">Dusk</button>
     </div>
     <button class="nightbtn" id="night" aria-pressed="false" title="Night red mode (key N)"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 15.5A8.5 8.5 0 0 1 8.5 4a8.5 8.5 0 1 0 11.5 11.5z"/></svg>Night</button>
-    <label class="dim">Dim <input type="range" id="dim" min="15" max="100" value="60" aria-label="Night brightness"></label>
+    <div class="dim"><span class="seg" role="group" aria-label="Night palette"><button data-np="red">Red</button><button data-np="neutral">Neutral</button></span><label style="display:flex;gap:6px;align-items:center">Dim <input type="range" id="dim" min="15" max="100" value="60" aria-label="Night brightness"></label></div>
   </div>
 </header>
 
@@ -262,9 +265,9 @@ bridge:{title:'Bridge',sub:'Navigation and weather at a glance. Readable from th
 science:{title:'Science',sub:'Underway data for the watch. Gaps show as gaps, never as smooth lines.',html:()=>`
 <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(300px,1fr))">
   ${['sst|Sea surface temp|°C|2|Hull intake 5 m','sal|Salinity|PSU|3|TSG, flow 1.4 L/min','flr|Chlorophyll fluorescence|µg/L|2|Fluorometer on TSG line','depth|Depth|m|0|Multibeam centre beam'].map(r=>{const[k,l,u,dp,src]=r.split('|');return`
-  <section class="tile ${k==='flr'?'stale':''}"><div class="lbl"><span>${l}</span>${k==='flr'?chip('stale'):''}</div>
-  <div class="val md" id="sc-${k}" data-dp="${dp}" data-u="${u}"></div><canvas class="chart" id="ch-${k}" data-dp="${dp}"></canvas>
-  <div class="meta"><span>${src}</span><span id="age-${k}">1 s ago</span></div>${k==='flr'&&aiOn()?`<div class="ainote"><b>AI note</b> TSG flow fell 12% at 03:55, one minute before the fluorometer went quiet. A blocked intake is the likely cause. <span class="fix">Suggestion only. Check before acting.</span></div>`:''}</section>`}).join('')}
+  <section class="tile ${k==='flr'?'stale':''}"><div class="lbl"><span>${l}</span>${k==='flr'?chip('stale','No data'):''}</div>
+  <div class="val md" id="sc-${k}" data-dp="${dp}" data-u="${u}"></div>${k==='flr'?'<div class="axes">Sensor <b>UNKNOWN</b> · Quality <b>NOT EVALUATED</b> · <b>NO DATA</b> 6 min</div>':'<div class="axes">Sensor OK · Quality PASS · Live</div>'}<canvas class="chart" id="ch-${k}" data-dp="${dp}"></canvas>
+  <div class="meta"><span>${src}</span><span id="age-${k}">1 s ago</span></div>${k==='flr'&&aiOn()?`<div class="ainote"><b>AI suggestion</b> TSG flow fell 12% at 03:55, one minute before the fluorometer went quiet. A blocked intake is the likely cause. <span class="fix">Model and version shown here · 03:57Z · used TSG flow, fluorometer · confidence 0.7</span><div class="evbtns" style="margin-top:6px"><button>Agree</button><button>Disagree</button><button>Not enough evidence</button></div></div>`:''}</section>`}).join('')}
   <section class="tile wide"><div class="lbl"><span>Cruise track, last 2 h</span><span id="pos2" style="text-transform:none;letter-spacing:0;font-family:var(--f-mono)"></span></div>
     <svg class="map" id="map" viewBox="0 0 600 220" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Track map"></svg>
     <div class="meta"><span>Offline basemap. No internet needed.</span><span>Station 14 in 3.1 nm</span></div></section>
@@ -335,7 +338,7 @@ function render(){
     ['sst','sal','flr','depth'].forEach(k=>{const e=$('#sc-'+k);if(!e)return;const dp=+e.dataset.dp;
       e.innerHTML=`${k==='depth'?Math.round(S[k].v).toLocaleString():S[k].v.toFixed(dp)}<small>${e.dataset.u}</small>`;
       draw($('#ch-'+k),S[k].h,{grid:true,dp,gapLabel:k==='flr'})});
-    set('age-flr',`last seen ${fmtAge(age.flr)} ago`);set('pos2',`${S.lat.toFixed(3)}° N ${(-S.lon).toFixed(3)}° W`);
+    set('sc-flr','—<small>µg/L</small>');set('age-flr',`Last: 0.82 µg/L at 03:56:02Z`);set('pos2',`${S.lat.toFixed(3)}° N ${(-S.lon).toFixed(3)}° W`);
   }
   if(page==='health')set('hl-age',fmtAge(age.flr));
   if(page==='shore'){set('sh-pos',`${S.lat.toFixed(3)}° N, ${(-S.lon).toFixed(3)}° W`);set('sh-nav',`Heading ${deg(S.hdg.v)} at ${S.sog.v.toFixed(1)} kn`);
@@ -457,13 +460,17 @@ function setMode(m){
   render();
 }
 function applyDim(){
-  const d=$('#dim').value/100, R=(r,g,b)=>`rgb(${Math.round(r*d)},${Math.round(g*d)},${Math.round(b*d)})`;
-  const t={'--fg':R(255,38,16),'--muted':R(150,24,10),'--accent':R(255,38,16),'--ok':R(255,38,16),'--check':R(255,38,16),'--stale':R(150,24,10),'--down':R(255,60,30),
+  const d=$('#dim').value/100, R=(r,g,b)=>`rgb(${Math.round(r*d)},${Math.round(g*d)},${Math.round(b*d)})`, G=v=>R(v,v,v);
+  const np=store.get('ds.np')||'red';
+  document.querySelectorAll('[data-np]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.np===np));
+  const t=np==='neutral'?{'--fg':G(200),'--muted':G(140),'--accent':G(224),'--ok':R(114,180,134),'--check':R(255,212,90),'--stale':G(141),'--down':R(255,90,90),
+    '--chart':G(184),'--chart2':G(120),'--line':G(48),'--grid':G(26),'--panel':'#080808','--panel2':'#111111','--bg':'#000000'}:{'--fg':R(255,38,16),'--muted':R(150,24,10),'--accent':R(255,38,16),'--ok':R(255,38,16),'--check':R(255,38,16),'--stale':R(150,24,10),'--down':R(255,60,30),
     '--chart':R(255,38,16),'--chart2':R(150,30,12),'--line':R(70,8,4),'--grid':R(40,4,2),'--panel':'#050000','--panel2':'#0a0000','--bg':'#000000'};
   for(const k in t)root.style.setProperty(k,t[k]);store.set('ds.dim',$('#dim').value);
 }
 $('#dim').value=store.get('ds.dim')||60;
 $('#dim').oninput=()=>{applyDim();render()};
+document.querySelectorAll('[data-np]').forEach(b=>b.onclick=()=>{store.set('ds.np',b.dataset.np);applyDim();render()});
 document.querySelectorAll('.modes button').forEach(b=>b.onclick=()=>setMode(b.dataset.mode));
 $('#night').onclick=()=>setMode(root.dataset.mode==='night'?lastDay:'night');
 document.addEventListener('keydown',e=>{if(e.target.matches('input,textarea'))return;
