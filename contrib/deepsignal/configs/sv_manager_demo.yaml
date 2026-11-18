@@ -1,0 +1,19 @@
+# Run from the OpenRVDAS repository root. Stop with Ctrl-C.
+readers:
+  class: SVManagerReader
+  module: contrib.deepsignal.sv_manager.watch
+  kwargs:
+    drop_dir: contrib/deepsignal/test/sv_manager/fixtures
+    pattern: '*.cnv'
+    follow: true
+transforms:
+  - class: SVMonitorTransform
+    module: contrib.deepsignal.sv_manager.watch
+    kwargs:
+      profile: contrib/deepsignal/test/sv_manager/fixtures/cast.csv
+      fields: {probe: SVP_Velocity, tsg: TSG_SoundVelocity}
+  - class: ToJSONTransform
+writers:
+  class: TextFileWriter
+interval: 2
+check_format: false

@@ -1,0 +1,14 @@
+* NMEA Latitude = 33 12.00 N
+* NMEA Longitude = 118 54.00 W
+* NMEA UTC (Time) = Nov 18 2026 00:00:00
+# name 0 = svDM: Sound Velocity
+# name 1 = sal00: Salinity
+# name 2 = depSM: Depth
+# name 3 = t090C: Temperature
+# bad_flag = -9.990e-29
+*END*
+1500 35 0 12
+-9.990e-29 35 5 12
+1501 35 10 11
+1520 36 1000 3
+1530 36 900 4

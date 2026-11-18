@@ -1,0 +1,9 @@
+# Common CSV exports from Valeport, AML and moving vessel profilers.
+# Choose the mapping that matches the units in the instrument export.
+delimiter: ","
+columns:
+  depth_m: [depth_m, depth, Depth (m), "Depth [m]", Depth(m)]
+  sv_ms: [sv_ms, SV (m/s), "SV [m/s]", Sound Velocity (m/s), Sound Speed (m/s), Sound Velocity, Sound Speed]
+  t_c: [t_c, Temperature (degC), Temperature (deg C), Temperature (C)]
+  s_psu: [s_psu, Salinity (PSU), Salinity (PSs-78)]
+  pressure_dbar: [pressure_dbar, Pressure (dbar), "Pressure [dbar]"]
