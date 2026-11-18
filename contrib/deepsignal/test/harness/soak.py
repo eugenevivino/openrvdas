@@ -11,7 +11,12 @@ import time
 
 import websockets
 
-from contrib.deepsignal.test.harness.fixture import Fixture
+from contrib.deepsignal.test.harness.fixture import Fixture, LOGGER_FIELDS
+
+
+EXPECTED_PROCESSES = {"cache", "logger-manager",
+                      *(f"logger:{logger}" for logger in LOGGER_FIELDS)}
+RECONNECTING_CLIENT = "reconnecting-client"
 
 
 def _median(values):
@@ -24,20 +29,8 @@ def _process_names(fixture):
         "cache": fixture.processes[0][0].pid,
         "logger-manager": fixture.processes[1][0].pid,
     }
-    roots = set(processes.values())
-    for pid in fixture.logger_pids():
-        if pid in roots:
-            continue
-        try:
-            command = (Path("/proc") / str(pid) / "cmdline").read_bytes()
-        except OSError:
-            continue
-        marker = b"logger_runner.py:"
-        if marker not in command:
-            continue
-        name = command.split(marker, 1)[1].split(b"\0", 1)[0].decode(
-            errors="replace")
-        processes[f"logger:{name}"] = pid
+    processes.update({f"logger:{name}": pid
+                      for name, pid in fixture.logger_processes().items()})
     return processes
 
 
@@ -47,7 +40,7 @@ def _rss(pid):
         text=True, check=False)
     if result.returncode or not result.stdout.strip():
         return None
-    return int(result.stdout.strip())
+    return int(result.stdout.strip()) or None
 
 
 class _ClientStats:
@@ -67,6 +60,7 @@ class _ClientStats:
 
 async def _console_client(url, stats, deadline, reconnect_s=None):
     """Subscribe like the console and optionally reconnect periodically."""
+    latest = {}
     while time.monotonic() < deadline:
         reconnect_at = (time.monotonic() + reconnect_s
                         if reconnect_s else deadline)
@@ -80,22 +74,22 @@ async def _console_client(url, stats, deadline, reconnect_s=None):
                     "fields": {field: {"seconds": 300} for field in fields},
                 }))
                 await websocket.recv()
-                first_timestamp = None
-                first_received = None
                 while (time.monotonic() < deadline and
                        time.monotonic() < reconnect_at):
                     await websocket.send(json.dumps({"type": "ready"}))
                     reply = json.loads(await asyncio.wait_for(
                         websocket.recv(), timeout=2))
                     received = time.time()
-                    for values in reply.get("data", {}).values():
+                    for field, values in reply.get("data", {}).items():
+                        previous = latest.get(field, -math.inf)
+                        newest = previous
                         for timestamp, _value in values:
+                            if timestamp <= previous:
+                                continue
                             stats.messages += 1
-                            if first_timestamp is None:
-                                first_timestamp = timestamp
-                                first_received = received
-                            expected = first_received + timestamp - first_timestamp
-                            stats.lags.append(max(0.0, received - expected))
+                            stats.lags.append(max(0.0, received - timestamp))
+                            newest = max(newest, timestamp)
+                        latest[field] = newest
         except (OSError, TimeoutError, websockets.ConnectionClosed):
             await asyncio.sleep(0.1)
 
@@ -107,13 +101,11 @@ async def _collect(fixture, hours, warmup_min, sample_s, clients):
     processes = _process_names(fixture)
     stats = {f"client-{index + 1}": _ClientStats()
              for index in range(clients)}
-    stats["reconnecting-client"] = _ClientStats()
+    stats[RECONNECTING_CLIENT] = _ClientStats()
     tasks = [asyncio.create_task(
-        _console_client(fixture.ws_url, client_stats, deadline))
-             for client_stats in stats.values()]
-    tasks[-1].cancel()
-    tasks[-1] = asyncio.create_task(_console_client(
-        fixture.ws_url, stats["reconnecting-client"], deadline, 600))
+        _console_client(fixture.ws_url, client_stats, deadline,
+                        reconnect_s=600 if name == RECONNECTING_CLIENT else None))
+             for name, client_stats in stats.items()]
     samples = []
     previous = started
     try:
@@ -151,19 +143,24 @@ def build_report(samples, configuration):
     """Summarize samples and apply the soak acceptance thresholds."""
     measured = [sample for sample in samples
                 if sample.get("after_warmup", True)]
-    process_names = sorted({name for sample in measured
-                            for name in sample["processes"]})
-    client_names = sorted({name for sample in measured
-                           for name in sample["clients"]})
+    process_names = {name for sample in measured for name in sample["processes"]}
+    client_names = {name for sample in measured for name in sample["clients"]}
     summary = {"processes": {}, "clients": {}}
     reasons = []
-    for name in process_names:
+    if measured:
+        process_names.update(EXPECTED_PROCESSES)
+        client_names.add(RECONNECTING_CLIENT)
+        client_names.update(f"client-{index + 1}"
+                            for index in range(configuration.get("clients", 1)))
+    else:
+        reasons.append("no measurements after warm-up")
+    for name in sorted(process_names):
         details = [sample["processes"].get(name, {}) for sample in measured]
         alive = all(detail.get("alive", False) for detail in details)
         rss_values = [detail.get("rss_kb") for detail in details]
-        rss_values = [value for value in rss_values if value is not None]
-        first = _median(rss_values[:10])
-        last = _median(rss_values[-10:])
+        valid_rss = [value for value in rss_values if value is not None and value > 0]
+        first = _median(valid_rss[:10])
+        last = _median(valid_rss[-10:])
         growth = ((last - first) * 100 / first
                   if first not in (None, 0) and last is not None else None)
         summary["processes"][name] = {
@@ -172,21 +169,24 @@ def build_report(samples, configuration):
             "last_10_median_rss_kb": last,
             "rss_growth_percent": growth,
         }
-        if not alive:
+        if any(detail.get("alive") is False for detail in details):
             reasons.append(f"{name} process died")
+        elif len(valid_rss) != len(measured):
+            reasons.append(f"{name} RSS was not measured")
         elif growth is not None and growth > 5:
             reasons.append(f"{name} RSS grew {growth:.1f}%")
-    for name in client_names:
+    for name in sorted(client_names):
         client_samples = [sample["clients"].get(name, {})
                           for sample in measured]
         lag = _median([item.get("max_receive_lag_s", 0)
                        for item in client_samples])
-        rate = _median([item.get("messages_per_s", 0)
-                        for item in client_samples])
+        rates = [item.get("messages_per_s", 0) for item in client_samples]
         summary["clients"][name] = {
-            "median_messages_per_s": rate,
+            "median_messages_per_s": _median(rates),
             "median_max_receive_lag_s": lag,
         }
+        if not any(rate > 0 for rate in rates):
+            reasons.append(f"{name} received no records")
         if lag is not None and lag > 5:
             reasons.append(f"{name} median receive lag was {lag:.1f} s")
     return {

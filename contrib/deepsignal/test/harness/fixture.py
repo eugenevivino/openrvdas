@@ -15,6 +15,7 @@ import tempfile
 import time
 
 import websockets
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -25,6 +26,13 @@ REPLAYS = {
     "S330": ROOT / "test/NBP1406/s330/raw/NBP1406_s330-2014-08-01",
     "KNUD": ROOT / "test/NBP1406/knud/raw/NBP1406_knud-2014-08-01",
 }
+LOGGER_FIELDS = {
+    "mwx1": {"MwxAirTemp", "MwxPortRelWindDir", "MwxPortRelWindSpeed"},
+    "s330": {"S330HeadingTrue", "S330CourseTrue", "S330SpeedKt"},
+    "knud1": {"KnudDepthLF"},
+    "true_winds": {"PortTrueWindDir", "PortTrueWindSpeed", "PortApparentWindDir"},
+}
+READY_FIELDS = {"status:logger_status"}.union(*LOGGER_FIELDS.values())
 
 
 def _free_port():
@@ -33,22 +41,31 @@ def _free_port():
         return sock.getsockname()[1]
 
 
-def _children_of(pids):
-    """Return all live descendants of pids using Linux's proc filesystem."""
-    found = set(pids)
-    changed = True
-    while changed:
-        changed = False
-        for status in Path("/proc").glob("[0-9]*/status"):
-            try:
-                lines = status.read_text().splitlines()
-                ppid = int(next(x for x in lines if x.startswith("PPid:")).split()[1])
-                pid = int(status.parent.name)
-            except (OSError, StopIteration, ValueError):
-                continue
-            if ppid in found and pid not in found:
-                found.add(pid)
-                changed = True
+def _process_tree(roots):
+    """Return fixture roots and descendants from one process snapshot."""
+    snapshot = subprocess.run(
+        ["ps", "-A", "-o", "pid=,ppid=,command="],
+        capture_output=True, text=True, check=False)
+    if snapshot.returncode:
+        raise OSError(f"could not list fixture processes: {snapshot.stderr.strip()}")
+    children = {}
+    commands = {}
+    for line in snapshot.stdout.splitlines():
+        columns = line.split(maxsplit=2)
+        if len(columns) != 3:
+            continue
+        pid, parent, command = columns
+        pid = int(pid)
+        commands[pid] = command
+        children.setdefault(int(parent), []).append(pid)
+
+    pending = list(roots)
+    found = {}
+    while pending:
+        pid = pending.pop()
+        if pid in commands and pid not in found:
+            found[pid] = commands[pid]
+            pending.extend(children.get(pid, ()))
     return found
 
 
@@ -77,7 +94,7 @@ class Fixture:
     def ws_url(self):
         return f"ws://127.0.0.1:{self.port}"
 
-    def _scaled_replay(self, name, source):
+    def _scaled_replay(self, name, source, started_at):
         destination = self.temp_dir / f"{name.lower()}.log"
         first = None
         output = []
@@ -89,7 +106,7 @@ class Fixture:
                 output.append(line)
                 continue
             first = first or parsed
-            scaled = first + (parsed - first) / self.speed
+            scaled = started_at + (parsed - first) / self.speed
             rendered = scaled.isoformat(timespec="microseconds").replace("+00:00", "Z")
             output.append(f"{name.lower()} {rendered}{separator}{record}")
         destination.write_text("".join(output), errors="surrogateescape")
@@ -97,9 +114,10 @@ class Fixture:
 
     def _write_config(self):
         config = TEMPLATE.read_text()
+        started_at = datetime.datetime.now(datetime.timezone.utc)
         for name, source in REPLAYS.items():
             config = config.replace(f"__{name}_FILE__",
-                                    str(self._scaled_replay(name, source)))
+                                    str(self._scaled_replay(name, source, started_at)))
         config = config.replace("__DEVICE_DEFINITIONS__", str(
             ROOT / "test/NBP1406/devices/nbp_devices.yaml"))
         config = config.replace("__DATA_SERVER__", f"127.0.0.1:{self.port}")
@@ -117,19 +135,21 @@ class Fixture:
 
     def start(self):
         self.temp_dir.mkdir(parents=True, exist_ok=True)
-        config = self._write_config()
         cache = self._spawn([
             sys.executable, "-m", "contrib.deepsignal.test.harness.fixture",
             "_cache", "--port", str(self.port)], "cache.log")
         self._wait_for_cache(cache)
-        manager = self._spawn([
+        self._wait_for_ready(self._start_manager())
+        return self
+
+    def _start_manager(self):
+        config = self._write_config()
+        return self._spawn([
             sys.executable, "server/logger_manager.py", "--database", "memory",
             "--config", str(config), "--mode", "replay", "--no-console",
             "--interval", "0.1", "--data_server_websocket",
             f"127.0.0.1:{self.port}", "--stderr_file_pattern",
             str(self.temp_dir / "{logger}.stderr")], "manager.log")
-        self._wait_for_ready(manager)
-        return self
 
     def _wait_for_cache(self, process):
         deadline = time.monotonic() + 10
@@ -150,30 +170,41 @@ class Fixture:
                 raise RuntimeError("LoggerManager exited; see manager.log")
             try:
                 fields = asyncio.run(_request(self.ws_url, {"type": "fields"}))["data"]
-                if "MwxAirTemp" in fields and "status:logger_status" in fields:
+                if READY_FIELDS.issubset(fields):
                     self.ready = True
-                    print(f"READY {self.ws_url} loggers=4 fields={len(fields)}", flush=True)
+                    print(f"READY {self.ws_url} loggers={len(LOGGER_FIELDS)} "
+                          f"fields={len(fields)}", flush=True)
                     return
             except (OSError, KeyError, TimeoutError):
                 pass
             time.sleep(0.1)
         raise TimeoutError("fixture did not publish records within 30 seconds")
 
-    def logger_pids(self):
+    def _processes_by_pid(self):
         roots = [process.pid for process, _ in self.processes
                  if process.poll() is None]
-        return sorted(_children_of(roots))
+        return _process_tree(roots)
 
-    def kill_logger(self, name):
-        for pid in self.logger_pids():
-            try:
-                command = (Path("/proc") / str(pid) / "cmdline").read_bytes()
-                if f"logger_runner.py:{name}".encode() in command:
-                    os.kill(pid, signal.SIGTERM)
-                    return pid
-            except (OSError, ProcessLookupError):
-                continue
-        raise KeyError(f"logger not running: {name}")
+    def logger_pids(self):
+        return sorted(self._processes_by_pid())
+
+    def logger_processes(self):
+        configs = yaml.safe_load(TEMPLATE.read_text())["modes"]["replay"]
+        names = {config: logger for logger, config in configs.items()}
+        loggers = {}
+        for pid, command in self._processes_by_pid().items():
+            title = command.split(maxsplit=1)[0]
+            prefix, _, config = title.rpartition("/logger_runner.py:")
+            if prefix and config in names:
+                loggers[names[config]] = pid
+        return loggers
+
+    def kill_logger(self, name, sig=signal.SIGTERM):
+        pid = self.logger_processes().get(name)
+        if pid is None:
+            raise KeyError(f"logger not running: {name}")
+        os.kill(pid, sig)
+        return pid
 
     def stop(self):
         for process, _ in reversed(self.processes):
@@ -228,6 +259,14 @@ def _run_cache(port):
     ws_compat.apply()
     from server.cached_data_server import CachedDataServer
 
+    serve = websockets.serve
+
+    def serve_loopback(**options):
+        # The stock cache supplies host="" and exposes no bind option.
+        options["host"] = "127.0.0.1"
+        return serve(**options)
+
+    websockets.serve = serve_loopback
     server = CachedDataServer(port=port, interval=0.05)
     try:
         while True:

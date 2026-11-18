@@ -69,6 +69,7 @@ configs:
             MwxStbdRelWindSpeed: {seconds: -1}
             MwxStbdRelWindDir: {seconds: -1}
             S330SpeedKt: {seconds: -1}
+            S330CourseTrue: {seconds: -1}
             S330HeadingTrue: {seconds: -1}
     writers:
     - class: ComposedWriter
