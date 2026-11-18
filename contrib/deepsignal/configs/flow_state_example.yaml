@@ -1,0 +1,13 @@
+class: FlowStateTransform
+module: contrib.deepsignal.flow_state.transform
+valves:
+  - id: tsg_filter_valve
+    tags_fields: [TSG_Temp, TSG_Cond]
+    mode: schedule
+    schedule:
+      anchor: 2014-08-10T00:00:00Z
+      open_minutes: 50
+      closed_minutes: 10
+      transition_seconds: 90
+      open_content: seawater
+      closed_content: filtered
