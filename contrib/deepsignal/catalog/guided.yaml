@@ -1,0 +1,46 @@
+# Labels and examples shown by setup tools. Signatures remain authoritative.
+SerialReader:
+  label: Serial port reader
+  example: {class: SerialReader, kwargs: {port: /dev/ttyUSB0, baudrate: 9600}}
+PolledSerialReader:
+  label: Polled serial instrument
+  example: {class: PolledSerialReader, kwargs: {port: /dev/ttyUSB0, command: "READ\\r"}}
+UDPReader:
+  label: UDP network reader
+  example: {class: UDPReader, kwargs: {port: 6224}}
+TCPReader:
+  label: TCP network reader
+  example: {class: TCPReader, kwargs: {port: 5000}}
+MQTTReader:
+  label: MQTT subscription reader
+  example: {class: MQTTReader, kwargs: {broker: mqtt.example.org, channel: sensors/weather, client_name: openrvdas}}
+RedisReader:
+  label: Redis channel reader
+  example: {class: RedisReader, kwargs: {channel: raw_data}}
+CachedDataReader:
+  label: Latest cached data reader
+  example: {class: CachedDataReader, kwargs: {data_server: localhost}}
+CachedDataWriter:
+  label: Latest data cache writer
+  example: {class: CachedDataWriter, kwargs: {data_server: localhost}}
+LogfileWriter:
+  label: Rotating log file writer
+  example: {class: LogfileWriter, kwargs: {filebase: /var/tmp/log/weather}}
+UDPWriter:
+  label: UDP network writer
+  example: {class: UDPWriter, kwargs: {destination: 255.255.255.255, port: 6224}}
+MQTTWriter:
+  label: MQTT publication writer
+  example: {class: MQTTWriter, kwargs: {broker: mqtt.example.org, channel: sensors/weather, client_name: openrvdas}}
+DatabaseWriter:
+  label: Database writer
+  example: {class: DatabaseWriter, kwargs: {database: openrvdas}}
+ParseTransform:
+  label: Parse fields from text
+  example: {class: ParseTransform, kwargs: {format: "{temperature:f}"}}
+PrefixTransform:
+  label: Add a text prefix
+  example: {class: PrefixTransform, kwargs: {prefix: weather}}
+TrueWindsTransform:
+  label: Calculate true wind
+  example: {class: TrueWindsTransform, kwargs: {course_field: course, speed_field: speed}}
