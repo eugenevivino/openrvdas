@@ -55,7 +55,10 @@ def lag(series, *, tau_seconds, start=0, end=None, seed=0):
     previous_time, filtered = series[window.start - 1] if window.start else (0, None)
     values = []
     for timestamp, value in series[window]:
-        if value is None or filtered is None:
+        if value is None or (isinstance(value, float) and not math.isfinite(value)):
+            values.append((timestamp, value))
+            continue
+        if filtered is None:
             filtered = value
         else:
             alpha = -math.expm1(-(timestamp - previous_time) / tau_seconds)
@@ -125,11 +128,18 @@ def spikes(series, *, count, size, start=0, end=None, seed=0):
 
 
 def flatline(series, *, start=0, end=None, seed=0):
-    """Hold the first value in the window for its duration."""
+    """Hold the first valid value in the window while preserving missing samples."""
     window = _window(series, start, end)
-    held = series[window.start][1] if window.start < window.stop else None
-    values = [(timestamp, None if value is None else held)
-              for timestamp, value in series[window]]
+    held = None
+    values = []
+    for timestamp, value in series[window]:
+        missing = value is None or (isinstance(value, float) and not math.isfinite(value))
+        if missing:
+            values.append((timestamp, value))
+        else:
+            if held is None:
+                held = value
+            values.append((timestamp, held))
     return _replace(series, window, values, 'flatline')
 
 

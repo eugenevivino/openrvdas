@@ -1,4 +1,5 @@
 import json
+import copy
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -46,6 +47,46 @@ class BufferedDetector:
         return result
 
 
+class CopiedBufferedDetector(BufferedDetector):
+    def transform(self, record):
+        result = super().transform(record)
+        return copy.deepcopy(result) if result is not None else None
+
+
+class StatusDetector:
+    def transform(self, record):
+        record.fields['MwxPortStatus_QC'] = 4 if record.fields['MwxPortStatus'] & 1 else 1
+        return record
+
+
+class FirstAlarmDetector:
+    def __init__(self):
+        self.alarmed = False
+
+    def transform(self, record):
+        alarm = not self.alarmed and record.fields['MwxAirTemp'] > 20
+        self.alarmed = self.alarmed or alarm
+        record.fields['MwxAirTemp_QC'] = 4 if alarm else 1
+        return record
+
+
+class AlwaysAlarmDetector:
+    def transform(self, record):
+        record.fields['MwxAirTemp_QC'] = 4
+        return record
+
+
+class TimestampChangeDetector:
+    def __init__(self):
+        self.previous = None
+
+    def transform(self, record):
+        changed = self.previous is not None and record.timestamp - self.previous != 1
+        self.previous = record.timestamp
+        record.fields['MwxAirTemp_DG'] = 4 if changed else 1
+        return record
+
+
 def plugin(series, *, start, end, seed, offset):
     injected = [(timestamp, value + offset + seed if index == 1 else value)
                 for index, (timestamp, value) in enumerate(series)]
@@ -54,13 +95,22 @@ def plugin(series, *, start, end, seed, offset):
 
 
 class ScoringTests(unittest.TestCase):
-    def test_stub_reports_nan_and_unconfigured_range_as_missing(self):
+    def test_stub_reports_nan_as_missing_and_unconfigured_as_not_checked(self):
         detector = StubThresholdDetector()
         record = DASRecord(timestamp=0, fields={'MwxAirTemp': float('nan'),
                                                 'MwxBarometer': 1023})
         result = detector.transform(record)
         self.assertEqual(result.fields['MwxAirTemp_QC'], 9)
-        self.assertEqual(result.fields['MwxBarometer_QC'], 9)
+        self.assertEqual(result.fields['MwxBarometer_QC'], 2)
+
+    def test_stub_accepts_one_bound_and_rejects_invalid_configuration(self):
+        detector = StubThresholdDetector(maximum=21)
+        result = detector.transform(DASRecord(timestamp=1, fields={'MwxAirTemp': 40}))
+        self.assertEqual(result.fields['MwxAirTemp_QC'], 4)
+        with self.assertRaisesRegex(ValueError, 'maximum must be a finite number'):
+            StubThresholdDetector(maximum=float('nan'))
+        with self.assertRaisesRegex(ValueError, 'flag_suffix must be a nonempty string'):
+            StubThresholdDetector(flag_suffix='')
 
     def test_latency_misses_false_flag_rates_and_traps(self):
         flags = list(zip(range(0, 3601, 600), [3, 1, 4, 9, 3, 4, 2]))
@@ -100,10 +150,35 @@ class ScoringTests(unittest.TestCase):
     def test_invalid_qartod_code_is_an_error(self):
         with self.assertRaisesRegex(ValueError, 'Invalid QARTOD verdict code'):
             score_flags([(0, 7)], [(0, 0, 'spikes')])
+        with self.assertRaisesRegex(ValueError, 'Invalid QARTOD verdict code'):
+            score_flags([(0, float('inf'))], [(0, 0, 'spikes')])
+
+    def test_not_checked_verdict_has_no_evaluated_exposure(self):
+        result = score_flags([(0, 2), (3600, 2)], [(0, 0, 'spikes')])
+        self.assertEqual(result['missing_flag_samples'], 2)
+        self.assertEqual(result['outside_fault_seconds'], 0)
+        self.assertIsNone(result['false_flags_per_hour'])
+
+    def test_one_alarm_detects_only_one_overlapping_event(self):
+        result = score_flags([(0, 4), (1, 1)],
+                             [(0, 0, 'spikes'), (0, 0, 'spikes')],
+                             truth_samples=[[0], [0]])
+        self.assertEqual(result['missed'], 1)
+
+    def test_overlapping_traps_count_union_exposure(self):
+        result = score_flags([(0, 4), (10, 1)],
+                             [(0, 8, 'trap'), (4, 10, 'trap')])
+        self.assertEqual(result['trap_seconds'], 10)
+        self.assertEqual(result['trap_flags_per_hour'], 360)
 
     def test_point_fault_does_not_remove_following_exposure(self):
         result = score_flags([(0, 1), (1, 4), (100, 1)], [(1, 1, 'spikes')])
         self.assertEqual(result['outside_fault_seconds'], 100)
+
+    def test_ignored_recovery_alarm_keeps_following_exposure(self):
+        result = score_flags([(0, 1), (10, 4), (900, 1)], [(0, 0, 'clock_jump')],
+                             ignored_samples=[1])
+        self.assertEqual(result['outside_fault_seconds'], 900)
 
     def test_duplicate_timestamp_uses_injected_sample_identity(self):
         result = score_flags([(0, 1), (1, 4), (1, 1), (2, 1)],
@@ -114,8 +189,7 @@ class ScoringTests(unittest.TestCase):
 
 class ReplayTests(unittest.TestCase):
     def fixture(self):
-        scratch = Path(__file__).resolve().parents[5]
-        tmp = tempfile.TemporaryDirectory(dir=scratch)
+        tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         return Path(tmp.name)
 
@@ -129,6 +203,23 @@ class ReplayTests(unittest.TestCase):
             '2014-08-01T00:00:02.000000Z MET,12,22,19,64,7,0,0,295,294,1023\n',
             encoding='utf-8')
         return sample
+
+    def status_sample(self, root):
+        raw = root / SAMPLE_LAYOUTS[0]
+        raw.mkdir(parents=True)
+        (raw / 'NBP1406_mwx1-2014-08-01').write_text(
+            '2014-08-01T00:00:00.000000Z PUS,0,10,5,0,1500,20,1,0\n',
+            encoding='utf-8')
+
+    def duplicate_sample(self, root):
+        raw = root / SAMPLE_LAYOUTS[0]
+        raw.mkdir(parents=True)
+        (raw / 'NBP1406_mwx1-2014-08-01').write_text(
+            '2014-08-01T00:00:00.000000Z MET,12,22,19,64,7,0,0,295,294,1023\n'
+            '2014-08-01T00:00:01.000000Z MET,12,22,19,64,7,0,0,295,294,1023\n'
+            '2014-08-01T00:00:01.000000Z MET,12,22,19,64,7,0,0,295,294,1023\n'
+            '2014-08-01T00:00:02.000000Z MET,12,22,19,64,7,0,0,295,294,1023\n',
+            encoding='utf-8')
 
     def test_stub_end_to_end_both_sample_layouts(self):
         for layout in SAMPLE_LAYOUTS:
@@ -167,6 +258,33 @@ class ReplayTests(unittest.TestCase):
                      flag_suffix='_DG', threshold=4)
         self.assertEqual(result['false_flags'], 0)
 
+    def test_clock_reset_recovery_flag_is_not_scored(self):
+        root = self.fixture()
+        self.sample(root, SAMPLE_LAYOUTS[0])
+        scenario = {'field': 'MwxAirTemp', 'fault': 'clock_reset',
+                    'params': {'start': 1, 'end': 1, 'seconds': 5}}
+        result = run(scenario, MODULE, 'TimestampChangeDetector', {}, sample_root=root,
+                     flag_suffix='_DG', threshold=4)
+        self.assertEqual(result['faults'][0]['latency_seconds'], 0)
+        self.assertEqual(result['false_flags'], 0)
+
+    def test_drift_truth_includes_unchanged_onset_sample(self):
+        root = self.fixture()
+        self.sample(root, SAMPLE_LAYOUTS[0])
+        scenario = {'field': 'MwxAirTemp', 'fault': 'drift',
+                    'params': {'start': 0, 'end': 2, 'rate_per_hour': 3600}}
+        result = run(scenario, MODULE, 'AlwaysAlarmDetector', {}, sample_root=root)
+        self.assertEqual(result['faults'][0]['latency_seconds'], 0)
+
+    def test_duplicate_timestamp_spikes_are_distinct_truth_events(self):
+        root = self.fixture()
+        self.duplicate_sample(root)
+        scenario = {'field': 'MwxAirTemp', 'fault': 'spikes',
+                    'params': {'start': 1, 'end': 1, 'count': 2, 'size': 5}}
+        result = run(scenario, MODULE, 'FirstAlarmDetector', {}, sample_root=root)
+        self.assertEqual(len(result['faults']), 2)
+        self.assertEqual(result['missed'], 1)
+
     def test_buffered_output_is_scored_at_returned_record_source_time(self):
         root = self.fixture()
         self.sample(root, SAMPLE_LAYOUTS[0])
@@ -175,6 +293,23 @@ class ReplayTests(unittest.TestCase):
         result = run(scenario, MODULE, 'BufferedDetector', {}, sample_root=root)
         self.assertEqual(result['faults'][0]['latency_seconds'], 0)
         self.assertEqual(result['missing_flag_samples'], 1)
+
+    def test_buffered_copied_output_retains_source_attribution(self):
+        root = self.fixture()
+        self.sample(root, SAMPLE_LAYOUTS[0])
+        scenario = {'field': 'MwxAirTemp', 'fault': 'step',
+                    'params': {'start': 1, 'end': 1, 'bias': 5}}
+        result = run(scenario, MODULE, 'CopiedBufferedDetector', {}, sample_root=root)
+        self.assertEqual(result['faults'][0]['latency_seconds'], 0)
+        self.assertEqual(result['missing_flag_samples'], 1)
+
+    def test_status_fields_remain_integers(self):
+        root = self.fixture()
+        self.status_sample(root)
+        scenario = {'field': 'MwxPortStatus', 'fault': 'step',
+                    'params': {'start': 0, 'end': 0, 'bias': 0}}
+        result = run(scenario, MODULE, 'StatusDetector', {}, sample_root=root)
+        self.assertEqual(result['faults'][0]['latency_seconds'], 0)
 
     def test_front_replays_two_linked_fields_on_one_record(self):
         root = self.fixture()
@@ -213,3 +348,20 @@ class ReplayTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, '2'):
             main(['run', '--scenarios', str(scenarios), '--detector',
                   f'{MODULE}:TimingDetector', '--sample-root', str(root)])
+
+    def test_yaml_merge_scenarios_are_accepted(self):
+        root = self.fixture()
+        self.sample(root, SAMPLE_LAYOUTS[0])
+        scenarios = root / 'scenarios.yaml'
+        scenarios.write_text(
+            'defaults: &defaults\n'
+            '  field: MwxAirTemp\n'
+            '  fault: step\n'
+            '  params: {start: 1, end: 1, bias: 5}\n'
+            'merged:\n'
+            '  <<: *defaults\n', encoding='utf-8')
+        output = root / 'reports'
+        main(['run', '--scenarios', str(scenarios), '--detector',
+              f'{StubThresholdDetector.__module__}:StubThresholdDetector',
+              '--sample-root', str(root), '--output-dir', str(output)])
+        self.assertTrue((output / 'results.json').is_file())

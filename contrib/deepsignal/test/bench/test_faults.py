@@ -37,6 +37,13 @@ class FaultTests(unittest.TestCase):
         self.assertEqual(faults.lag(self.series, **self.window, tau_seconds=10),
                          (output, truth))
 
+    def test_lag_preserves_nan_gap_without_poisoning_later_values(self):
+        series = [(0, 10), (1, float('nan')), (2, 20), (3, 19)]
+        output, _ = faults.lag(series, start=0, end=3, tau_seconds=1)
+        self.assertTrue(math.isnan(output[1][1]))
+        self.assertTrue(math.isfinite(output[2][1]))
+        self.assertTrue(math.isfinite(output[3][1]))
+
     def test_hysteresis(self):
         self.check_injection(faults.hysteresis,
                              [(100, 10), (110, 13), (120, 15), (130, 11), (140, 15)],
@@ -68,6 +75,14 @@ class FaultTests(unittest.TestCase):
         series = [(100, 10), (110, None), (120, 12)]
         output, _ = faults.flatline(series, start=0, end=20)
         self.assertEqual(output, [(100, 10), (110, None), (120, 10)])
+
+    def test_flatline_starts_at_first_value_and_preserves_nan_gaps(self):
+        series = [(100, None), (110, 12), (120, float('nan')), (130, 13)]
+        output, _ = faults.flatline(series, start=0, end=30)
+        self.assertIsNone(output[0][1])
+        self.assertEqual(output[1][1], 12)
+        self.assertTrue(math.isnan(output[2][1]))
+        self.assertEqual(output[3][1], 12)
 
     def test_dropout(self):
         expected = [(100, 10), (110, None), (120, None), (130, None), (140, 15)]
