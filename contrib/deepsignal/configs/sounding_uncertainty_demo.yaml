@@ -1,0 +1,34 @@
+# Offline-only demonstration. The input file contains one JSON record per line
+# using the normalized packet documented in sounding_uncertainty.md.
+cruise:
+  id: DeepSignal sounding uncertainty synthetic demo
+  start: '2026-11-18'
+  end: '2026-11-19'
+
+loggers:
+  sounding_uncertainty:
+    configs:
+      - sounding_uncertainty->file
+
+modes:
+  demo:
+    sounding_uncertainty: sounding_uncertainty->file
+
+default_mode: demo
+
+configs:
+  sounding_uncertainty->file:
+    name: sounding_uncertainty->file
+    readers:
+      class: TextFileReader
+      module: logger.readers.text_file_reader
+      kwargs:
+        filename: /tmp/sounding_uncertainty_synthetic.jsonl
+    transforms:
+      - class: SoundingUncertaintyTransform
+        module: contrib.deepsignal.sounding_uncertainty.transform
+    writers:
+      - class: TextFileWriter
+        module: logger.writers.text_file_writer
+        kwargs:
+          filename: /tmp/sounding_uncertainty_results.jsonl
