@@ -12,6 +12,13 @@ function setting(ctx: ConsoleContext, name: string, fallback: string): string {
   return typeof value === 'string' && value ? value : fallback
 }
 
+export function positionFields(ctx: ConsoleContext): string[] {
+  return [
+    setting(ctx, 'latitude_field', 'S330Latitude'),
+    setting(ctx, 'longitude_field', 'S330Longitude'),
+  ]
+}
+
 export class AutoNight {
   private readonly ctx: ConsoleContext
   private elevation: Elevation
@@ -31,8 +38,7 @@ export class AutoNight {
   }
 
   start(): () => void {
-    const latitude = setting(this.ctx, 'latitude_field', 'S330Latitude')
-    const longitude = setting(this.ctx, 'longitude_field', 'S330Longitude')
+    const [latitude, longitude] = positionFields(this.ctx)
     this.stopStore = this.ctx.store.subscribe([latitude, longitude], () => this.sample())
     this.stopLighting = this.ctx.lighting.subscribe(() => {
       const mode = this.ctx.lighting.get().mode
