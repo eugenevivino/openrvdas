@@ -50,9 +50,15 @@ N/A: this module emits observations only and never changes raw data.
 
 ## Numerical evidence boundary
 
-Pair learning uses prior clean independent blocks, freezes across alarms and
-runtime/datum changes, and never treats consensus depth as another sonar.
-Unknown residual cross-covariance makes private variances UNIDENTIFIED. Exact
+Pair learning uses the plain second central moment after a 5 scaled-MAD outlier
+screen, freezes across alarms and runtime/datum changes, and never treats
+consensus depth as another sonar. A narrower trim requires a declared noise law
+and a stored, simulated consistency factor. Unknown residual cross-covariance
+makes private variances UNIDENTIFIED. Known residual covariance is used in both
+the pair equation and fusion covariance. Pair-fit misfit is gated at the 95th
+percentile of 999 block-bootstrap resamples, with at least 30 independent blocks
+per pair; a material misfit retains prior variances and makes attribution
+AMBIGUOUS. Exact
 ancestry copies collapse before whitening. Fit and holdout IDs are disjoint by
 line/site/time plus footprint buffer. Field plumbing against NBP1406 and all
 survey, recall, coverage, false-repeat, timing, and memory claims remain outside

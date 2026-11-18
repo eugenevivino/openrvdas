@@ -4,13 +4,14 @@ import copy
 import unittest
 
 from contrib.deepsignal.test.weighted_depth.fixtures import (
-    PAIR_VARIANCES, PRIVATE_VARIANCES, fixture_hash, observations,
-    synthetic_epochs,
+    PAIR_VARIANCES, PRIVATE_VARIANCES, fixture_hash, moment_fixture,
+    observations, synthetic_epochs,
 )
 from contrib.deepsignal.weighted_depth.estimator import (
     FamilyContrastEstimator, WeightedDepthEstimator,
 )
 from contrib.deepsignal.weighted_depth.factors import solve_linear
+from contrib.deepsignal.weighted_depth.records import Observation
 
 
 class EstimatorContractTest(unittest.TestCase):
@@ -47,12 +48,46 @@ class EstimatorContractTest(unittest.TestCase):
         self.assertEqual(result["status"], "UNIDENTIFIED")
         self.assertNotEqual(tuple(result["private_variance_m2"].values()), (0.2, 0.2, 1.8))
 
+    def test_known_residual_covariance_in_fusion(self):
+        source = [
+            Observation("s1", "f1", 10.0, 100.0, 1.0, (1.0, 1.0),
+                        ("raw-1",)),
+            Observation("s2", "f2", 10.0, 100.0, 1.0, (1.0, 1.0),
+                        ("raw-2",)),
+        ]
+        estimator = WeightedDepthEstimator({
+            "huber_cutoff": 1000.0,
+            "residual_covariance_m2": {("f1", "f2"): 0.8},
+        })
+        result = estimator.estimate(source, 10.0)
+        self.assertAlmostEqual(result["WDEP_SD_m"] ** 2, 0.9, places=9)
+
     def test_inconsistent_moments_gate(self):
         pairs = {("f1", "f2"): 1.0, ("f1", "f3"): 1.0,
                  ("f2", "f3"): 4.0}
-        result = FamilyContrastEstimator().fit(pairs, {})
+        blocks = moment_fixture(pairs, block_count=400,
+                                standard_error_m2=0.1)
+        result = FamilyContrastEstimator(
+            bootstrap_resamples=999,
+            bootstrap_minimum_blocks=30,
+            bootstrap_seed=17001,
+        ).fit(blocks, {})
         self.assertEqual(result["verdict"], "AMBIGUOUS")
         self.assertIn("misfit", result["reason"].lower())
+
+    def test_noisy_moments_no_gate(self):
+        pairs = {("f1", "f2"): 1.0, ("f1", "f3"): 1.0,
+                 ("f2", "f3"): 4.0}
+        blocks = moment_fixture(pairs, block_count=30,
+                                standard_error_m2=2.0)
+        result = FamilyContrastEstimator(
+            bootstrap_resamples=999,
+            bootstrap_minimum_blocks=30,
+            bootstrap_seed=17001,
+        ).fit(blocks, {})
+        self.assertNotEqual(result["verdict"], "AMBIGUOUS")
+        self.assertEqual(result["status"], "IDENTIFIED")
+        self.assertTrue(result["intervals_wide"])
 
     def test_uniform_noise_variance(self):
         import numpy as np
@@ -62,6 +97,15 @@ class EstimatorContractTest(unittest.TestCase):
         result = FamilyContrastEstimator(minimum_blocks=20).fit(blocks, {})
         for variance in result["private_variance_m2"].values():
             self.assertAlmostEqual(variance, 1.0 / 12.0, delta=(1.0 / 12.0) * 0.02)
+
+    def test_uncalibrated_trim_refused(self):
+        import numpy as np
+
+        rng = np.random.default_rng(17001)
+        blocks = rng.uniform(0.0, 1.0, size=(20000, 3))
+        estimator = FamilyContrastEstimator(trim=0.5)
+        with self.assertRaisesRegex(ValueError, "consistency"):
+            estimator.fit(blocks, {})
 
     def test_even_cycle_unidentified(self):
         pairs = {("f1", "f2"): 2, ("f2", "f3"): 2,

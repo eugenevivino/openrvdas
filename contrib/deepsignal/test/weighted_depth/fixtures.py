@@ -12,6 +12,13 @@ PAIR_VARIANCES = {("f1", "f2"): 5.0, ("f1", "f3"): 10.0,
 PRIVATE_VARIANCES = {"f1": 1.0, "f2": 4.0, "f3": 9.0}
 
 
+def moment_fixture(moments, block_count, standard_error_m2):
+    """Describe pair moments and their independent-block sampling precision."""
+    return {pair: {"variance_m2": variance, "block_count": block_count,
+                   "bootstrap_standard_error_m2": standard_error_m2}
+            for pair, variance in moments.items()}
+
+
 def observations(depths=(100.0, 102.0, 97.0), duplicate_first=False):
     """Return independent-family observations, optionally with copied ancestry."""
     result = []
