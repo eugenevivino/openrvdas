@@ -1,0 +1,14 @@
+transforms:
+  - class: SVConsistencyTransform
+    module: contrib.deepsignal.sv_consistency.sv_consistency_transform
+    kwargs:
+      sources:
+        probe: {field: SVP_Velocity, max_age_s: 30}
+        tsg: {field: TSG_SoundVelocity, max_age_s: 120}
+        sonar: {field: MB_SVTransducer, max_age_s: 30}
+        cast: {field: CAST_SurfaceSV, max_age_s: null}
+      threshold_ms: 2.0
+      persist_s: 120
+      clear_s: 60
+      prefix: SV
+      valid_range: [1400, 1600]
