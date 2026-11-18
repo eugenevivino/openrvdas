@@ -1,0 +1,45 @@
+# Sample logger: one-minute vector-averaged wind from the NBP1406 test data.
+#
+# Run from the top of an OpenRVDAS installation (core v2.7 or later) that
+# has contrib/deepsignal in place:
+#
+#    logger/listener/listen.py \
+#        --config_file contrib/deepsignal/configs/vector_wind_average_logger.yaml
+#
+# It reads a day of recorded met data, parses it, and prints one record a
+# minute with the port anemometer's averaged relative wind.
+#
+# Averaging RELATIVE wind is only meaningful while the ship holds a steady
+# heading. On a real system, average TRUE wind: run core TrueWindsTransform
+# first (it computes true wind per sample), then point this transform at
+# its outputs, e.g. speed_field: PortTrueWindSpeed, direction_field:
+# PortTrueWindDir. See the module docstring for details.
+
+readers:
+  class: TextFileReader
+  kwargs:
+    file_spec: test/NBP1406/data/mwx1/raw/NBP1406_mwx1-2014-08-01
+
+transforms:
+- class: PrefixTransform
+  kwargs:
+    prefix: mwx1
+- class: ParseTransform
+  kwargs:
+    definition_path: test/NBP1406/devices/nbp_devices.yaml
+    return_das_record: true   # averages come out as the same type that goes in
+- class: VectorWindAverageTransform
+  module: contrib.deepsignal.logger.transforms.vector_wind_average_transform
+  kwargs:
+    window: 60        # seconds of data in each average
+    interval: 60      # one average a minute, on the minute
+    min_count: 30     # under 30 usable samples: report the minute as missing
+    data_id: mwx1_avg
+    winds:
+    - speed_field: MwxPortRelWindSpeed
+      direction_field: MwxPortRelWindDir
+      prefix: Avg1m
+      statistics: [speed, direction, max_speed, steadiness, count]
+
+writers:
+  class: TextFileWriter   # no filename: write to stdout
