@@ -4,6 +4,10 @@ DeepSignal is a set of open source add-ons for OpenRVDAS. It aims to help
 everyone aboard a research vessel get more out of the ship's underway data:
 the science party, the bridge, technicians, and shore support.
 
+**Feature reference:** the full list of DeepSignal features, built, in progress
+and planned, with status and links, is kept in the desk repo at
+https://github.com/eugenevivino/openrvdas-desk/blob/main/docs/REFERENCE.md
+
 ## Vision
 
 - **Get the basics exactly right.** Averages, units, and timestamps that a
