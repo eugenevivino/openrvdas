@@ -1,0 +1,13 @@
+calibrations:
+  - sensor_id: tsg1
+    serial: example-serial
+    field: TSG1Conductivity
+    units_in: mS/cm
+    units_out: S/m
+    form: linear
+    coefficients: [0.0, 0.1]
+    valid_from: '2019-07-01T00:00:00Z'
+    certificate: '#118:replace-with-certificate-id'
+    entered_by: replace-with-operator
+    checked_by: replace-with-independent-reviewer
+    note: Example only, replace before operational use.
