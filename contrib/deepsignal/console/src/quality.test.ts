@@ -36,3 +36,21 @@ it('drops an expired last good reading when a FAIL arrives for its exact timesta
   const failed = mergeFieldSamples(unrelated, [], [{ value: 4, timestamp: 100, receivedAt: 140 }])
   expect(fieldData(failed, 1, 500)).toMatchObject({ freshness: 'NO DATA', lastGood: undefined })
 })
+
+it('applies delayed FAIL to the same last good reading before and after rollover', () => {
+  const good = { value: 12, timestamp: 100, receivedAt: 100 }
+  const later = Array.from({ length: 22 }, (_, index) => ({
+    value: null, timestamp: 101 + index, receivedAt: 101 + index,
+  }))
+  const initial = mergeFieldSamples(undefined, [good, later[0]], [])
+  const flag = { value: 4, timestamp: 100.5, receivedAt: 130 }
+  const failedBefore = mergeFieldSamples(initial, [], [flag])
+  const rolledAfterFlag = mergeFieldSamples(failedBefore, later.slice(1), [])
+  const rolledBeforeFlag = mergeFieldSamples(initial, later.slice(1), [])
+  expect(rolledBeforeFlag.recent[0].timestamp).toBeGreaterThan(later[0].timestamp)
+  expect(fieldData(rolledBeforeFlag, 1, 500).lastGood).toEqual(good)
+  const failedAfter = mergeFieldSamples(rolledBeforeFlag, [], [flag])
+  const expected = fieldData(rolledAfterFlag, 1, 500).lastGood
+  expect(expected).toBeUndefined()
+  expect(fieldData(failedAfter, 1, 500).lastGood).toEqual(expected)
+})

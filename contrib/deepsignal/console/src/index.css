@@ -166,6 +166,17 @@
   .status-down svg { color: var(--down); }
   .status-missing svg { color: var(--missing); }
 
+  @media (min-width: 1280px) {
+    /* Bridge puts the two large instruments above the six number tiles. */
+    .tiles:has(> .wide > .bridge-wind-dial):has(> .wide > .bridge-nav) {
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      --bridge-dial-height: clamp(144px, 23vh, 260px);
+    }
+    .tiles:has(> .wide > .bridge-wind-dial):has(> .wide > .bridge-nav) > .wide:has(> .bridge-wind-dial, > .bridge-nav) {
+      grid-column: span 3;
+    }
+  }
+
   @media (max-width: 850px) {
     .tabs { order: 1; flex-basis: 100%; }
   }

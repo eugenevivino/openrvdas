@@ -52,6 +52,9 @@ def check_bridge(playwright, browser, port):
     temperature = page.locator(".tile").filter(has_text="MwxAirTemp").locator(".value")
     playwright.expect(temperature).to_have_text("19.1 °C")
     page.evaluate("document.fonts.ready.then(() => true)")
+    last_tile = page.locator(".tile-frame").last
+    playwright.expect(last_tile.get_by_role("heading", name="Longitude")).to_be_visible()
+    playwright.expect(last_tile).to_be_in_viewport(ratio=1)
     assert page.evaluate("document.documentElement.scrollHeight <= innerHeight")
     encoded = base64.b64encode(page.screenshot()).decode("ascii")
     bad_pixels = page.evaluate(

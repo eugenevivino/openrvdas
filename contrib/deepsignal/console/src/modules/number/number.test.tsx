@@ -66,6 +66,28 @@ it('adds a per-period trend and a 16-point compass direction when configured', (
   expect(screen.getByText('NNW')).toBeTruthy()
 })
 
+it('waits for two usable readings before trending after a FAIL', () => {
+  const { ctx, stepClock } = makeFakeContext({
+    start_time: 100,
+    fields: { Temperature: {} },
+    events: [
+      { t: 0, field: 'Temperature', value: 999 },
+      { t: 0, field: 'Temperature_QC', value: 4 },
+      { t: 1, field: 'Temperature', value: 10 },
+      { t: 1, field: 'Temperature_QC', value: 1 },
+      { t: 2, field: 'Temperature', value: 12 },
+      { t: 2, field: 'Temperature_QC', value: 1 },
+    ],
+  }, { elapsedS: 1 })
+  const cfg = tile.validate({ type: 'number', field: 'Temperature', label: 'Temperature', unit: '°C', trend: 1 },
+    { file: 'test.yaml', tile: 1 })
+  const { container } = render(<tile.Component cfg={cfg} ctx={ctx} />)
+  expect(container.querySelector('.value')?.textContent).toBe('10.0 °C')
+  expect.soft(container.querySelector('.number-trend')).toBeNull()
+  act(() => stepClock(1))
+  expect(container.querySelector('.number-trend')?.textContent).toContain('Rising +2 °C / 1 s')
+})
+
 it('shows LIVE and MISSING with a dash and leaves gaps in sparkline history', () => {
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
   const { ctx, stepClock } = makeFakeContext({

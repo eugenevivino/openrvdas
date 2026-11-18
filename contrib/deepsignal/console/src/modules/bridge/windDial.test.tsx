@@ -112,11 +112,23 @@ describe('bridge reading states', () => {
     expect(screen.getByText('Instantaneous wind')).toBeInTheDocument()
   })
 
+  it('renders the shipped average wind speed in contract source units', () => {
+    const preset = parsePage('bridge.yaml', bridge.presets![0].yaml).tiles.find(({ type }) => type === 'wind-dial')!
+    const config = windDial!.validate(preset, { file: 'bridge.yaml', tile: 1 })
+    render(<WindDial cfg={config} ctx={fakeContext()} />)
+    expect(screen.getByText('1 min vector mean')).toBeInTheDocument()
+    expect(screen.getByText('18.1', { exact: true })).toHaveTextContent('18.1 kt')
+  })
+
   it('renders the shipped fallback wind speed in metres per second', () => {
     const preset = parsePage('bridge.yaml', bridge.presets![0].yaml).tiles.find(({ type }) => type === 'wind-dial')!
     const config = windDial!.validate(preset, { file: 'bridge.yaml', tile: 1 })
     const ctx = fakeContext()
     const get = ctx.store.get
+    const describe = ctx.store.describe
+    ctx.store.describe = (field) => field === config.speed_fallback
+      ? { units: 'depends on conversion used for S330SpeedKt (0.5144) and MwxPortRelWindSpeed (1)' }
+      : describe(field)
     ctx.store.get = (field) => {
       const state = get(field)
       if (field === config.speed || field === config.direction) return { ...state, freshness: 'NO_DATA' }

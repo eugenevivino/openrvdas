@@ -38,6 +38,18 @@ describe('map tile', () => {
     expect(screen.getByText(/Position stale 2 min/)).toBeInTheDocument()
   })
 
+  it('shows stale age and FAIL together when a coordinate has both states', () => {
+    const ctx = fakeContext()
+    const get = ctx.store.get
+    ctx.store.get = (field) => field === cfg.lon
+      ? { ...get(field), freshness: 'STALE', quality: 'FAIL', ageS: 120 } : get(field)
+    render(<MapTile cfg={cfg} ctx={ctx} />)
+    const notice = screen.getByText(/Position stale/i)
+    expect(notice).toBeVisible()
+    expect(notice).toHaveTextContent('2 min')
+    expect(notice).toHaveTextContent('FAIL')
+  })
+
   it('fills a tile URL template', () => {
     expect(fillTileTemplate('tiles/{z}/{x}/{y}.png', 8, 44, 101)).toBe('tiles/8/44/101.png')
   })

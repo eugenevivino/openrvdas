@@ -115,6 +115,8 @@ export class CdsClient {
 
     this.wanted = wanted
     if (this.catalog) {
+      const requested = this.requests()
+      this.update({ fields: new Map([...this.snapshot.fields].filter(([field]) => requested.has(field))) })
       if (this.socket && this.phase === 'idle') this.requestNext()
       return
     }

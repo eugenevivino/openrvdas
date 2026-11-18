@@ -10,7 +10,7 @@ export type Quality = 'PASS' | 'NOT EVALUATED' | 'SUSPECT' | 'FAIL' | 'MISSING'
 export interface FieldSamples {
   recent: readonly Reading[]
   flags: readonly Reading[]
-  olderGood?: Reading
+  olderGood?: { reading: Reading; nextTimestamp: number }
   lastGood?: Reading
   quality: Quality
   learnedPeriod?: number
@@ -51,16 +51,19 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
   const firstRecent = samples.length - recent.length
   const usedFlags = new Set(qualitySamples.slice(-intervalCount - 1))
   let flagIndex = 0
-  // Once a good reading leaves the recent window, keep it independently so
-  // flags from other expired readings cannot be attributed to it. Only an exact
-  // timestamp can still identify a reading outside that window.
+  // Keep the next reading's timestamp when the last good reading leaves the
+  // window so delayed flags still match the same interval.
   let olderGood = previous?.olderGood
+  let olderGoodFlag: Reading | undefined
   if (olderGood) {
-    const olderTimestamp = olderGood.timestamp
-    const olderFlag = qualitySamples.find(({ timestamp }) => timestamp === olderTimestamp)
-    if (olderFlag && !isGood(qualityFromFlag(olderFlag.value))) olderGood = undefined
+    const { reading, nextTimestamp } = olderGood
+    const next = samples.find(({ timestamp }) => timestamp > reading.timestamp)
+    const boundary = Math.min(nextTimestamp, next?.timestamp ?? Infinity)
+    olderGoodFlag = qualitySamples.findLast(({ timestamp }) => timestamp >= reading.timestamp && timestamp < boundary)
+    olderGood = olderGoodFlag && !isGood(qualityFromFlag(olderGoodFlag.value))
+      ? undefined : { reading, nextTimestamp: boundary }
   }
-  let lastGood = olderGood
+  let lastGood = olderGood?.reading
   let quality = qualityFromFlag(qualitySamples.at(-1)?.value)
 
   for (const [index, sample] of samples.entries()) {
@@ -71,7 +74,8 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
     while (flagIndex < qualitySamples.length && qualitySamples[flagIndex].timestamp < nextTimestamp) {
       matched = qualitySamples[flagIndex++]
     }
-    if (matched && matched.timestamp >= sample.timestamp) {
+    if (matched && matched.timestamp < sample.timestamp) matched = undefined
+    if (matched) {
       quality = qualityFromFlag(matched.value)
       if (index >= firstRecent) usedFlags.add(matched)
     } else {
@@ -80,9 +84,13 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
     if (sample.value != null && isGood(quality) &&
         (lastGood === undefined || sample.timestamp > lastGood.timestamp)) {
       lastGood = sample
-      if (index < firstRecent) olderGood = sample
+      if (index < firstRecent) {
+        olderGood = { reading: sample, nextTimestamp }
+        olderGoodFlag = matched
+      }
     }
   }
+  if (olderGood && olderGoodFlag) usedFlags.add(olderGoodFlag)
 
   const intervals = recent.slice(1).map(({ timestamp }, index) => timestamp - recent[index].timestamp)
     .sort((a, b) => a - b)

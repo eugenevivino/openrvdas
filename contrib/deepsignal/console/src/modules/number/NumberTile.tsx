@@ -17,7 +17,7 @@ const directions = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE',
 const emptyHistory: ReturnType<ConsoleContext['store']['history']> = []
 const isNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value)
 
-function numberHistory(ctx: ConsoleContext, field: string, seconds: number) {
+function numberHistory(ctx: ConsoleContext, field: string, seconds: number, excludeFailed = false) {
   const readings = ctx.store.history(field, seconds)
   const flags = ctx.store.history(field + ctx.config.qcSuffix, seconds)
   let flagIndex = 0
@@ -25,7 +25,8 @@ function numberHistory(ctx: ConsoleContext, field: string, seconds: number) {
     const nextTime = readings[index + 1]?.time ?? Infinity
     let flag: (typeof flags)[number] | undefined
     while (flagIndex < flags.length && flags[flagIndex].time < nextTime) flag = flags[flagIndex++]
-    return flag?.value === 9 && flag.time >= reading.time ? { ...reading, value: null } : reading
+    const unusable = flag && flag.time >= reading.time && (flag.value === 9 || (excludeFailed && flag.value === 4))
+    return unusable ? { ...reading, value: null } : reading
   })
 }
 
@@ -64,7 +65,7 @@ export function NumberTile({ cfg, ctx }: { cfg: TileConfig; ctx: ConsoleContext 
   const observed = sourceTime === undefined ? undefined : new Date(sourceTime * 1000).toISOString()
   const lastGoodTime = lastGood && new Date(lastGood.time * 1000).toISOString()
   const history = tile.sparkline ? numberHistory(ctx, tile.field, tile.sparkline * 60) : emptyHistory
-  const recent = tile.trend ? numberHistory(ctx, tile.field, tile.trend * 60) : emptyHistory
+  const recent = tile.trend ? numberHistory(ctx, tile.field, tile.trend * 60, true) : emptyHistory
 
   return (
     <article className="tile number-tile">

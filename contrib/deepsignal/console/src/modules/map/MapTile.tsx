@@ -100,14 +100,18 @@ function positionNotice(states: FieldState[], latest: TrackPoint | undefined, no
   const positionAge = latest && Math.max(0, now - latest.time)
   const age = Math.max(positionAge ?? 0, ...states.map((state) => state.ageS ?? 0))
   const words = ageWords(positionAge !== undefined || states.some((state) => state.ageS !== undefined) ? age : undefined)
-  if (states.some((state) => state.freshness === 'NO_DATA')) return `× Position stale ${words} · NO DATA`
-  if (states.some((state) => state.freshness === 'STALE')) return `□ Position stale ${words}`
-  if (states.some((state) => state.quality === 'FAIL')) return '× Position FAIL'
-  if (states.some((state) => state.quality === 'MISSING' || numeric(state.value) === undefined)) return '□ Position MISSING'
-  if (!latest) return `× Position stale ${words} · NO DATA`
-  if (states.some((state) => state.freshness === 'AGING')) return `▲ Position aging ${words}`
-  if (states.some((state) => state.sourceTime !== latest.time)) return `□ Waiting for a matched position · ${words}`
-  if (states.some((state) => state.quality === 'SUSPECT')) return '▲ Position SUSPECT'
+  const quality = states.some((state) => state.quality === 'FAIL') ? 'FAIL'
+    : states.some((state) => state.quality === 'MISSING') ? 'MISSING'
+      : states.some((state) => state.quality === 'SUSPECT') ? 'SUSPECT' : undefined
+  const qualitySuffix = quality ? ` · ${quality}` : ''
+  if (states.some((state) => state.freshness === 'NO_DATA')) return `× Position stale ${words} · NO DATA${qualitySuffix}`
+  if (states.some((state) => state.freshness === 'STALE')) return `□ Position stale ${words}${qualitySuffix}`
+  if (states.some((state) => state.freshness === 'AGING')) return `▲ Position aging ${words}${qualitySuffix}`
+  if (quality === 'FAIL') return '× Position FAIL'
+  if (quality === 'MISSING' || states.some((state) => numeric(state.value) === undefined)) return '□ Position MISSING'
+  if (!latest) return `× Position stale ${words} · NO DATA${qualitySuffix}`
+  if (states.some((state) => state.sourceTime !== latest.time)) return `□ Waiting for a matched position · ${words}${qualitySuffix}`
+  if (quality === 'SUSPECT') return '▲ Position SUSPECT'
   return undefined
 }
 

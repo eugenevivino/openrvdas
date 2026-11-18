@@ -3,6 +3,8 @@ import '@testing-library/jest-dom/vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Alert, ConsoleContext, FieldState } from '../../contract'
+import { createConsoleContext } from '../../context'
+import { ConsoleStore } from '../../store'
 import module, { StaleBanner } from './index'
 
 type MutableState = FieldState
@@ -38,7 +40,7 @@ function state(field: string, freshness: FieldState['freshness'], health: FieldS
 function start(ctx: ConsoleContext) { return module.engines![0].start(ctx) }
 
 beforeEach(() => vi.useFakeTimers())
-afterEach(() => { cleanup(); vi.useRealTimers() })
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers() })
 
 describe('stale-alerts', () => {
   it('flr1_fails gives one grouped A2 with failed logger and affected field', () => {
@@ -98,6 +100,49 @@ it('ignores never-observed catalog entries and preserves the outage time of an o
   act(() => vi.advanceTimersByTime(1000))
   expect(f.alerts()).toEqual([outage])
   stop()
+})
+
+it('raises an outage only for a silent field still subscribed after a page switch', () => {
+  const socket = new class extends EventTarget {
+    send = vi.fn<(message: string) => void>()
+    close() {}
+    receive(type: string, data?: unknown) {
+      this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type, status: 200, data }) }))
+    }
+  }()
+  vi.stubGlobal('WebSocket', function () { return socket })
+  let now = 1795000000
+  const clock = { now: () => now }
+  const config = { ...context({}).ctx.config, websocket: 'ws://test:8766' }
+  const store = new ConsoleStore(config, clock)
+  const ctx = createConsoleContext(config, store, clock)
+  const stop = start(ctx)
+  try {
+    store.select(new Map([['Knud3Depth', { period: 1 }], ['TsgTemp', { period: 1 }]]))
+    store.start()
+    socket.dispatchEvent(new Event('open'))
+    socket.receive('fields', ['Knud3Depth', 'TsgTemp'])
+    socket.receive('describe', { Knud3Depth: { description: 'Depth', logger: 'knud1' }, TsgTemp: { logger: 'tsg1' } })
+    socket.receive('subscribe')
+    socket.receive('data', { Knud3Depth: [[now, 20]], TsgTemp: [[now, 10]] })
+    expect(store.get('Knud3Depth').value).toBe(20)
+    act(() => vi.advanceTimersByTime(1000))
+    expect(ctx.alerts.list()).toEqual([])
+
+    store.select(new Map([['TsgTemp', { period: 1 }]]))
+    socket.receive('data', { Knud3Depth: [[now, 21]] })
+    expect(JSON.parse(socket.send.mock.lastCall![0])).toMatchObject({ type: 'subscribe', fields: { TsgTemp: expect.any(Object) } })
+    socket.receive('subscribe')
+    socket.receive('data', {})
+    expect(store.listFields()).toContain('Knud3Depth')
+
+    now += 301
+    act(() => vi.advanceTimersByTime(1000))
+    expect(ctx.alerts.list()).toMatchObject([{ tier: 'A2', groupKey: 'tsg1', title: expect.stringMatching(/^TsgTemp no data/) }])
+  } finally {
+    stop()
+    store.stop()
+  }
 })
 
 it('warns about a known failed logger before its first sample and preserves the failure time', () => {

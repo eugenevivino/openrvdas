@@ -9,7 +9,8 @@ tiles:
     speed_fallback: PortTrueWindSpeed
     direction_fallback: PortTrueWindDir
     heading: S330HeadingTrue
-    unit: m/s
+    unit: kt
+    speed_fallback_unit: m/s
     average_label: 1 min vector mean
   - type: nav
     label: Navigation
