@@ -46,6 +46,29 @@ it('raises, acknowledges, clears, and notifies alert subscribers', () => {
   expect(changed).toHaveBeenCalledTimes(3)
 })
 
+it.each(['alerts', 'lighting'] as const)('continues notifying %s subscribers after one throws', (channel) => {
+  const alerts = createAlerts()
+  const lighting = createLighting('red')
+  const listeners = channel === 'alerts' ? alerts : lighting
+  const failure = new Error('Subscriber failed')
+  const changed = vi.fn()
+  listeners.subscribe(() => { throw failure })
+  listeners.subscribe(changed)
+  const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+  try {
+    if (channel === 'alerts') {
+      alerts.raise({ id: 'feed', tier: 'A2', title: 'Feed stopped', source: 'Depth',
+        consequence: 'No updates', firstAction: 'Check the logger', since: 3 })
+    } else {
+      lighting.set({ mode: 'night' })
+    }
+    expect(changed).toHaveBeenCalledOnce()
+    expect(log).toHaveBeenCalledWith(expect.stringContaining(channel), failure)
+  } finally {
+    log.mockRestore()
+  }
+})
+
 it('persists lighting, notifies after painting, and keeps neutral alarms distinct', () => {
   const lighting = createLighting('red')
   const changed = vi.fn()

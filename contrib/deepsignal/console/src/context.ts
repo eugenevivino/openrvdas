@@ -1,14 +1,23 @@
 import type { ConsoleConfig, ConsoleContext, FieldStore, Lighting, Page } from './contract'
 import { paintLighting, readLighting, storeLighting } from './lighting'
+import { isMapping, isText } from './settings'
 
-function listeners() {
+function listeners(channel: string) {
   const callbacks = new Set<() => void>()
   return {
     subscribe(cb: () => void) {
       callbacks.add(cb)
       return () => { callbacks.delete(cb) }
     },
-    notify() { callbacks.forEach((cb) => cb()) },
+    notify() {
+      for (const cb of callbacks) {
+        try {
+          cb()
+        } catch (error) {
+          console.error('Console ' + channel + ' subscriber failed.', error)
+        }
+      }
+    },
   }
 }
 
@@ -20,9 +29,19 @@ function priority(source: Page['source']) {
 
 export function createPageRegistry(ids: string[]) {
   const pages = new Map<string, Page>()
-  const { subscribe, notify } = listeners()
+  const { subscribe, notify } = listeners('pages')
   return {
     register(page: Page) {
+      if (!isMapping(page) || !isText(page.id) || !isText(page.title)) {
+        throw new Error('A registered page must have an ID and title.')
+      }
+      if (!Array.isArray(page.tiles)) throw new Error('Page "' + page.id + '" must have a list of tiles.')
+      if (page.source !== undefined && typeof page.source !== 'string') {
+        throw new Error('Page "' + page.id + '" must have a text source.')
+      }
+      if (page.order !== undefined && !Number.isFinite(page.order)) {
+        throw new Error('Page "' + page.id + '" must have a numeric order.')
+      }
       const previous = pages.get(page.id)
       if (previous && priority(previous.source) > priority(page.source)) return
       pages.set(page.id, page)
@@ -38,7 +57,7 @@ export function createPageRegistry(ids: string[]) {
 
 export function createAlerts(): ConsoleContext['alerts'] {
   const active = new Map<string, ReturnType<ConsoleContext['alerts']['list']>[number]>()
-  const { subscribe, notify } = listeners()
+  const { subscribe, notify } = listeners('alerts')
   return {
     raise(alert) {
       const acked = active.get(alert.id)?.acked
@@ -66,7 +85,7 @@ export function createLighting(defaultPalette?: Lighting['nightPalette']) {
   let state: Lighting = {
     mode: stored.mode, dayMode: stored.lastDay, nightPalette: selectedPalette ?? defaultNight, dim: stored.dim,
   }
-  const { subscribe, notify } = listeners()
+  const { subscribe, notify } = listeners('lighting')
   const paint = () => {
     const { mode, dayMode, nightPalette, dim } = state
     paintLighting(document.documentElement, mode, dim, nightPalette)

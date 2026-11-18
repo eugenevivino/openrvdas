@@ -10,6 +10,7 @@ import unittest
 
 
 INSTALLER = Path(__file__).with_name('install.sh').resolve()
+README = INSTALLER.parent.parent / 'README.md'
 
 
 class InstallTests(unittest.TestCase):
@@ -105,6 +106,31 @@ class InstallTests(unittest.TestCase):
         self.assertIn('read-only relay checker is missing', result.stderr)
         self.assertIn('Django and React', result.stderr)
         self.assertIn('UDP', result.stderr)
+
+    def test_readme_routes_initial_setup_through_the_relay_gate(self):
+        readme = README.read_text(encoding='utf-8')
+        setup = readme.split('### Try it without a ship', 1)[0]
+        self.assertIn('sudo /opt/openrvdas/contrib/deepsignal/console/install/install.sh', setup)
+        self.assertIn('install.sh --check', setup)
+        self.assertIn('Django and React', setup)
+        self.assertIn('UDP', setup)
+        self.assertNotIn('location /console/', setup)
+
+    def test_relay_self_check_refuses_a_deployment_missing_its_checker(self):
+        original = ('server { server_name ship; location = /cds-ws { '
+                    'proxy_pass http://unix:/run/deepsignal/cds-gateway.sock:; } }\n')
+        self.conf.write_text(original, encoding='utf-8')
+        # A checker in the staging checkout cannot verify a different installation.
+        staged_checker = self.root / 'contrib/deepsignal/security/check_cds.py'
+        staged_checker.parent.mkdir(parents=True)
+        staged_checker.write_text('raise SystemExit(0)\n', encoding='utf-8')
+        deployment = self.root / 'deployment'
+        deployment.mkdir()
+
+        result = self.run_install('--check', '--openrvdas-root', str(deployment))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('read-only relay checker is missing', result.stderr)
+        self.assertEqual(self.conf.read_text(encoding='utf-8'), original)
 
     def test_relay_self_check_delegates_to_197_and_propagates_failure(self):
         self.conf.write_text(

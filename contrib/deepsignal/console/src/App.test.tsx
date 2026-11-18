@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import '@testing-library/jest-dom/vitest'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import App from './App'
-import type { ConsoleModule } from './contract'
+import type { ConsoleModule, Page } from './contract'
 
 const { discover } = vi.hoisted(() => ({ discover: vi.fn() }))
 vi.mock('./registry', () => ({ discoverModules: discover }))
@@ -27,10 +28,57 @@ class Socket extends EventTarget {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  vi.useRealTimers()
   window.history.replaceState(null, '', '/')
 })
 
+it('reports a malformed registered page and keeps valid pages available', async () => {
+  const example: ConsoleModule = {
+    id: 'example',
+    engines: [{ id: 'example', start: (ctx) => {
+      ctx.pages.register({ id: 'example', title: 'Weather', tiles: [] })
+      ctx.pages.register({ id: 'example', title: 'Broken page', tiles: {} } as unknown as Page)
+      return () => {}
+    } }],
+  }
+  discover.mockResolvedValue({ modules: [example], problems: [] })
+  vi.stubGlobal('WebSocket', Socket)
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('console.yaml')
+    ? new Response('ship: Test\npages: [example]\n')
+    : new Response(null, { status: 404 })))
+
+  render(<App />)
+  const problem = await screen.findByText('Module example: Page "example" must have a list of tiles.')
+  expect(problem).toHaveAttribute('role', 'alert')
+  expect(screen.getByRole('heading', { name: 'Weather' })).toBeTruthy()
+})
+
+it('shows the relay and UDP warning on Self-test even when the cache connects', async () => {
+  const { default: selfTest } = await import('./modules/self-test')
+  discover.mockResolvedValue({ modules: [selfTest], problems: [] })
+  vi.stubGlobal('WebSocket', Socket)
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('console.yaml')
+    ? new Response('ship: Test\npages: [self-test]\n')
+    : new Response(null, { status: 404 })))
+  render(<App />)
+  await screen.findByText('Disconnected')
+  const socket = Socket.current
+  act(() => {
+    socket.dispatchEvent(new Event('open'))
+    socket.receive('fields', [])
+    socket.receive('describe', {})
+  })
+  expect(screen.getByText('Connected')).toBeTruthy()
+  const warning = screen.getByText(/read-only relay/i)
+  expect(warning).toHaveTextContent(/Django and React/)
+  expect(warning).toHaveTextContent(/UDP.*named interface/i)
+  expect(warning).toHaveTextContent(/install\.sh --check/)
+})
+
 it('mounts slots and one engine, isolates a tile problem, and requests the active destination and adapter fields', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  const now = 1_005
+  vi.setSystemTime(now * 1000)
   const { default: number } = await import('./modules/number')
   const stop = vi.fn()
   const start = vi.fn(() => stop)
@@ -73,7 +121,7 @@ tiles:
     socket.receive('fields', fields)
     socket.receive('describe', {})
     socket.receive('subscribe')
-    socket.receive('data', { 'status:logger_status': [[Date.now() / 1000, { logger: 'RUNNING' }]] })
+    socket.receive('data', { 'status:logger_status': [[now, { logger: 'RUNNING' }]] })
   })
   expect(readStatus).toHaveBeenCalledTimes(1)
   expect(Object.keys(socket.sent.find(({ type }) => type === 'subscribe')!.fields!))
@@ -82,8 +130,7 @@ tiles:
   fireEvent.click(logs)
   await screen.findByText('Log messages')
   act(() => socket.receive('data', {}))
-  await waitFor(() => expect(Object.keys(socket.sent.at(-1)!.fields!))
-    .toEqual(['LogText', 'LogText_QC', 'status:logger_status']))
+  expect(Object.keys(socket.sent.at(-1)!.fields!)).toEqual(['LogText', 'LogText_QC', 'status:logger_status'])
   expect(start).toHaveBeenCalledTimes(1)
   view.unmount()
   expect(stop).toHaveBeenCalledTimes(1)

@@ -23,3 +23,16 @@ it('reports a missing quality flag even when the cache supplies no measurement',
   const series = mergeFieldSamples(undefined, [], [{ value: 9, timestamp: 100, receivedAt: 101 }])
   expect(fieldData(series, 1, 101)).toMatchObject({ quality: 'MISSING', freshness: 'NO DATA' })
 })
+
+it('drops an expired last good reading when a FAIL arrives for its exact timestamp', () => {
+  const good = { value: 12, timestamp: 100, receivedAt: 100 }
+  const later = Array.from({ length: 22 }, (_, index) => ({
+    value: null, timestamp: 101 + index, receivedAt: 101 + index,
+  }))
+  const original = mergeFieldSamples(undefined, [good, ...later], [])
+  expect(original.recent).not.toContain(good)
+  const unrelated = mergeFieldSamples(original, [], [{ value: 4, timestamp: 101, receivedAt: 130 }])
+  expect(fieldData(unrelated, 1, 500).lastGood).toEqual(good)
+  const failed = mergeFieldSamples(unrelated, [], [{ value: 4, timestamp: 100, receivedAt: 140 }])
+  expect(fieldData(failed, 1, 500)).toMatchObject({ freshness: 'NO DATA', lastGood: undefined })
+})

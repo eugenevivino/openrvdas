@@ -1,12 +1,23 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, render, screen, within } from '@testing-library/react'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import feed from '../../contract/fake-feed.json'
 import { makeFakeContext } from '../../testkit'
 import module from './index'
 
-afterEach(cleanup)
+const { setData } = vi.hoisted(() => ({ setData: vi.fn() }))
+vi.mock('uplot', () => ({ default: class {
+  setData = setData
+  setScale() {}
+  destroy() {}
+} }))
+
+afterEach(() => {
+  cleanup()
+  setData.mockClear()
+  vi.unstubAllGlobals()
+})
 
 const tile = module.tiles![0]
 
@@ -53,4 +64,30 @@ it('adds a per-period trend and a 16-point compass direction when configured', (
   const compass = show({ field: 'PortTrueWindDir', label: 'Wind direction', unit: '°', compass: true })
   compass.advance(400)
   expect(screen.getByText('NNW')).toBeTruthy()
+})
+
+it('shows LIVE and MISSING with a dash and leaves gaps in sparkline history', () => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+  const { ctx, stepClock } = makeFakeContext({
+    start_time: 100,
+    fields: { Temperature: {} },
+    events: [
+      { t: 0, field: 'Temperature', value: 18 },
+      { t: 1, field: 'Temperature', value: 999 },
+      { t: 2, field: 'Temperature', value: 19 },
+      { t: 3, field: 'Temperature', value: 999 },
+      { t: 1, field: 'Temperature_QA', value: 9 },
+      { t: 3, field: 'Temperature_QA', value: 9 },
+    ],
+  }, { elapsedS: 3, config: { qcSuffix: '_QA' } })
+  const cfg = tile.validate({ type: 'number', field: 'Temperature', label: 'Temperature', unit: '°C', sparkline: 1, trend: 1 },
+    { file: 'test.yaml', tile: 1 })
+  const view = render(<tile.Component cfg={cfg} ctx={ctx} />)
+  expect(screen.getByText('LIVE')).toBeTruthy()
+  expect(screen.getByText('MISSING')).toBeTruthy()
+  expect.soft(view.container.querySelector('.value')?.textContent).toBe('—')
+  expect.soft(setData).toHaveBeenLastCalledWith([[100, 101, 102, 103], [18, null, 19, null]], false)
+  expect(view.container.querySelector('.number-trend')).toBeNull()
+  act(() => stepClock(301))
+  expect(screen.getByText(/Last: 19\.0 °C/)).toBeTruthy()
 })

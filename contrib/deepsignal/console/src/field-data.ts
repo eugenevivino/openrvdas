@@ -29,6 +29,10 @@ export function qualityFromFlag(flag: unknown): Quality {
   }
 }
 
+function isGood(quality: Quality) {
+  return quality === 'PASS' || quality === 'NOT EVALUATED'
+}
+
 export function mergeReadings(previous: readonly Reading[], incoming: readonly Reading[]) {
   const byTimestamp = new Map(previous.map((reading) => [reading.timestamp, reading]))
   for (const reading of incoming) {
@@ -48,8 +52,14 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
   const usedFlags = new Set(qualitySamples.slice(-intervalCount - 1))
   let flagIndex = 0
   // Once a good reading leaves the recent window, keep it independently so
-  // flags from other expired readings cannot be attributed to it.
+  // flags from other expired readings cannot be attributed to it. Only an exact
+  // timestamp can still identify a reading outside that window.
   let olderGood = previous?.olderGood
+  if (olderGood) {
+    const olderTimestamp = olderGood.timestamp
+    const olderFlag = qualitySamples.find(({ timestamp }) => timestamp === olderTimestamp)
+    if (olderFlag && !isGood(qualityFromFlag(olderFlag.value))) olderGood = undefined
+  }
   let lastGood = olderGood
   let quality = qualityFromFlag(qualitySamples.at(-1)?.value)
 
@@ -67,7 +77,7 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
     } else {
       quality = 'NOT EVALUATED'
     }
-    if (sample.value != null && (quality === 'PASS' || quality === 'NOT EVALUATED') &&
+    if (sample.value != null && isGood(quality) &&
         (lastGood === undefined || sample.timestamp > lastGood.timestamp)) {
       lastGood = sample
       if (index < firstRecent) olderGood = sample

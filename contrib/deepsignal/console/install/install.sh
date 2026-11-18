@@ -39,7 +39,7 @@ if { [ -n "$UDP_PORT" ] && [ -z "$UDP_INTERFACE" ]; } ||
     echo "Supply both --udp-port and --udp-interface to check the CDS UDP feed." >&2
     exit 2
 fi
-if ! $UNINSTALL && ! $CHECK; then
+if ! $UNINSTALL; then
     case "$OPENRVDAS_ROOT" in
         /*) ;;
         *) echo "Use an absolute path for --openrvdas-root." >&2; exit 2 ;;
@@ -93,11 +93,11 @@ relay_warning() {
 }
 
 check_relay() (
-    cd "$installer_dir/../../../.."
-    if [ ! -f contrib/deepsignal/security/check_cds.py ]; then
+    if [ ! -f "$OPENRVDAS_ROOT/contrib/deepsignal/security/check_cds.py" ]; then
         echo "The #197 read-only relay checker is missing." >&2
         return 1
     fi
+    cd "$OPENRVDAS_ROOT" || return 1
     if [ -n "$UDP_PORT" ]; then
         set -- --udp-port "$UDP_PORT" --udp-interface "$UDP_INTERFACE"
     else

@@ -21,7 +21,11 @@ class MockSocket extends EventTarget {
   }
 
   receive(message: unknown) {
-    this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(message) }))
+    this.receiveRaw(JSON.stringify(message))
+  }
+
+  receiveRaw(data: string) {
+    this.dispatchEvent(new MessageEvent('message', { data }))
   }
 
   close() {
@@ -33,6 +37,32 @@ afterEach(() => {
   MockSocket.sockets = []
   vi.unstubAllGlobals()
   vi.useRealTimers()
+})
+
+it('keeps readings and FAIL flags from a CDS batch containing non-finite numbers', () => {
+  vi.stubGlobal('WebSocket', MockSocket)
+  vi.useFakeTimers()
+  const client = new CdsClient('ws://ship:8766', { now: () => 1005 })
+  client.setFields({ Depth: 60, Temperature: 60, Status: -1 })
+  const [socket] = MockSocket.sockets
+  try {
+    socket.open()
+    socket.receive({ type: 'subscribe', status: 200 })
+    socket.receiveRaw('{"type":"data","status":200,"data":{' +
+      '"Depth":[[1004,20],[1005,21]],"Depth_QC":[[1005,4]],' +
+      '"Temperature":[[1003,Infinity],[1004,-Infinity],[1005,NaN],[NaN,999]],' +
+      '"Status":[[1005,{"NaN":"Keep [NaN], \\"Infinity\\" and -Infinity","nested":[NaN]}]]}}')
+    const { fields, history } = client.getSnapshot()
+    expect(fields.get('Depth')).toMatchObject({ quality: 'FAIL', lastGood: { value: 20, timestamp: 1004 } })
+    expect(history.get('Temperature')?.map(({ value }) => value)).toEqual([null, null, null])
+    expect(fields.get('Temperature')?.lastGood).toBeUndefined()
+    expect(fields.get('Status')?.recent.at(-1)?.value).toEqual({
+      NaN: 'Keep [NaN], "Infinity" and -Infinity', nested: [null],
+    })
+    expect(socket.sent.at(-1)).toEqual({ type: 'ready' })
+  } finally {
+    client.stop()
+  }
 })
 
 it('requests visible fields and history, then acknowledges each batch', () => {

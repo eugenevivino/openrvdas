@@ -26,6 +26,19 @@ function isMapping(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
+function parseResponse(raw: string, isDataBatch: boolean): unknown {
+  try {
+    return JSON.parse(raw)
+  } catch (error) {
+    if (!isDataBatch) throw error
+    // Stock CDS uses Python's json.dumps, which emits non-finite numbers as bare tokens.
+    // Match quoted strings first so field names and text values are preserved verbatim.
+    const normalized = raw.replace(/"(?:[^"\\]|\\[\s\S])*"|([:[,]\s*)(?:NaN|-?Infinity)(?=\s*[,}\]])/g,
+      (token: string, prefix: string | undefined) => prefix === undefined ? token : prefix + 'null')
+    return JSON.parse(normalized)
+  }
+}
+
 function readBatch(batch: Record<string, unknown>, field: string, now: number): Reading[] {
   const samples = Object.hasOwn(batch, field) ? batch[field] : undefined
   if (!Array.isArray(samples)) return []
@@ -261,9 +274,9 @@ export class CdsClient {
     if (typeof raw !== 'string') return
     let message: unknown
     try {
-      message = JSON.parse(raw)
+      message = parseResponse(raw, this.phase === 'data')
     } catch (error) {
-      // This batch has been consumed. Some CDS versions emit non-JSON NaN values.
+      // A bad batch has still consumed the outstanding ready request.
       console.warn('Cannot read a cache response.', error)
       this.update({ lastMessage: now })
       if (this.phase === 'data') this.requestNext()

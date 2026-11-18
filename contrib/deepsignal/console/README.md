@@ -4,22 +4,21 @@
 
 DeepSignal shows live ship measurements from the OpenRVDAS data cache in a browser.
 
-1. Copy `dist/` to `/opt/openrvdas/contrib/deepsignal/console/dist/` on the ship server. Edit `dist/console.yaml` to set the ship name and time zone. The sample Weather page expects `MwxAirTemp` and `MwxAirRelHumid`. If your ship logs different fields, create `dist/pages/example.yaml` using the example below and set its field names, labels, and units.
-2. Check which OpenRVDAS nginx config exists, `/etc/nginx/sites-enabled/openrvdas.conf` on Ubuntu or `/etc/nginx/conf.d/openrvdas.conf` on RHEL. Put this block inside its existing `server { ... }` block.
+Live readings require the #197 read-only relay. Configure `/cds-ws` to use that relay in both Django and React nginx configurations. Bind the cache to loopback and any CDS UDP feed (`--udp`) to a named interface.
 
-   ```nginx
-   location /console/ {
-       alias /opt/openrvdas/contrib/deepsignal/console/dist/;
-       try_files $uri $uri/ =404;
-   }
+1. Place the console build in `/opt/openrvdas/contrib/deepsignal/console/dist/` on the ship server. Set the ship name and time zone in `dist/console.yaml`, then run the installer from the OpenRVDAS checkout.
+
+   ```sh
+   sudo /opt/openrvdas/contrib/deepsignal/console/install/install.sh
    ```
 
-   Run `sudo nginx -t && sudo systemctl reload nginx`.
-3. Open `http://<ship-server>/console/`. The Weather tiles show numbers with units and the top bar says **Live** when current readings arrive. Press **Night** or **N** to enter or leave Night mode. In Night mode, use **Red** or **Neutral** to select the palette and **Dim** to change brightness. Use keys **1–9** to switch pages in the order listed in `console.yaml`.
+   Use `--server-name NAME` if the nginx configuration has multiple server blocks. Use `--nginx-conf PATH` for a nonstandard configuration path. For a cache with UDP enabled, add `--udp-port PORT --udp-interface ADDRESS` to the installer command.
+2. Open `/console/` on the ship server. The Weather tiles show readings from `MwxAirTemp` and `MwxAirRelHumid`. For different fields, use the page example below. Press **Night** or **N** to enter or leave Night mode. In Night mode, use **Red** or **Neutral** to select the palette and **Dim** to change brightness. Use keys **1–9** to switch pages.
+3. Open **Self-test**. It shows the cache connection and the relay and UDP checks to verify on the ship server. To rerun the installer’s relay check, use `sudo /opt/openrvdas/contrib/deepsignal/console/install/install.sh --check` with the same server and UDP options.
 
-If the top bar keeps saying **Reconnecting**, check that the data cache is running and that its address in `console.yaml` is reachable from the display. If a tile keeps waiting for data, compare its **Source** field name with the fields the ship logs. After editing either YAML file, reload the browser tab to pick up the changes.
+If the top bar keeps saying **Reconnecting**, check that the data cache and relay are running and that the console's nginx server routes `/cds-ws` to the relay. If a tile keeps waiting for data, compare its **Source** field name with the fields the ship logs. After editing either YAML file, reload the browser tab to pick up the changes.
 
-To turn the console off, remove the `location /console/` block you added and run `sudo nginx -t && sudo systemctl reload nginx` again. You can leave the folder in place for next time. The ship's data cache and loggers keep running.
+To turn the console off, run the installer with `--uninstall` and the same nginx server selection. The ship's data cache and loggers keep running.
 
 ### Try it without a ship
 
@@ -29,7 +28,7 @@ On a workstation with OpenRVDAS installed, run this from the OpenRVDAS folder.
 python3 -B -m contrib.deepsignal.console.demo_cache contrib/deepsignal/configs/console_demo_logger.yaml
 ```
 
-The demo replays air temperature and humidity from the NBP1406 recording into a separate in-memory cache. Serve a copy of `dist/` on the workstation using the nginx block above and add `websocket: ws://127.0.0.1:18766` to that copy's `console.yaml`. Open `http://127.0.0.1/console/` on the same workstation. The Weather tiles should update about once a second. Press **Ctrl+C** in the demo terminal to stop it. The top bar shows **Reconnecting** and how long ago the cache last replied. The tiles progress from **LIVE** to **AGING**, **STALE**, and **NO DATA** as their readings age.
+The demo replays air temperature and humidity from the NBP1406 recording into a separate in-memory cache. Serve a copy of `dist/` under `/console/` on the workstation and add `websocket: ws://127.0.0.1:18766` to that copy's `console.yaml`. Open `http://127.0.0.1/console/` on the same workstation. The Weather tiles should update about once a second. Press **Ctrl+C** in the demo terminal to stop it. The top bar shows **Reconnecting** and how long ago the cache last replied. The tiles progress from **LIVE** to **AGING**, **STALE**, and **NO DATA** as their readings age.
 
 ### Settings
 
@@ -37,7 +36,7 @@ The demo replays air temperature and humidity from the NBP1406 recording into a 
 | --- | --- | --- |
 | `ship` | Required | Ship name shown in the top bar. |
 | `ship_timezone` | `UTC` | IANA time zone for the ship clock. |
-| `websocket` | `ws(s)://<browser-host>/cds-ws` | Address of the data cache. The default uses `wss://` when the console is served over HTTPS and `ws://` over HTTP. |
+| `websocket` | `ws(s)://<browser-host>/cds-ws` | Same-origin address of the read-only relay. The console uses `wss://` over HTTPS and `ws://` over HTTP. |
 | `pages` | `[]` | Page IDs to show, in tab order. An empty list shows all available pages. The sample configuration selects `example`. |
 | `history` | `0` seconds | Initial history window. Tiles and routes can request more history. |
 | `qc_suffix` | `_QC` | Suffix added to each field name to find its QARTOD flag and details. |

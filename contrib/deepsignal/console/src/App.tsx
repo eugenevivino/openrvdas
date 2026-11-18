@@ -366,6 +366,12 @@ function Console({ runtime }: { runtime: Runtime }) {
       <main>
         <h1>{selected?.title ?? 'Data console'}</h1>
         {[...problems].map((problem) => <Message key={problem}>{problem}</Message>)}
+        {selected?.route?.owner === 'self-test' && <p className="message">
+          Verify the read-only relay with <code>install.sh --check</code> on the ship server.
+          Use the relay for <code>/cds-ws</code> in both Django and React nginx configurations.
+          Bind the cache to loopback and any UDP feed (<code>--udp</code>) to a named interface.
+          A feed bound to all interfaces (INADDR_ANY) accepts data from the whole network.
+        </p>}
         <PageView selected={selected} prepared={prepared} ctx={ctx} />
       </main>
     </>
