@@ -1,0 +1,10 @@
+actions:
+  view.live: public
+  view.health: science
+  download.binned: science
+  download.raw: tech
+  corrections.approve: tech
+  config.deploy: admin
+users:
+  alice: tech
+default_role: public
