@@ -51,7 +51,7 @@ class _ClientStats:
     def take(self, seconds):
         result = {
             "messages_per_s": self.messages / seconds,
-            "max_receive_lag_s": max(self.lags, default=0.0),
+            "max_receive_lag_s": max(self.lags, default=None),
         }
         self.messages = 0
         self.lags.clear()
@@ -178,15 +178,20 @@ def build_report(samples, configuration):
     for name in sorted(client_names):
         client_samples = [sample["clients"].get(name, {})
                           for sample in measured]
-        lag = _median([item.get("max_receive_lag_s", 0)
-                       for item in client_samples])
         rates = [item.get("messages_per_s", 0) for item in client_samples]
+        active = [item for item, rate in zip(client_samples, rates) if rate > 0]
+        lags = [item["max_receive_lag_s"] for item in active
+                if item.get("max_receive_lag_s") is not None]
+        lag = _median(lags)
+        rate = _median(rates)
         summary["clients"][name] = {
-            "median_messages_per_s": _median(rates),
+            "median_messages_per_s": rate,
             "median_max_receive_lag_s": lag,
         }
-        if not any(rate > 0 for rate in rates):
+        if not active:
             reasons.append(f"{name} received no records")
+        elif rate == 0:
+            reasons.append(f"{name} received no new records in most intervals")
         if lag is not None and lag > 5:
             reasons.append(f"{name} median receive lag was {lag:.1f} s")
     return {

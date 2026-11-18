@@ -22,7 +22,8 @@ python3.12 -m pytest -p no:cacheprovider contrib/deepsignal/test/harness/test_so
 ```
 
 The `lead_run` browser check uses the console distribution, Python Playwright,
-and Chromium.
+and Chromium. Its loopback test server serves `/console/` and relays `/cds-ws`
+to the fixture cache on the same origin.
 
 ```sh
 python3.12 -m pytest -p no:cacheprovider contrib/deepsignal/test/console/test_source_loss_browser.py -v

@@ -13,9 +13,9 @@ from contrib.deepsignal.test.harness.fixture import Fixture
 LOGGER_NAMES = {"mwx1", "s330", "knud1", "true_winds"}
 
 
-def _samples(first_rss=1000, last_rss=1040, alive=True, lag=0.25):
+def _samples(first_rss=1000, last_rss=1040, alive=True, lag=0.25, intervals=20):
     samples = []
-    for index in range(20):
+    for index in range(intervals):
         rss = first_rss if index < 10 else last_rss
         samples.append({
             "elapsed_s": index,
@@ -80,6 +80,32 @@ def test_high_client_lag_fails():
 
     assert report["verdict"] == "FAIL"
     assert "median receive lag was 5.1 s" in report["reasons"][0]
+
+
+@pytest.mark.parametrize("lag", [0.25, 60.0])
+def test_one_active_interval_cannot_hide_29_silent_intervals(lag):
+    samples = _samples(lag=lag, intervals=30)
+    for sample in samples[1:]:
+        sample["clients"]["client-1"] = {
+            "messages_per_s": 0.0, "max_receive_lag_s": 0.0,
+        }
+
+    report = soak.build_report(samples, {"clients": 3})
+
+    assert report["verdict"] == "FAIL"
+    assert report["summary"]["clients"]["client-1"]["median_max_receive_lag_s"] == lag
+    assert "client-1 received no new records in most intervals" in report["reasons"]
+    if lag > 5:
+        assert "client-1 median receive lag was 60.0 s" in report["reasons"]
+
+
+def test_client_stats_distinguishes_silence_from_zero_lag():
+    stats = soak._ClientStats()
+    stats.messages = 1
+    stats.lags.append(0.0)
+
+    assert stats.take(1) == {"messages_per_s": 1.0, "max_receive_lag_s": 0.0}
+    assert stats.take(1) == {"messages_per_s": 0.0, "max_receive_lag_s": None}
 
 
 @pytest.mark.parametrize("warmup_only", [False, True])

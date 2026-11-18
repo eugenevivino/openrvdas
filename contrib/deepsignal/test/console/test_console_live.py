@@ -1,19 +1,14 @@
 """Exercise the shipped console against a real local cache."""
 
 from base64 import b64encode
-from functools import partial
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from shutil import copytree
-import sys
-from threading import Thread
 from time import time
 
 import pytest
 import yaml
 
-sys.path.append(str(Path(__file__).resolve().parents[4]))
-from contrib.deepsignal.console.demo_cache import LocalCachedDataServer  # noqa: E402
+from contrib.deepsignal.console.demo_cache import LocalCachedDataServer
+from contrib.deepsignal.test.console.browser_server import serve_console
 
 
 CONSOLE = Path(__file__).resolve().parents[2] / 'console'
@@ -21,7 +16,7 @@ DIST = CONSOLE / 'dist'
 
 
 @pytest.mark.lead_run
-def test_console_live(tmp_path):
+def test_console_live():
     playwright = pytest.importorskip(
         'playwright.sync_api',
         reason='browser test, run by lead outside the sandbox',
@@ -32,33 +27,19 @@ def test_console_live(tmp_path):
         browser = browser_driver.chromium.launch()
         cache = LocalCachedDataServer(port=0, interval=0.1)
         try:
-            console = copytree(DIST, tmp_path / 'console')
-            config_path = console / 'console.yaml'
-            config = yaml.safe_load(config_path.read_text(encoding='utf-8'))
-            config['websocket'] = f'ws://127.0.0.1:{cache.port}'
-            config_path.write_text(yaml.safe_dump(config), encoding='utf-8')
-            weather_path = console / 'pages/example.yaml'
-            preset = CONSOLE / 'src/modules/example/example.yaml'
-            weather = yaml.safe_load(preset.read_text(encoding='utf-8'))
-            for tile in weather['tiles']:
-                tile['period'] = 5
-            weather_path.write_text(yaml.safe_dump(weather), encoding='utf-8')
-
-            handler = partial(SimpleHTTPRequestHandler, directory=tmp_path)
-            with ThreadingHTTPServer(('127.0.0.1', 0), handler) as httpd:
-                serving = Thread(target=httpd.serve_forever, daemon=True)
-                serving.start()
+            config = yaml.safe_load((DIST / 'console.yaml').read_text(encoding='utf-8'))
+            config['period'] = {'MwxAirTemp': 5, 'MwxAirRelHumid': 5}
+            with serve_console(DIST, f'ws://127.0.0.1:{cache.port}') as http_port:
+                page = browser.new_page()
                 try:
-                    page = browser.new_page()
-                    try:
-                        check_readings(playwright, page, httpd.server_port, cache)
-                    finally:
-                        page.close()
+                    page.route('**/console.yaml', lambda route: route.fulfill(
+                        body=yaml.safe_dump(config), content_type='application/yaml'))
+                    check_readings(playwright, page, http_port, cache)
                 finally:
-                    httpd.shutdown()
-                    serving.join()
+                    page.close()
         finally:
             cache.quit()
+            browser.close()
 
 
 def check_readings(playwright, page, http_port, cache):
@@ -70,7 +51,8 @@ def check_readings(playwright, page, http_port, cache):
         'MwxAirRelHumid': [(now - 321, 60.2), (now - 320, 63.9)],
     }})
     page.emulate_media(color_scheme='light')
-    page.goto(f'http://127.0.0.1:{http_port}/console/')
+    with page.expect_websocket(lambda ws: ws.url == f'ws://127.0.0.1:{http_port}/cds-ws'):
+        page.goto(f'http://127.0.0.1:{http_port}/console/')
     values = page.locator('.value')
     freshness = page.locator('.freshness .status')
     quality = page.locator('.quality .status')

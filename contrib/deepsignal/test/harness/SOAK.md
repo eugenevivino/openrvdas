@@ -22,7 +22,7 @@ python3 -m contrib.deepsignal.test.harness.soak \
 
 The report contains the configuration, every sample, process and client
 summaries, a verdict, and plain-language failure reasons. A run fails when it
-has no post-warm-up measurements, a client receives zero new records, or any
+has no post-warm-up measurements, a client's median record rate is zero, or any
 expected process dies or lacks an RSS measurement. It also fails when median
 RSS grows by more than 5 percent between the first and last ten post-warm-up
 samples, or a client's median sampled maximum receive lag exceeds five seconds.
@@ -33,4 +33,6 @@ The fixture dates its replay records from startup. Receive lag is the wall
 clock time at receipt minus the record timestamp. Each client remembers the
 latest timestamp it has seen per field, so reconnect history counts only when
 it contains new records. The first new record after reconnect contributes its
-full lag.
+full lag. An interval without new records has a lag of `null`. The lag median
+uses only intervals with new records. The record-rate median includes all
+post-warm-up intervals.
