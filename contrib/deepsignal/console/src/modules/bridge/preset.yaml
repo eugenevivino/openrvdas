@@ -1,0 +1,25 @@
+title: Bridge
+order: 10
+tiles:
+  - type: wind-dial
+    label: True wind
+    wide: true
+    speed: Avg1mPortTrueWindSpeed
+    direction: Avg1mPortTrueWindDir
+    speed_fallback: PortTrueWindSpeed
+    direction_fallback: PortTrueWindDir
+    heading: S330HeadingTrue
+    unit: kn
+    average_label: 1 min vector mean
+  - type: nav
+    label: Navigation
+    wide: true
+    heading: S330HeadingTrue
+    cog: S330CourseTrue
+    sog: S330SpeedKt
+  - {type: number, label: Depth, field: Knud3Depth, unit: m, decimals: 0}
+  - {type: number, label: Barometer, field: MwxBaroPress, unit: hPa, decimals: 1, trend: 180}
+  - {type: number, label: Air temperature, field: MwxAirTemp, unit: °C, decimals: 1}
+  - {type: number, label: Sea surface temperature, field: TsgTemp, unit: °C, decimals: 2}
+  - {type: number, label: Latitude, field: S330Latitude, unit: °, decimals: 4}
+  - {type: number, label: Longitude, field: S330Longitude, unit: °, decimals: 4}
