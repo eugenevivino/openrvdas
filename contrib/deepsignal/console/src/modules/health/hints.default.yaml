@@ -1,0 +1,21 @@
+- match:
+    stderr: "no data.*(?:serial|/dev/tty)|(?:serial|/dev/tty).*no data"
+  hint: "Check that the serial port cable is connected and the instrument is sending data."
+- match:
+    stderr: "permission denied.*?/dev/tty"
+  hint: "Check the logger account has permission to use the serial port."
+- match:
+    stderr: "could not open port|cannot open.*?/dev/tty|failed to open.*?/dev/tty"
+  hint: "Check that the serial port exists and no other process is using it."
+- match:
+    stderr: "parse error|parsing failed|invalid record"
+  hint: "Check the instrument format and the logger parser configuration."
+- match:
+    stderr: "disk full|no space left on device"
+  hint: "Free disk space, then check that logging resumes."
+- match:
+    stderr: "clock|time offset|timestamp.*(?:ahead|behind)"
+  hint: "Check the ship clock and the instrument time setting."
+- match:
+    stderr: "restart(?:ing|ed).*repeated|repeated.*restart|restart loop"
+  hint: "Check the logger's earlier errors to find why it keeps restarting."
