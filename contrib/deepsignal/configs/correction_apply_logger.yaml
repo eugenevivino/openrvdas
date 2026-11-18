@@ -1,0 +1,23 @@
+# Run from the repository root with listen --config_file and this path.
+readers:
+  class: TextFileReader
+  kwargs:
+    file_spec: test/NBP1406/tsg1/raw/NBP1406_tsg1-2014-08-01
+
+transforms:
+- class: PrefixTransform
+  kwargs:
+    prefix: tsg1
+- class: ParseTransform
+  kwargs:
+    definition_path: test/NBP1406/devices/nbp_devices.yaml
+    return_das_record: true
+- class: CorrectionApplyTransform
+  module: contrib.deepsignal.corrections.apply_transform
+  kwargs:
+    ledger_path: contrib/deepsignal/configs/correction_apply_ledger.jsonl
+    fields: [TSG1Temp]
+- class: ToJSONTransform
+
+writers:
+  class: TextFileWriter
