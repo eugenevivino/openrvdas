@@ -25,6 +25,7 @@ whole multiples of `interval` (for interval 60: on each minute), and each
 summarizes the samples in the `window` seconds up to and including that
 timestamp. An output is emitted only once a record newer than its
 timestamp arrives, so averages lag real time by up to one record.
+Any record with a usable timestamp advances time and closes older windows, even without wind data.
 
 Missing data is never filled in. A sample is used only when both its
 speed and direction are present in the same record and are finite
@@ -134,14 +135,17 @@ class VectorWindAverageTransform(Transform):
         """
         super().__init__()
 
-        if not isinstance(window, (int, float)) or window <= 0:
+        if not _is_number(window) or window <= 0:
             raise ValueError(f'VectorWindAverageTransform: window must be a '
-                             f'positive number of seconds; got {window!r}')
+                             f'finite positive number of seconds; got {window!r}')
         if interval is None:
             interval = window
-        if not isinstance(interval, (int, float)) or interval <= 0:
+        if not _is_number(interval) or interval <= 0:
             raise ValueError(f'VectorWindAverageTransform: interval must be a '
-                             f'positive number of seconds; got {interval!r}')
+                             f'finite positive number of seconds; got {interval!r}')
+        if not _is_number(calm_speed) or calm_speed < 0:
+            raise ValueError('VectorWindAverageTransform: calm_speed must be a '
+                             f'finite non-negative number; got {calm_speed!r}')
         if not isinstance(winds, list) or not winds:
             raise ValueError('VectorWindAverageTransform: winds must be a '
                              f'non-empty list of dicts; got {winds!r}')
@@ -151,14 +155,20 @@ class VectorWindAverageTransform(Transform):
         self.calm_speed = calm_speed
         self.data_id = data_id
         self.winds = [self._parse_wind_spec(spec, min_count) for spec in winds]
+        output_names = [name for wind in self.winds for name in wind['outputs'].values()]
+        if len(set(output_names)) != len(output_names):
+            raise ValueError('VectorWindAverageTransform: winds would write '
+                             f'the same output field: {output_names}')
 
         # Per wind: sorted list of sample timestamps, and the parallel list
         # of (speed, direction in radians) samples.
         self.sample_times = [[] for _ in self.winds]
         self.samples = [[] for _ in self.winds]
 
-        # Timestamp of the next average to emit; set by the first record.
+        # Integer window index and timestamp; set by the first record.
+        self.k = None
         self.next_output = None
+        self.last_window_end = None
 
     ############################
     @staticmethod
@@ -188,6 +198,10 @@ class VectorWindAverageTransform(Transform):
         if bad:
             raise ValueError(f'VectorWindAverageTransform: unknown statistics {bad}; '
                              f'choose from {sorted(STATISTICS)}')
+        for name in names.values():
+            if not isinstance(name, str) or not name:
+                raise ValueError('VectorWindAverageTransform: names values must be '
+                                 f'non-empty strings; got {name!r}')
 
         outputs = {}
         for stat in statistics:
@@ -263,6 +277,11 @@ class VectorWindAverageTransform(Transform):
                               'sample %s=%r, %s=%r at %s', wind['speed_field'],
                               speed, wind['direction_field'], direction, timestamp)
                 continue
+            if self.last_window_end is not None and timestamp <= self.last_window_end:
+                logging.debug('VectorWindAverageTransform: late sample %s/%s at %s was '
+                              'left out of closed window(s) ending at or before %s; '
+                              'retaining it for open windows', wind['speed_field'],
+                              wind['direction_field'], timestamp, self.last_window_end)
             pos = bisect.bisect_right(self.sample_times[i], timestamp)
             self.sample_times[i].insert(pos, timestamp)
             self.samples[i].insert(pos, (float(speed), math.radians(direction)))
@@ -272,7 +291,8 @@ class VectorWindAverageTransform(Transform):
         """Compute and return the averages for every output time before
         timestamp, and move next_output past them."""
         if self.next_output is None:
-            self.next_output = _next_multiple(timestamp, self.interval)
+            self.k = math.ceil(timestamp / self.interval)
+            self.next_output = self.k * self.interval
             return []
 
         results = []
@@ -280,13 +300,15 @@ class VectorWindAverageTransform(Transform):
             fields = self._averages_at(self.next_output)
             if fields:
                 results.append(self._make_record(self.next_output, fields, as_das_record))
-            self.next_output += self.interval
+            self.last_window_end = self.next_output
+            self.k += 1
+            self.next_output = self.k * self.interval
             self._discard_older_than(self.next_output - self.window)
 
             # Jump over a long gap rather than stepping through empty windows
             if not any(self.sample_times):
-                self.next_output = max(self.next_output,
-                                       _next_multiple(timestamp - self.window, self.interval))
+                self.k = max(self.k, math.ceil((timestamp - self.window) / self.interval))
+                self.next_output = self.k * self.interval
         return results
 
     ############################
@@ -336,10 +358,11 @@ def vector_wind_statistics(samples, calm_speed=0):
     speeds = [speed for speed, _ in samples]
     # Vector components: u toward east, v toward north (for a 'from'
     # direction both point the opposite way, which cancels on the way back)
-    u_mean = sum(speed * math.sin(rad) for speed, rad in samples) / count
-    v_mean = sum(speed * math.cos(rad) for speed, rad in samples) / count
+    # Divide each term before summing so a representable mean does not overflow.
+    u_mean = sum(speed * math.sin(rad) / count for speed, rad in samples)
+    v_mean = sum(speed * math.cos(rad) / count for speed, rad in samples)
     vector_speed = math.hypot(u_mean, v_mean)
-    scalar_speed = sum(speeds) / count
+    scalar_speed = sum(speed / count for speed in speeds)
 
     direction = None
     if vector_speed > max(calm_speed, CALM_TOLERANCE * scalar_speed):
@@ -378,9 +401,3 @@ def _is_number(value):
     """A finite int or float, and not a bool."""
     return (isinstance(value, (int, float)) and not isinstance(value, bool)
             and math.isfinite(value))
-
-
-############################
-def _next_multiple(timestamp, interval):
-    """Smallest whole multiple of interval at or after timestamp."""
-    return math.ceil(timestamp / interval) * interval

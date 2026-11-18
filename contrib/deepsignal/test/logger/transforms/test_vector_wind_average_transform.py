@@ -69,6 +69,16 @@ class TestVectorWindStatistics(unittest.TestCase):
         self.assertEqual(s['max_speed'], 9)
         self.assertEqual(s['count'], 2)
 
+    def test_large_finite_speeds_have_finite_means(self):
+        for direction in (0, 45, 90, 180, 270):
+            with self.subTest(direction=direction):
+                s = self.stats([(1e308, direction), (1e308, direction)])
+                self.assertTrue(math.isfinite(s['speed']))
+                self.assertAlmostEqual(s['speed'] / 1e308, 1)
+                self.assertEqual(s['scalar_speed'], 1e308)
+                self.assertAlmostEqual(s['steadiness'], 1)
+                self.assertLess(angle_diff(s['direction'], direction), 1e-9)
+
     def test_opposing_winds_have_no_direction(self):
         s = self.stats([(10, 0), (10, 180)])
         self.assertIsNone(s['direction'])
@@ -102,9 +112,33 @@ class TestVectorWindStatistics(unittest.TestCase):
         self.assertAlmostEqual(north, south)
         self.assertLess(north, 15)
 
+    def test_yamartino_matches_known_two_and_three_angle_values(self):
+        # 0, 90: mean sine = mean cosine = 1/2, epsilon = sqrt(1 - 1/2).
+        # 0, 90, 180: mean sine = 1/3, mean cosine = 0, epsilon = sqrt(1 - 1/9).
+        for angles, epsilon in (((0, 90), math.sqrt(0.5)),
+                                ((0, 90, 180), math.sqrt(8 / 9))):
+            with self.subTest(angles=angles):
+                expected = math.degrees(
+                    math.asin(epsilon) * (1 + (2 / math.sqrt(3) - 1) * epsilon ** 3))
+                actual = self.stats([(5, angle) for angle in angles])['direction_std_dev']
+                self.assertAlmostEqual(actual, expected, places=10)
+
 
 ################################################################################
 class TestVectorWindAverageTransform(unittest.TestCase):
+
+    def test_fractional_interval_epoch_boundaries_do_not_drift(self):
+        t = VectorWindAverageTransform(winds=[WIND], window=1, interval=0.1)
+        first_k = 17000000000
+        self.assertIsNone(t.transform(rec(1700000000 - 0.05, 10, 0)))
+        for k in range(first_k, first_k + 200):
+            boundary = round(k * 0.1, 9)
+            with self.subTest(k=k):
+                self.assertIsNone(t.transform(rec(math.nextafter(boundary, -math.inf), 10, 0)))
+                self.assertIsNone(t.transform(rec(boundary, 10, 0)))
+                out = t.transform(rec(math.nextafter(boundary, math.inf), 10, 0))
+                self.assertIsNotNone(out)
+                self.assertEqual([r['timestamp'] for r in out], [boundary])
 
     def test_block_average(self):
         t = VectorWindAverageTransform(winds=[WIND], window=10)
@@ -196,6 +230,22 @@ class TestVectorWindAverageTransform(unittest.TestCase):
         counts = {r['timestamp']: r['fields']['AvgWindSpeedCount'] for r in out}
         self.assertEqual(counts, {105: 1, 110: 3})
 
+    def test_late_sample_logs_exclusion_from_closed_windows(self):
+        t = VectorWindAverageTransform(winds=[dict(WIND, statistics=['count'])],
+                                       window=10, interval=5)
+        out = run(t, [rec(101, 1, 0), rec(106, 1, 0)])
+        self.assertEqual(out[0]['timestamp'], 105)
+        self.assertEqual(out[0]['fields'], {'AvgWindSpeedCount': 1})
+        with self.assertLogs(level='DEBUG') as logs:
+            self.assertIsNone(t.transform(rec(104, 1, 0)))
+        self.assertTrue(all(entry.levelname == 'DEBUG' for entry in logs.records))
+        self.assertIn('104', ' '.join(logs.output))
+        self.assertIn('105', ' '.join(logs.output))
+        self.assertIn('left out of closed window(s)', ' '.join(logs.output))
+        out = t.transform(rec(111))
+        self.assertEqual(out[0]['timestamp'], 110)
+        self.assertEqual(out[0]['fields'], {'AvgWindSpeedCount': 3})
+
     def test_timestamps_never_rewritten_and_record_type_kept(self):
         t = VectorWindAverageTransform(winds=[WIND], window=60, data_id='met_avg')
         records = [DASRecord(data_id='mwx1', timestamp=ts, fields={'WindSpeed': 5, 'WindDir': 270})
@@ -250,6 +300,40 @@ class TestVectorWindAverageTransform(unittest.TestCase):
             with self.subTest(kwargs=kwargs):
                 with self.assertRaises(ValueError):
                     VectorWindAverageTransform(**kwargs)
+
+    def test_output_names_must_be_unique_across_winds(self):
+        other = {'speed_field': 'OtherSpeed', 'direction_field': 'OtherDir'}
+        for second in (WIND, dict(other, direction_field='WindDir'),
+                       dict(other, names={'speed': 'AvgWindDir'})):
+            with self.subTest(second=second):
+                with self.assertRaises(ValueError):
+                    VectorWindAverageTransform(winds=[WIND, second])
+
+    def test_window_and_interval_reject_nonfinite_and_bool(self):
+        for key in ('window', 'interval'):
+            for value in (float('nan'), float('inf'), -float('inf'), True, False):
+                with self.subTest(key=key, value=value):
+                    with self.assertRaises(ValueError):
+                        VectorWindAverageTransform(winds=[WIND], **{key: value})
+
+    def test_calm_speed_requires_finite_nonnegative_number(self):
+        for value in (float('nan'), float('inf'), -float('inf'), True, False,
+                      -1, -0.1, '1', None, [], {}):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    VectorWindAverageTransform(winds=[WIND], calm_speed=value)
+        for value in (0, 0.0, 0.1, 1):
+            with self.subTest(valid_value=value):
+                t = VectorWindAverageTransform(winds=[WIND], calm_speed=value, window=10)
+                out = run(t, [rec(101, value, 90), rec(111)])
+                self.assertEqual(out[0]['fields'], {'AvgWindSpeed': value})
+
+    def test_names_values_must_be_nonempty_strings(self):
+        for stat in ('speed', 'count'):  # Check selected and unselected overrides.
+            for value in ('', None, 0, 1.5, True, [], {}):
+                with self.subTest(stat=stat, value=value):
+                    with self.assertRaises(ValueError):
+                        VectorWindAverageTransform(winds=[dict(WIND, names={stat: value})])
 
 
 if __name__ == '__main__':
