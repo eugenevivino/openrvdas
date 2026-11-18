@@ -3,7 +3,7 @@
 from collections import deque
 from copy import copy
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from fractions import Fraction
 from itertools import count
 import logging
@@ -69,6 +69,15 @@ def _comparison_number(value):
     return Fraction(str(value) if isinstance(value, float) else value)
 
 
+def _number_text(value):
+    """Format exact numbers compactly without Fraction's version-dependent format."""
+    number = _comparison_number(value)
+    with localcontext() as context:
+        context.prec = 12
+        decimal = Decimal(number.numerator) / Decimal(number.denominator)
+    return format(decimal, '.12g')
+
+
 def _change(value, previous):
     return abs(_comparison_number(value) - _comparison_number(previous))
 
@@ -83,14 +92,18 @@ def _config_error(field, setting, value, expected, example=None):
 
 def _span(field, setting, value):
     if (not isinstance(value, (list, tuple)) or len(value) != 2
-            or not all(_is_number(bound) for bound in value) or value[0] >= value[1]):
+            or not all(_is_number(bound) for bound in value)):
         _config_error(field, setting, value,
                       'two finite numbers with the minimum below the maximum')
-    return tuple(value)
+    normalized = tuple(_comparison_number(bound) for bound in value)
+    if normalized[0] >= normalized[1]:
+        _config_error(field, setting, value,
+                      'two finite numbers with the minimum below the maximum')
+    return normalized
 
 
 def _positive(field, setting, value):
-    if not _is_number(value) or value <= 0:
+    if not _is_number(value) or _comparison_number(value) <= 0:
         _config_error(field, setting, value, 'a finite number greater than zero')
 
 
@@ -163,10 +176,12 @@ def _test_settings(field, test, settings, fields):
         if type(window) is not int or not 1 <= window <= maxsize:
             _config_error(field, 'spike.window', window,
                           f'a whole number of samples from 1 to {maxsize}')
-        if settings['fail'] < settings['suspect']:
+        if _comparison_number(settings['fail']) < _comparison_number(settings['suspect']):
             _config_error(field, 'spike.fail', settings['fail'],
                           'a limit at least as large as spike.suspect')
-    elif test == 'flat_line' and settings['fail_seconds'] < settings['suspect_seconds']:
+    elif (test == 'flat_line'
+          and _comparison_number(settings['fail_seconds'])
+          < _comparison_number(settings['suspect_seconds'])):
         _config_error(field, 'flat_line.fail_seconds', settings['fail_seconds'],
                       'a duration at least as long as flat_line.suspect_seconds')
     elif test == 'timing':
@@ -189,8 +204,10 @@ def _verdict(flag, explanation=''):
 def _range_result(test, value, span, flag):
     if span is None:
         return _verdict(NOT_EVALUATED)
+    value = _comparison_number(value)
     if not span[0] <= value <= span[1]:
-        return _verdict(flag, f'{test} {value} outside [{span[0]}, {span[1]}]')
+        return _verdict(flag, f'{test} {_number_text(value)} outside '
+                        f'[{_number_text(span[0])}, {_number_text(span[1])}]')
     return _verdict(PASS)
 
 
@@ -208,7 +225,7 @@ def _timing(settings, timestamp, previous, now):
     if gap is not None and previous is not None:
         elapsed = timestamp - previous
         if elapsed > _comparison_number(gap):
-            return _verdict(SUSPECT, f'timing gap {elapsed:g} seconds over limit {gap}')
+            return _verdict(SUSPECT, f'timing gap {_number_text(elapsed)} seconds over limit {gap}')
     return _verdict(PASS)
 
 
@@ -217,20 +234,17 @@ def _spike(settings, value, history):
         return _verdict(NOT_EVALUATED)
     ordered = sorted(sample[2] for sample in history)
     middle = len(ordered) // 2
-    median = _comparison_number(ordered[middle])
+    median = ordered[middle]
     even = len(ordered) % 2 == 0
     if even:
-        median = (median + _comparison_number(ordered[middle - 1])) / 2
+        median = (median + ordered[middle - 1]) / 2
     deviation = abs(_comparison_number(value) - median)
     for key, flag in [('fail', FAIL), ('suspect', SUSPECT)]:
         limit = settings[key]
         if deviation > _comparison_number(limit):
-            text = f'{deviation:g}'
-            if even or isinstance(value, float) or isinstance(ordered[middle], float):
-                try:
-                    text = str(float(deviation))
-                except OverflowError:
-                    pass
+            text = _number_text(deviation)
+            if isinstance(value, float):
+                text = str(float(deviation))
             return _verdict(flag, f'spike {text} over limit {limit}')
     return _verdict(PASS)
 
@@ -248,31 +262,38 @@ def _rate_of_change(settings, timestamp, value, history):
     limit = settings['max_rate']
     if delta > _comparison_number(limit) * elapsed:
         rate = delta / elapsed
-        return _verdict(SUSPECT, f'rate_of_change {rate:g} per second over limit {limit}')
+        return _verdict(SUSPECT, f'rate_of_change {_number_text(rate)} per second '
+                        f'over limit {limit}')
     return _verdict(PASS)
 
 
-def _flat_line(settings, timestamp, value, history):
+def _flat_line(settings, timestamp, value, history, earliest=None):
     if not history or timestamp is None:
-        return _verdict(NOT_EVALUATED)
+        return _verdict(NOT_EVALUATED), None
     timestamp = _comparison_number(timestamp)
-    if timestamp <= _comparison_number(history[-1][0]):
-        return _verdict(NOT_EVALUATED)
+    if timestamp <= history[-1][0]:
+        return _verdict(NOT_EVALUATED), None
     tolerance = settings['tolerance']
     allowed_change = _comparison_number(tolerance)
     suspect = _comparison_number(settings['suspect_seconds'])
     fail = _comparison_number(settings['fail_seconds'])
-    duration = Fraction(0)
+    duration = timestamp - earliest if earliest is not None else Fraction(0)
     value = _comparison_number(value)
-    for prior_time, prior_value in reversed(history):
-        if abs(value - _comparison_number(prior_value)) > allowed_change:
-            break
-        duration = timestamp - _comparison_number(prior_time)
-        if duration >= fail:
-            return _verdict(FAIL, f'flat_line within {tolerance} for at least {duration:g} seconds')
+    if earliest is None:
+        for prior_time, prior_value in reversed(history):
+            if abs(value - prior_value) > allowed_change:
+                break
+            earliest = prior_time
+            duration = timestamp - prior_time
+            if duration >= fail:
+                break
+    if duration >= fail:
+        return (_verdict(FAIL, f'flat_line within {tolerance} for at least '
+                         f'{_number_text(duration)} seconds'), earliest)
     if duration >= suspect:
-        return _verdict(SUSPECT, f'flat_line within {tolerance} for {duration:g} seconds')
-    return _verdict(PASS)
+        return (_verdict(SUSPECT, f'flat_line within {tolerance} for '
+                         f'{_number_text(duration)} seconds'), earliest)
+    return _verdict(PASS), earliest
 
 
 def _aggregate(flags):
@@ -299,7 +320,7 @@ class QartodFlagTransform(Transform):
     immediately. Timing and sensor history are held only for this instance.
     """
 
-    def __init__(self, fields=UNSET, flag_suffix='_QC', per_test_flags=False, **unknown):
+    def __init__(self, /, fields=UNSET, flag_suffix='_QC', per_test_flags=False, **unknown):
         super().__init__()
         for setting, value in unknown.items():
             _config_error('all fields', setting, value,
@@ -338,6 +359,7 @@ class QartodFlagTransform(Transform):
         }
         self.flat_history = {field: deque() for field in self.tests
                              if 'flat_line' in self.tests[field]}
+        self.flat_cache = dict.fromkeys(self.flat_history)
         self.previous_companion = dict.fromkeys(name for companions in self.front_checks.values()
                                                 for name in companions)
         self.has_timing = any('timing' in tests for tests in self.tests.values())
@@ -450,7 +472,15 @@ class QartodFlagTransform(Transform):
             elif test == 'rate_of_change':
                 result = _rate_of_change(settings, timestamp, value, self.history[field])
             else:
-                result = _flat_line(settings, timestamp, value, self.flat_history[field])
+                normalized = _comparison_number(value)
+                cache = self.flat_cache[field]
+                earliest = None
+                history = self.flat_history[field]
+                if (cache is not None and cache[0] == normalized and history
+                        and history[-1][0] == cache[1]):
+                    earliest = cache[2]
+                result, earliest = _flat_line(settings, timestamp, normalized, history, earliest)
+                self.flat_cache[field] = (normalized, _comparison_number(timestamp), earliest)
             checks[test] = result
         return checks
 
@@ -475,15 +505,18 @@ class QartodFlagTransform(Transform):
                    if present[field] == PASS and self.front_checks[field]
                    and failed and failed <= JUMP_BASELINES.keys()}
         notes = {}
+        evidence = {}
         # A jump failure can be corroborated only by companions available at the start
         # of the round. Keep that evidence once found so cycles cannot confirm themselves.
         while pending:
             confirmed = {}
             for field in pending:
-                checks, unavailable = self._check_front(field, results[field], fields, present, bad)
+                checks, unavailable, sources = self._check_front(
+                    field, results[field], fields, present, bad, evidence)
                 if all(flag != FAIL for flag, _ in checks.values()):
                     confirmed[field] = checks
                     notes[field] = unavailable
+                    evidence[field] = sources
             if not confirmed:
                 break
             results.update(confirmed)
@@ -492,25 +525,30 @@ class QartodFlagTransform(Transform):
 
         for field in results:
             if field not in notes and present[field] == PASS and self.front_checks[field]:
-                results[field], notes[field] = self._check_front(
-                    field, results[field], fields, present, bad)
+                results[field], notes[field], _ = self._check_front(
+                    field, results[field], fields, present, bad, evidence)
         return bad, notes
 
-    def _check_front(self, field, checks, fields, present, bad):
+    def _check_front(self, field, checks, fields, present, bad, evidence):
         companions = self.front_checks[field]
         checked = checks.copy()
         unavailable = []
+        sources = set()
         for test, baseline in JUMP_BASELINES.items():
             flag, reason = checks.get(test, (NOT_EVALUATED, ''))
             if flag not in (SUSPECT, FAIL):
                 continue
             start = self.history[field][baseline][0]
-            checked[test], details = self._companion_verdict(companions, start, fields,
-                                                             present, bad, flag, reason)
+            checked[test], details, source = self._companion_verdict(
+                field, companions, start, fields, present, bad, evidence, flag, reason)
             unavailable.extend(details)
-        return checked, tuple(dict.fromkeys(unavailable))
+            if source:
+                sources.add(source)
+                sources.update(evidence.get(source, ()))
+        return checked, tuple(dict.fromkeys(unavailable)), sources
 
-    def _companion_verdict(self, companions, start, fields, present, bad, flag, reason):
+    def _companion_verdict(self, field, companions, start, fields, present, bad,
+                           evidence, flag, reason):
         unavailable = []
         for name, limit in companions.items():
             previous = self.previous_companion[name]
@@ -518,15 +556,17 @@ class QartodFlagTransform(Transform):
                 unavailable.append(f'{name} missing')
             elif name in bad:
                 unavailable.append(f'{name} bad')
+            elif field in evidence.get(name, ()):
+                unavailable.append(f'{name} depends on this field')
             elif previous is None or previous[0] < start:
                 unavailable.append(f'{name} has no previous good value in the jump window')
             elif _change(fields[name], previous[1]) >= _comparison_number(limit):
                 reason = (f'{VERDICT_AMBIGUOUS}: jump matches a change in {name}; '
                           'may be a real front, check before trusting or discarding')
-                return (SUSPECT, reason), ()
+                return (SUSPECT, reason), (), name
         if unavailable:
             reason += '; ' + '; '.join(unavailable)
-        return (flag, reason), unavailable
+        return (flag, reason), unavailable, None
 
     def _write_flags(self, output, field, status, checks, companion_notes):
         base = field + self.flag_suffix
@@ -542,7 +582,8 @@ class QartodFlagTransform(Transform):
             candidates = [(test, reason) for test, (flag, reason) in checks.items()
                           if flag == aggregate]
             test, reason = min(candidates, key=lambda item: (
-                not (aggregate == FAIL and item[0] in ('gross_range', 'timing')),
+                not (aggregate == FAIL
+                     and item[0] in ('gross_range', 'timing', 'flat_line')),
                 not item[1].startswith(f'{VERDICT_AMBIGUOUS}:'),
                 not (self.front_checks[field] and item[0] in JUMP_BASELINES),
             ))
@@ -553,7 +594,8 @@ class QartodFlagTransform(Transform):
         output[base + '_reason'] = reason
 
     def _remember(self, field, timestamp, value):
-        self.history[field].append((self.record_number, timestamp, value))
+        normalized = _comparison_number(value)
+        self.history[field].append((self.record_number, timestamp, normalized))
         if field not in self.flat_history:
             return
         history = self.flat_history[field]
@@ -561,8 +603,8 @@ class QartodFlagTransform(Transform):
         if stamp is None or (history and stamp <= _comparison_number(history[-1][0])):
             history.clear()
         if stamp is not None:
-            history.append((timestamp, value))
+            history.append((stamp, normalized))
             cutoff = stamp - _comparison_number(self.tests[field]['flat_line']['fail_seconds'])
             # Keep one sample on or before the cutoff to establish a full run.
-            while len(history) > 1 and _comparison_number(history[1][0]) <= cutoff:
+            while len(history) > 1 and history[1][0] <= cutoff:
                 history.popleft()

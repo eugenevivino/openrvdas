@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 import re
+import time
 from unittest.mock import patch
 
 from logger.utils.das_record import DASRecord
@@ -596,6 +597,98 @@ class QartodFlagTransformTest(unittest.TestCase):
         self.assertEqual(len(messages.output), 2)
         self.assertIn('UTC', messages.output[0])
         self.assertIn(str(timestamp), messages.output[0])
+
+    def test_fix2_mixed_decimal_float_boundaries(self):
+        for span, value, expected in [([0.1, 1], Decimal('0.1'), 1),
+                                      ([0, 0.1], Decimal('0.100000000000000003'), 4),
+                                      ([Decimal('0.1'), 1.0], 0.1, 1)]:
+            with self.subTest(span=span, value=value):
+                transform = transform_for(gross_range={'fail_span': span})
+                fields = transform.transform(record(SeaTemp=value))['fields']
+                self.assertEqual(fields['SeaTemp_QC_gross_range'], expected)
+
+    def test_fix2_extreme_values_reach_caller(self):
+        for value in (10**4300, Decimal('1e5000')):
+            with self.subTest(value_type=type(value)):
+                transform = transform_for(gross_range={'fail_span': [0, 40]},
+                                          rate_of_change={'max_rate': 1})
+                transform.transform(record(100, SeaTemp=1))
+                fields = transform.transform(record(101, SeaTemp=value))['fields']
+                self.assertEqual(fields['SeaTemp_QC'], 4)
+                self.assertEqual(fields['SeaTemp_QC_gross_range'], 4)
+                self.assertEqual(fields['SeaTemp_QC_rate_of_change'], 3)
+                self.assertLess(len(fields['SeaTemp_QC_reason']), 200)
+
+    def test_fix2_fraction_reasons_are_compatible_and_precise(self):
+        transform = transform_for(spike={'suspect': 1, 'fail': 2, 'window': 1})
+        transform.transform(record(100, SeaTemp=0))
+        fields = transform.transform(record(101, SeaTemp=3))['fields']
+        self.assertEqual(fields['SeaTemp_QC_reason'], 'FAIL: spike 3 over limit 2')
+
+        transform = transform_for(rate_of_change={'max_rate': 0.1})
+        transform.transform(record(100, SeaTemp=1.0))
+        fields = transform.transform(record(101, SeaTemp=1.1000000001))['fields']
+        self.assertEqual(fields['SeaTemp_QC_reason'],
+                         'SUSPECT: rate_of_change 0.1000000001 per second over limit 0.1')
+
+    def test_fix2_front_evidence_cannot_return_to_source(self):
+        transform = QartodFlagTransform(fields={
+            'A': {'spike': {'suspect': 1, 'fail': 2, 'window': 1},
+                  'front_check': {'companions': ['B'], 'min_change': {'B': 1}}},
+            'B': {'spike': {'suspect': 1, 'fail': 2, 'window': 1},
+                  'front_check': {'companions': ['A'], 'min_change': {'A': 1}}},
+        })
+        transform.transform(record(100, A=0, B=0))
+        fields = transform.transform(record(101, A=4, B=2))['fields']
+        self.assertEqual((fields['A_QC'], fields['B_QC']), (3, 3))
+        self.assertIn('matches a change in B', fields['A_QC_reason'])
+        self.assertNotIn('AMBIGUOUS', fields['B_QC_reason'])
+
+    def test_fix2_flat_line_failure_wins_jump_tie(self):
+        transform = QartodFlagTransform(fields={
+            'T': {'flat_line': {'tolerance': 1, 'suspect_seconds': 1, 'fail_seconds': 2},
+                  'spike': {'suspect': 0.1, 'fail': 0.2, 'window': 1},
+                  'front_check': {'companions': ['S'], 'min_change': {'S': 1}}},
+            'S': {},
+        })
+        transform.transform(record(100, T=10, S=0))
+        transform.transform(record(101, T=10.1, S=0))
+        fields = transform.transform(record(102, T=10.3))['fields']
+        self.assertEqual(fields['T_QC'], 4)
+        self.assertIn('FAIL: flat_line', fields['T_QC_reason'])
+        self.assertIn('S missing', fields['T_QC_reason'])
+
+    def test_fix2_flat_line_sustained_throughput(self):
+        transform = QartodFlagTransform(fields={
+            name: {'flat_line': {'tolerance': 1, 'suspect_seconds': 300,
+                                 'fail_seconds': 600}}
+            for name in ('A', 'B')
+        })
+        for index in range(12000):
+            transform.transform(record(index / 20, A=10.0, B=20.0))
+        started = time.monotonic()
+        for index in range(100):
+            transform.transform(record(600 + index / 20, A=10.0, B=20.0))
+        self.assertLess(time.monotonic() - started, 5)
+
+    def test_fix2_configuration_guards_and_future_allowance(self):
+        transform = transform_for(timing={'max_future_seconds': 5})
+        with patch('time.time', return_value=100):
+            fields = transform.transform(record(106, SeaTemp=1))['fields']
+        self.assertEqual(fields['SeaTemp_QC_timing'], 4)
+
+        invalid = [
+            {'flat_line': {'tolerance': 1, 'suspect_seconds': 2, 'fail_seconds': 1}},
+            {'climatology': {'suspect_span': [0, 1], 'months': []}},
+            {'front_check': {'companions': ['T'], 'min_change': {'T': 1}}},
+        ]
+        for tests in invalid:
+            with self.subTest(tests=tests), self.assertRaises(ValueError):
+                QartodFlagTransform(fields={'T': tests})
+        with self.assertRaises(ValueError) as error:
+            QartodFlagTransform(fields={'T': {}}, **{'self': True})
+        self.assertIn('self', str(error.exception))
+        self.assertEqual(len(str(error.exception).splitlines()), 1)
 
 
 if __name__ == '__main__':

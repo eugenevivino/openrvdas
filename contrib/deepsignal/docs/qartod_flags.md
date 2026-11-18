@@ -46,7 +46,8 @@ suggests a free `flag_suffix`.
 
 Add a test under a field to enable it. A field with an empty test map still gets a flag for
 missing or invalid data, and can serve as a companion. Span limits are inclusive and the lower
-limit must be less than the upper limit. Thresholds and durations must be above zero.
+limit must be less than the upper limit. Decimal and floating-point values use the same exact
+decimal comparison at span boundaries. Thresholds and durations must be above zero.
 
 | Setting | What it controls | Default |
 | --- | --- | --- |
@@ -107,6 +108,7 @@ bad companions. A companion whose jump is independently corroborated can then co
 reading. Two readings that both fail their jump checks need evidence from another companion.
 A gross-range, syntax or timing failure still makes the overall flag 4. When a hard failure
 and unavailable companions both contribute to the result, the reason starts with the failure.
+Evidence that softens one field cannot flow back through that field to soften its source.
 
 ## What it does not do
 
@@ -116,6 +118,8 @@ and unavailable companions both contribute to the result, the reason starts with
 - Flagging leaves all sensor data in place, including records marked fail or missing.
 - History is kept in memory for each field, with a limited number of readings for spike and
   rate and a limited time window for flat line. Readings that fail syntax or gross range are
-  left out of history. Restarting the logger clears the history and the checks warm up again.
+  left out of history. Normalized samples and an unchanged flat-line run are cached so sustained
+  high-rate input does not repeatedly convert and scan the full window. Restarting the logger
+  clears the history and the checks warm up again.
 - Monthly climatology gives 2 if the timestamp cannot be converted to a UTC month. The
   transform logs this conversion failure at most once per minute.
