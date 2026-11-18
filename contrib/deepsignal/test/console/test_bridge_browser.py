@@ -43,7 +43,8 @@ def test_bridge_night_red_and_no_vertical_scroll():
                       const pixels = context.getImageData(0, 0, image.width, image.height).data;
                       let bad = 0;
                       for (let i = 0; i < pixels.length; i += 4) {
-                        if (pixels[i + 1] > 0.15 * pixels[i] || pixels[i + 2] > 0.15 * pixels[i]) bad++;
+                        if (pixels[i + 1] > 0.15 * pixels[i]
+                            || pixels[i + 2] > 0.15 * pixels[i]) bad++;
                       }
                       return bad;
                     }""",
