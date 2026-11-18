@@ -14,7 +14,7 @@ def main():
     args = parser.parse_args()
     with open(args.config, encoding='utf-8') as stream:
         config = yaml.safe_load(stream)
-    result = run(config)
+    result = run(config, args.config)
     print('wrote %d hypotheses; %d confirmed' %
           (len(result['hypotheses']),
            sum(h['status'] == 'confirmed' for h in result['hypotheses'])))

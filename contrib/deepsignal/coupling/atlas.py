@@ -1,132 +1,186 @@
-"""Offline ship-coupling atlas builder."""
+"""Offline ship-coupling discovery, replication, and frozen polar calibration."""
 
-import csv
-import json
-import math
-import os
+from collections import defaultdict
+from datetime import datetime
+from itertools import groupby, product
+from statistics import median
 
-from contrib.deepsignal.coupling import CODE_VERSION, stats
+from . import CODE_VERSION, controls, prep, stats
+from .archive import read_input, select_splits, write_atlas
+
+
+DEFAULTS = {
+    'fields': [], 'ship_variables': [], 'regimes': ['transit'], 'lags': [0],
+    'bin_seconds': 10, 'median_minutes': 30, 'station_knots': 1, 'turn_deg_s': 2,
+    'sog_change_kn_min': 1, 'min_n_eff': 30, 'max_lag': None, 'block': None,
+    'min_shift': None, 'reps': 500, 'bootstrap_reps': 1000, 'method': 'bh',
+    'output_dir': 'ship-coupling', 'q': .05, 'seed': 78, 'sectors': 12, 'speed_bands': [1, 5, 10],
+    'reciprocal_km': 10, 'reciprocal_hours': 12, 'min_reciprocal_pairs': 2,
+    'reciprocal_agreement': .75, 'shift_effect_limit': .2,
+}
+# The explicitly configured partition takes precedence over these standard field names.
+FAMILIES = {
+    'met_vs_ship': ['air_temperature', 'barometer', 'humidity', 'MwxAirTemp'],
+    'ocean_vs_ship': ['salinity', 'sea_temperature', 'water_temperature', 'conductivity'],
+    'acoustic_vs_ship': ['backscatter', 'depth', 'sound_speed', 'echo_intensity'],
+    'nav_consistency': ['latitude', 'longitude', 'course', 'heading', 'sog'],
+}
 
 
 def _evaluate(rows, field, variable, config, seed):
-    x = [row.get(field) for row in rows]
-    y = [row.get(variable) for row in rows]
-    pairs = stats._pairs(x, y)
+    x, y, spans = [], [], []
     lags = config.get('lags', [0])
-    if len(pairs) < 3:
-        return {'effect': 0, 'lag': 0, 'n_eff': 2, 'p': None,
-                'ci': [0, 0], 'insufficient': True}
-    x, y = zip(*pairs)
-    lag, effect = stats.lagged_best(x, y, lags)
-    block = config.get('block') or 2 * max(stats.decorrelation_lag(x),
-                                           stats.decorrelation_lag(y))
-    effective = stats.n_eff(x, y, config.get('max_lag', min(20, len(x) // 4)))
-    insufficient = effective < config.get('min_n_eff', 30)
-    pvalue = None if insufficient else stats.circular_shift_pvalue(
-        x, y, stats.spearman, config.get('reps', 500),
-        config.get('min_shift', block), seed, lags)
-    return {'effect': effect, 'lag': lag, 'n_eff': effective, 'p': pvalue,
-            'ci': list(stats.block_bootstrap_ci(x, y, stats.spearman, block,
-                                                config.get('bootstrap_reps', 200),
-                                                seed)),
-            'insufficient': insufficient, 'block': block}
+    for _, track in groupby(rows, key=lambda r: r.get('cruise')):
+        start = len(x)
+        for r in track:
+            x.append(r.get(field))
+            y.append(r.get(variable))
+        spans.append((start, len(x)))
+    lag, effect = stats.lagged_best(x, y, lags, spans)
+    fit = dict(effect=effect, lag=lag, n_eff=None, p=None, ci=None, seed=seed, insufficient=True)
+    if lag is None:
+        return fit
+
+    # Estimate dependence and uncertainty from precisely the paired support of the winning lag.
+    ax, ay, bounds = stats.aligned(x, y, lag, spans)
+    wx, wy = zip(*[(a, b) if stats.finite(a) and stats.finite(b) else (None, None)
+                   for a, b in zip(ax, ay)])
+    count = sum(v is not None for v in wx)
+    max_lag = config.get('max_lag')
+    if max_lag is None:
+        max_lag = min(20, count // 4)
+    block = config.get('block') or 2 * max(stats.decorrelation_lag(wx, bounds),
+                                           stats.decorrelation_lag(wy, bounds))
+    min_shift = config.get('min_shift')
+    if min_shift is None:
+        min_shift = 2 * block
+    effective = stats.n_eff(wx, wy, max_lag, bounds)
+    ci = stats.block_bootstrap_ci(wx, wy, stats.spearman, block, config.get('bootstrap_reps', 1000),
+                                  seed, bounds)
+    fit.update(n_eff=effective, pairs=count, max_lag=max_lag, block=block, min_shift=min_shift,
+               ci=list(ci) if ci else None)
+    if effective is not None and effective >= config.get('min_n_eff', 30) and ci is not None:
+        fit['p'] = stats.circular_shift_pvalue(x, y, stats.spearman, config.get('reps', 500),
+                                               min_shift, seed, lags, spans)
+        fit['insufficient'] = fit['p'] is None
+    return fit
 
 
-def discover(discovery_rows, holdout_rows, config):
-    """Evaluate, FDR-correct, and replicate configured hypotheses."""
-    hypotheses = []
-    regimes = config.get('regimes', ['transit'])
-    for field in config.get('fields', []):
-        for variable in config.get('ship_variables', []):
-            for regime in regimes:
-                first = [r for r in discovery_rows if r.get('regime', regime) == regime]
-                second = [r for r in holdout_rows if r.get('regime', regime) == regime]
-                result = _evaluate(first, field, variable, config, config.get('seed', 78))
-                result.update({'field': field, 'ship_variable': variable,
-                               'regime': regime, 'family': 'met_vs_ship'})
-                result['holdout'] = _evaluate(second, field, variable, config,
-                                              config.get('seed', 78) + 1)
-                hypotheses.append(result)
-    pvalues = [item['p'] for item in hypotheses]
-    method = stats.by if config.get('method') == 'by' else stats.bh
-    passed = method(pvalues, config.get('q', .05))
-    holdout_passed = method([h['holdout']['p'] for h in hypotheses],
-                            config.get('q', .05))
-    configured_lags = config.get('lags', [0])
-    differences = (abs(b - a) for a, b in zip(configured_lags, configured_lags[1:]))
-    lag_step = max(1, min(differences, default=1))
-    for index, item in enumerate(hypotheses):
-        replicated = (index in passed and index in holdout_passed and
-                      item['effect'] * item['holdout']['effect'] > 0 and
-                      abs(item['lag'] - item['holdout']['lag']) <= lag_step)
-        item['q_pass'] = index in passed
-        item['status'] = ('confirmed' if replicated else
-                          'discovery_only' if index in passed else 'rejected')
-        heading_type = 'heading' in item['ship_variable']
-        item['invariance'] = 'ship_artifact' if replicated and heading_type else 'cannot_tell'
-        item['time_shift'] = {'12h': None, '24h': None}
-    return {'code_version': CODE_VERSION, 'parameters': dict(config),
-            'hypotheses': hypotheses, 'polar': _polar(discovery_rows + holdout_rows,
-                                                      hypotheses, config)}
+def _correct(items, config):
+    method = {'bh': stats.bh, 'by': stats.by}[config['method']]
+    steps = sorted(set(config['lags']))
+    step = min((b - a for a, b in zip(steps, steps[1:])), default=1)
+    for _, group in groupby(sorted(items, key=lambda h: h['family']), key=lambda h: h['family']):
+        group = list(group)
+        first = method([h['p'] for h in group], config['q'])
+        second = method([h['holdout']['p'] for h in group], config['q'])
+        for i, h in enumerate(group):
+            holdout = h['holdout']
+            h['q_pass'], holdout['q_pass'] = i in first, i in second
+            replicated = (i in first and i in second and h['effect'] * holdout['effect'] > 0 and
+                          abs(h['lag'] - holdout['lag']) <= step)
+            if h['insufficient']:
+                h['status'] = 'insufficient'
+            elif replicated:
+                h['status'] = 'confirmed'
+            else:
+                h['status'] = 'discovery_only' if i in first else 'rejected'
 
 
 def _polar(rows, hypotheses, config):
-    result, sectors = {}, config.get('sectors', 12)
-    for field in {h['field'] for h in hypotheses if h['status'] == 'confirmed'}:
-        table = []
-        for sector in range(sectors):
-            values = [r[field] for r in rows if r.get(field) is not None and
-                      int(r.get('relative_heading', sector * 360 / sectors) /
-                          (360 / sectors)) % sectors == sector]
-            if values:
-                ordered = sorted(values)
-                median = ordered[len(ordered) // 2]
-                iqr = ordered[3 * len(ordered) // 4] - ordered[len(ordered) // 4]
-                table.append({'sector': sector, 'speed_band': 'all',
-                              'median': median, 'iqr': iqr or 1.0})
-        result[field] = table
+    result = {}
+    for field in sorted({h['field'] for h in hypotheses if h['status'] == 'confirmed'}):
+        regimes = {h['regime'] for h in hypotheses if h['field'] == field and
+                   h['status'] == 'confirmed'}
+        cells = defaultdict(list)
+        for row in rows:
+            cell, value = prep.polar_cell(row, config), row.get(field + '_residual')
+            if cell and row['regime'] in regimes and stats.finite(value):
+                cells[(row['regime'], *cell)].append(value)
+        result[field] = [dict(regime=regime, sector=sector, speed_band=band, median=median(values),
+                              iqr=controls.iqr(values), count=len(values))
+                         for (regime, sector, band), values in sorted(cells.items())]
     return result
 
 
-def _read_csv(path):
-    rows, skipped = [], 0
-    with open(path, encoding='utf-8') as stream:
-        for row in csv.DictReader(stream):
-            try:
-                rows.append({key: float(value) if value else None
-                             for key, value in row.items()})
-            except (TypeError, ValueError):
-                skipped += 1
-    return rows, skipped
+def _parameters(config):
+    params = dict(DEFAULTS, **config)
+    if 'splits' in config:
+        params['splits'] = {
+            name: {k: v.isoformat() if isinstance(v, datetime) else v for k, v in spec.items()}
+            for name, spec in config['splits'].items()
+        }
+    for k in ('heading', 'direction', 'sog', 'roll', 'pitch', 'rpm', 'thruster',
+              'latitude', 'longitude', 'relative_heading'):
+        params.setdefault(k + '_field', k)
+    params['families'] = {k: list(v) for k, v in config.get('families', FAMILIES).items()}
+    for field in params['fields']:
+        memberships = [k for k, fields in params['families'].items() if field in fields]
+        if not memberships and 'families' not in config:
+            params['families']['met_vs_ship'].append(field)
+        elif len(memberships) != 1:
+            raise ValueError(f'Assign {field!r} to exactly one family')
+    bands = params['speed_bands']
+    if (params['bin_seconds'] <= 0 or params['sectors'] < 1 or sorted(set(bands)) != bands or
+            not params['lags'] or min(params['reps'], params['bootstrap_reps']) < 1):
+        raise ValueError('Invalid bins, sectors, speed bands, lags, or replicate counts')
+    return params
 
 
-def run(config):
-    if config.get('input_csv'):
-        rows, skipped = _read_csv(config['input_csv'])
-    else:
-        rows = [{'air_temperature': math.cos(i / 10),
-                 'relative_heading_cos': math.cos(i / 10),
-                 'relative_heading': math.degrees(i / 10) % 360,
-                 'regime': 'transit'} for i in range(240)]
-        skipped = 0
-    split = int(len(rows) * config.get('discovery_fraction', .5))
-    atlas = discover(rows[:split], rows[split:], config)
-    atlas['unparseable_lines'] = skipped
-    output = config.get('output_dir', '/tmp/deepsignal/ship-coupling')
-    os.makedirs(output, exist_ok=True)
-    with open(os.path.join(output, 'atlas.json'), 'w', encoding='utf-8') as stream:
-        json.dump(atlas, stream, indent=2, sort_keys=True)
-    with open(os.path.join(output, 'atlas.md'), 'w', encoding='utf-8') as stream:
-        stream.write('# Ship-coupling atlas\n\n')
-        for item in sorted(atlas['hypotheses'],
-                           key=lambda h: h['status'] != 'confirmed'):
-            stream.write('* %s vs %s: **%s**, effect %.3f.\n' %
-                         (item['field'], item['ship_variable'], item['status'],
-                          item['effect']))
-    for field, table in atlas['polar'].items():
-        with open(os.path.join(output, 'polar_%s.csv' % field), 'w',
-                  newline='', encoding='utf-8') as stream:
-            writer = csv.DictWriter(stream, ['sector', 'speed_band', 'median', 'iqr'])
-            writer.writeheader()
-            writer.writerows(table)
-    return atlas
+def discover(discovery_rows, holdout_rows, config):
+    """Each split is independently binned and detrended before fitting either set."""
+    config = _parameters(config)
+    grids = {'discovery': prep.prepare(discovery_rows, config),
+             'holdout': prep.prepare(holdout_rows, config)}
+    items = []
+    for regime in config['regimes']:
+        # Mask rather than compress. Both ends of every lag stay on the same clock.
+        tracks = [[r if r['regime'] == regime else {'cruise': r['cruise']} for r in grid]
+                  for grid in grids.values()]
+        for field, variable in product(config['fields'], config['ship_variables']):
+            residual = field + '_residual'
+            first = _evaluate(tracks[0], residual, variable, config, config['seed'])
+            second = _evaluate(tracks[1], residual, variable, config, config['seed'] + 1)
+            family = next(k for k, fields in config['families'].items() if field in fields)
+            first.update(field=field, ship_variable=variable, regime=regime, family=family,
+                         holdout=second)
+            items.append(first)
+    _correct(items, config)
+    for item in items:
+        controls.invariance(item, grids, config)
+    all_rows = grids['discovery'] + grids['holdout']
+    polar = _polar(all_rows, items, config)
+    events = [event for grid in grids.values() for event in controls.turns(grid, polar, config)]
+    spreads = {}
+    for field, table in polar.items():
+        # Remove the typical bias of each cell before estimating the field-wide healthy spread.
+        lookup = {(r['regime'], r['sector'], r['speed_band']): r['median'] for r in table}
+        deviations = []
+        for row in all_rows:
+            cell = prep.polar_cell(row, config)
+            key = (row['regime'], *cell) if cell else None
+            value = row.get(field + '_residual')
+            if key in lookup and stats.finite(value):
+                deviations.append(value - lookup[key])
+        spreads[field] = controls.iqr(deviations) if deviations else None
+        for entry in table:
+            deltas = [e['after'] - e['before'] for e in events if e['field'] == field and
+                      e['regime'] == entry['regime'] and
+                      e['cell'] == (entry['sector'], entry['speed_band'])]
+            entry['turn_count'] = len(deltas)
+            entry['turn_median_change'] = median(deltas) if deltas else None
+    splits = {name: {'bins': len(rows), 'field_bins': {
+        field: sum(stats.finite(row.get(field)) for row in rows) for field in config['fields']}}
+        for name, rows in grids.items()}
+    return dict(code_version=CODE_VERSION, parameters=config, splits=splits, hypotheses=items,
+                polar=polar, healthy_spread=spreads, turn_events=events)
+
+
+def run(config, config_path=None):
+    rows, skipped, inputs = read_input(config)
+    discovery, holdout = select_splits(rows, config.get('splits', {}))
+    result = discover(discovery, holdout, config)
+    result['unparseable_lines'] = skipped
+    result['inputs'] = [str(path) for path in inputs]
+    write_atlas(result, inputs + ([config_path] if config_path else []))
+    return result

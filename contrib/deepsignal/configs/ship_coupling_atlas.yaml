@@ -1,13 +1,24 @@
 fields: [air_temperature]
 ship_variables: [relative_heading_cos]
+families: {met_vs_ship: [air_temperature]}
 regimes: [transit]
 lags: [0]
-q: 0.05
-method: bh
-min_n_eff: 2
-reps: 99
-bootstrap_reps: 100
 seed: 78
-sectors: 12
-discovery_fraction: 0.5
-output_dir: /tmp/deepsignal/ship-coupling
+streams:
+  - path: test/NBP1406/mwx1/raw/NBP1406_mwx1-2014-08-01
+    cruise: NBP1406
+    messages:
+      MET: {air_temperature: 3}
+      PUS: {relative_heading: 2}
+  - path: test/NBP1406/gp02/raw/NBP1406_gp02-2014-08-01
+    cruise: NBP1406
+    messages:
+      $GPVTG: {sog: 5}
+  - path: test/NBP1406/gyr1/raw/NBP1406_gyr1-2014-08-01
+    cruise: NBP1406
+    messages:
+      $HEHDT: {heading: 1}
+splits:
+  discovery: {start: '2014-08-01T00:00:00.000000Z', end: '2014-08-01T00:14:00.000000Z'}
+  holdout: {start: '2014-08-01T00:14:00.000000Z', end: '2014-08-01T00:28:00.000000Z'}
+output_dir: contrib/deepsignal/coupling/tmp/ship-coupling

@@ -11,9 +11,12 @@ class TransformTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.path = os.path.join(self.temp.name, 'atlas.json')
-        atlas = {'hypotheses': [{'field': 'temp', 'ship_variable': 'relative_heading',
-                                'status': 'confirmed', 'invariance': 'ship_artifact'}],
-                 'polar': {'temp': [{'sector': 3, 'speed_band': 'all',
+        atlas = {'parameters': {'sectors': 12, 'speed_bands': [1, 5, 10]},
+                 'healthy_spread': {'temp': 1},
+                 'hypotheses': [{'field': 'temp', 'ship_variable': 'relative_heading',
+                                 'status': 'confirmed', 'regime': 'transit',
+                                 'invariance': 'ship_artifact'}],
+                 'polar': {'temp': [{'sector': 3, 'speed_band': 1, 'regime': 'transit',
                                      'median': 2, 'iqr': 1}]}}
         with open(self.path, 'w', encoding='utf-8') as stream:
             json.dump(atlas, stream)

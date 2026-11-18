@@ -1,10 +1,13 @@
 {
-  "code_version": "1.0.0",
+  "code_version": "1.1.0",
+  "description": "Synthetic live-transform example",
+  "parameters": {"sectors": 12, "speed_bands": [1, 5, 10]},
   "hypotheses": [{
-    "field": "air_temperature", "ship_variable": "relative_heading",
-    "status": "confirmed", "invariance": "ship_artifact"
+    "field": "air_temperature", "ship_variable": "relative_heading_cos",
+    "regime": "transit", "status": "confirmed", "invariance": "ship_artifact"
   }],
+  "healthy_spread": {"air_temperature": 1.0},
   "polar": {"air_temperature": [
-    {"sector": 0, "speed_band": "all", "median": 0.4, "iqr": 1.0}
+    {"regime": "transit", "sector": 0, "speed_band": 1, "median": 0.4, "iqr": 0.2}
   ]}
 }

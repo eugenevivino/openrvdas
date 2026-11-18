@@ -1,40 +1,125 @@
-"""Binning, residualization, and ship-state preparation."""
+"""Bin observations on the cruise clock and derive offline residuals and ship state."""
 
+from bisect import bisect_right
+from collections import defaultdict
+from datetime import datetime, timezone
 import math
-import statistics
+from statistics import fmean, median
+
+from .stats import finite
+
+
+def timestamp(value):
+    if isinstance(value, str):
+        try:
+            value = float(value)
+        except ValueError:
+            dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+            value = dt
+    if isinstance(value, datetime):
+        value = (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).timestamp()
+    if not finite(value):
+        raise ValueError('Expected a finite timestamp')
+    return value
 
 
 def rolling_median(values, window):
     radius = max(0, window // 2)
-    return [statistics.median([v for v in values[max(0, i - radius):i + radius + 1]
-                               if v is not None]) for i in range(len(values))]
+    result = []
+    for i in range(len(values)):
+        local = [v for v in values[max(0, i - radius):i + radius + 1] if finite(v)]
+        result.append(median(local) if local else None)
+    return result
+
+
+def angle_difference(a, b):
+    return (a - b + 180) % 360 - 180
+
+
+def angle_mean(values):
+    angles = [math.radians(v) for v in values]
+    x, y = sum(map(math.cos, angles)), sum(map(math.sin, angles))
+    if math.hypot(x, y) > 1e-12 * len(values):
+        return math.degrees(math.atan2(y, x)) % 360
+    return None
+
+
+def regime(speed, rate, change, config):
+    if not finite(speed):
+        return None
+    if speed < config.get('station_knots', 1):
+        return 'station'
+    if ((finite(rate) and rate > config.get('turn_deg_s', 2)) or
+            (finite(change) and change > config.get('sog_change_kn_min', 1))):
+        return 'maneuver'
+    return 'transit'
+
+
+def polar_cell(row, config):
+    angle, speed = row.get('relative_heading'), row.get('sog')
+    if finite(angle) and finite(speed):
+        sector = int((angle % 360) / 360 * config.get('sectors', 12))
+        return sector, bisect_right(config.get('speed_bands', [1, 5, 10]), speed)
+    return None
+
+
+def _grid(indexed, cruise, config):
+    seconds = config.get('bin_seconds', 10)
+    names = {k: config.get(k + '_field', k) for k in
+             ('heading', 'direction', 'sog', 'roll', 'pitch', 'rpm', 'thruster',
+              'latitude', 'longitude', 'relative_heading')}
+    angles = {names[k] for k in ('heading', 'direction', 'relative_heading', 'longitude')}
+    rows = []
+    for index in range(min(indexed), max(indexed) + 1):
+        row = {'timestamp': index * seconds, 'cruise': cruise}
+        samples = indexed.get(index, [])
+        numbers = defaultdict(list)
+        labels = set()
+        for sample in samples:
+            for key, value in sample.items():
+                if key == 'regime' and value is not None:
+                    labels.add(value)
+                elif key not in ('timestamp', 'cruise') and finite(value):
+                    numbers[key].append(value)
+        for key, values in numbers.items():
+            row[key] = angle_mean(values) if key in angles else fmean(values)
+        for key, name in names.items():
+            if name in row:
+                row[key] = row[name]
+        if finite(row.get('direction')) and finite(row.get('heading')):
+            row['relative_heading'] = (row['direction'] - row['heading']) % 360
+        if finite(row.get('relative_heading')):
+            angle = math.radians(row['relative_heading'])
+            row.update(relative_heading_cos=math.cos(angle), relative_heading_sin=math.sin(angle))
+        previous = rows[-1] if rows else {}
+        if finite(row.get('heading')) and finite(previous.get('heading')):
+            delta = angle_difference(row['heading'], previous['heading'])
+            row['heading_rate'] = abs(delta) / seconds
+        change = None
+        if finite(row.get('sog')) and finite(previous.get('sog')):
+            change = abs(row['sog'] - previous['sog']) * 60 / seconds
+        label = regime(row.get('sog'), row.get('heading_rate'), change, config)
+        row['regime'] = label if label else next(iter(labels)) if len(labels) == 1 else None
+        rows.append(row)
+
+    window = max(1, int(config.get('median_minutes', 30) * 60 / seconds))
+    for field in config.get('fields', []):
+        values = [row.get(field) for row in rows]
+        for row, value, center in zip(rows, values, rolling_median(values, window)):
+            row[field + '_residual'] = value - center if finite(value) else None
+    return rows
 
 
 def prepare(rows, config):
-    """Return copied rows augmented with configured ship variables and residuals."""
-    output = [dict(row) for row in rows]
-    heading = config.get('heading_field', 'heading')
-    direction = config.get('direction_field', 'direction')
-    sog = config.get('sog_field', 'sog')
-    for index, row in enumerate(output):
-        if heading in row and direction in row:
-            angle = math.radians(row[direction] - row[heading])
-            row['relative_heading_sin'] = math.sin(angle)
-            row['relative_heading_cos'] = math.cos(angle)
-            row['relative_heading'] = math.degrees(angle) % 360
-        rate = abs(row.get(heading, 0) - output[index - 1].get(heading, 0)) if index else 0
-        row['heading_rate'] = rate / config.get('bin_seconds', 10)
-        speed = row.get(sog, 0)
-        change = abs(speed - output[index - 1].get(sog, speed)) * 6 if index else 0
-        row['regime'] = ('station' if speed < config.get('station_knots', 1) else
-                         'maneuver' if rate > config.get('turn_deg_s', 2) or
-                         change > config.get('sog_change_kn_min', 1) else 'transit')
-    window = max(1, int(config.get('median_minutes', 30) * 60 /
-                        config.get('bin_seconds', 10)))
-    for field in config.get('fields', []):
-        values = [row.get(field) for row in output]
-        medians = rolling_median(values, window)
-        for row, median in zip(output, medians):
-            if row.get(field) is not None:
-                row[field + '_residual'] = row[field] - median
-    return output
+    """Untimestamped in-memory series represent one row per successive bin."""
+    seconds = config.get('bin_seconds', 10)
+    cruises = defaultdict(lambda: defaultdict(list))
+    clocked = None
+    for i, row in enumerate(rows):
+        has_time = 'timestamp' in row
+        if clocked is not None and clocked != has_time:
+            raise ValueError('Mixed timestamped and untimestamped observations')
+        clocked = has_time
+        index = math.floor(timestamp(row.get('timestamp', i * seconds)) / seconds)
+        cruises[row.get('cruise')][index].append(row)
+    return [row for cruise, indexed in cruises.items() for row in _grid(indexed, cruise, config)]
