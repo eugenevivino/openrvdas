@@ -4,9 +4,11 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 import re
+from statistics import median
 import time
 from unittest.mock import patch
 
+from logger.transforms.parse_transform import ParseTransform
 from logger.utils.das_record import DASRecord
 from contrib.deepsignal.logger.transforms import qartod_flag_transform
 from contrib.deepsignal.logger.transforms.qartod_flag_transform import QartodFlagTransform
@@ -679,7 +681,8 @@ class QartodFlagTransformTest(unittest.TestCase):
 
         invalid = [
             {'flat_line': {'tolerance': 1, 'suspect_seconds': 2, 'fail_seconds': 1}},
-            {'climatology': {'suspect_span': [0, 1], 'months': []}},
+            {'climatology': {'suspect_span': [0, 1],
+                             'months': [{'months': [1], 'suspect_span': [0, 1]}]}},
             {'front_check': {'companions': ['T'], 'min_change': {'T': 1}}},
         ]
         for tests in invalid:
@@ -689,6 +692,97 @@ class QartodFlagTransformTest(unittest.TestCase):
             QartodFlagTransform(fields={'T': {}}, **{'self': True})
         self.assertIn('self', str(error.exception))
         self.assertEqual(len(str(error.exception).splitlines()), 1)
+
+    def test_fix3_flat_line_spread_and_cutoff(self):
+        transform = transform_for(flat_line={'tolerance': 1, 'suspect_seconds': 2,
+                                             'fail_seconds': 4})
+        for timestamp, value, flag in [(0, 0, 2), (1, 2, 1), (2, 1, 1), (3, 2, 3),
+                                       (5, 1, 4), (8, 2.01, 1), (13, 1.01, 4)]:
+            with self.subTest(timestamp=timestamp):
+                fields = transform.transform(record(timestamp, SeaTemp=value))['fields']
+                self.assertEqual(fields['SeaTemp_QC_flat_line'], flag)
+
+    def test_fix3_flat_line_alternating_throughput(self):
+        medians = []
+        for window in (100, 10000):
+            transform = transform_for(flat_line={'tolerance': 1, 'suspect_seconds': window / 40,
+                                                 'fail_seconds': window / 20})
+            for index in range(window):
+                transform.transform(record(index / 20, SeaTemp=10.0))
+            timings = []
+            for index in range(window, window + 5000):
+                sample = record(index / 20, SeaTemp=10.01 if index % 2 else 10.0)
+                start = time.perf_counter_ns()
+                fields = transform.transform(sample)['fields']
+                timings.append(time.perf_counter_ns() - start)
+                self.assertEqual(fields['SeaTemp_QC_flat_line'], 4)
+            medians.append(median(timings) / 1e6)
+        self.assertLess(max(medians), 5, medians)
+        self.assertLessEqual(max(medians), 2 * min(medians), medians)
+
+    def test_fix3_stock_csv_missing_timestamp(self):
+        parser = ParseTransform(record_format='{timestamp:of},{field_string}',
+                                field_patterns=['{SeaTemp:of}'])
+        transform = transform_for(flat_line={'tolerance': 1, 'suspect_seconds': 1,
+                                             'fail_seconds': 2},
+                                  timing={}, rate_of_change={'max_rate': 1})
+        transform.transform(parser.transform('100,10'))
+        sample = parser.transform(',10')
+        self.assertEqual(sample, record(None, SeaTemp=10.0))
+        result = transform.transform(sample)
+        self.assertIsNone(result['timestamp'])
+        self.assertIs(result['fields']['SeaTemp'], sample['fields']['SeaTemp'])
+        for suffix in ('', '_flat_line', '_timing', '_rate_of_change'):
+            self.assertEqual(result['fields']['SeaTemp_QC' + suffix], 2)
+        fields = transform.transform(parser.transform('103,10'))['fields']
+        self.assertEqual(fields['SeaTemp_QC_flat_line'], 2)
+        self.assertEqual(fields['SeaTemp_QC_rate_of_change'], 2)
+
+    def test_fix3_stock_csv_extreme_spike(self):
+        parser = ParseTransform(record_format='{timestamp:of},{field_string}',
+                                field_patterns=['{SeaTemp:of}'])
+        transform = transform_for(spike={'window': 1, 'suspect': 1, 'fail': 2})
+        transform.transform(parser.transform('100,-1e308'))
+        sample = parser.transform('101,1e308')
+        fields = transform.transform(sample)['fields']
+        self.assertIs(fields['SeaTemp'], sample['fields']['SeaTemp'])
+        self.assertEqual((fields['SeaTemp_QC_spike'], fields['SeaTemp_QC']), (4, 4))
+        reason = re.fullmatch(r'FAIL: spike (\S+) over limit 2', fields['SeaTemp_QC_reason'])
+        self.assertIsNotNone(reason)
+        self.assertEqual(Decimal(reason[1]), Decimal('2e308'))
+
+    def test_fix3_rate_reason_precision(self):
+        transform = transform_for(rate_of_change={'max_rate': 0.1})
+        transform.transform(record(100, SeaTemp=1.0))
+        fields = transform.transform(record(101, SeaTemp=1.1000000000000003))['fields']
+        self.assertEqual(fields['SeaTemp_QC_rate_of_change'], 3)
+        self.assertEqual(fields['SeaTemp_QC_reason'],
+                         'SUSPECT: rate_of_change 0.1000000000000003 per second over limit 0.1')
+        transform = transform_for(rate_of_change={'max_rate': 0.1})
+        transform.transform(record(100, SeaTemp=-1e-40))
+        fields = transform.transform(record(101, SeaTemp=0.1))['fields']
+        rate = fields['SeaTemp_QC_reason'].split()[2]
+        self.assertGreater(Decimal(rate), Decimal('0.1'))
+
+    def test_fix3_companion_cycle_at_load(self):
+        fields = {field: {'spike': {'window': 1, 'suspect': 1, 'fail': 2},
+                          'front_check': {'companions': [other], 'min_change': {other: 1}}}
+                  for field, other in zip('ABC', 'BCA')}
+        with self.assertRaisesRegex(ValueError, r'front_check\.companions.*A -> B -> C -> A'):
+            QartodFlagTransform(fields=fields)
+
+    def test_fix3_oversized_spike_window(self):
+        with self.assertLogs(level='WARNING') as messages:
+            transform = transform_for(spike={'window': 10**4300, 'suspect': 1, 'fail': 2},
+                                      gross_range={'fail_span': [0, 5]})
+            for index, value in enumerate((1, 5, 10)):
+                fields = transform.transform(record(index, SeaTemp=value))['fields']
+                self.assertEqual(fields['SeaTemp'], value)
+                self.assertEqual(fields['SeaTemp_QC_spike'], 2)
+                self.assertEqual(fields['SeaTemp_QC'], 4 if value > 5 else 1)
+        self.assertEqual(len(messages.output), 1)
+        for part in ('SeaTemp', 'spike.window', 'NOT_EVALUATED'):
+            self.assertIn(part, messages.output[0])
 
 
 if __name__ == '__main__':

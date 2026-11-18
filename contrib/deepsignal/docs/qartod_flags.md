@@ -61,7 +61,7 @@ decimal comparison at span boundaries. Thresholds and durations must be above ze
 | `spike.suspect`, `spike.fail` | Deviation above either limit from the median of the previous usable readings, in sensor units. Fail must be at least as large as suspect. | Both required for spike. |
 | `spike.window` | Number of previous usable readings for the median. | 3 |
 | `rate_of_change.max_rate` | Change per second above this limit is suspect. Repeated or backwards time gives 2 for this check. | Required for rate of change. |
-| `flat_line.tolerance` | How far earlier readings may differ from the current reading and still count as flat. | Required for flat line. |
+| `flat_line.tolerance` | Maximum difference between the highest and lowest readings in a flat-line window, including the current reading. | Required for flat line. |
 | `flat_line.suspect_seconds`, `flat_line.fail_seconds` | How long a run must last to be suspect or fail. Fail must be at least as long as suspect. | Both required for flat line. |
 | `timing.max_future_seconds` | A timestamp farther ahead of the logger's clock fails. Repeated or backwards timestamps also fail. | 60 seconds |
 | `timing.max_gap_seconds` | A gap longer than this since the previous record is suspect. | Optional. |
@@ -109,6 +109,8 @@ reading. Two readings that both fail their jump checks need evidence from anothe
 A gross-range, syntax or timing failure still makes the overall flag 4. When a hard failure
 and unavailable companions both contribute to the result, the reason starts with the failure.
 Evidence that softens one field cannot flow back through that field to soften its source.
+The configuration accepts reciprocal companion pairs. A cycle involving three or more
+fields produces a configuration error that lists the cycle.
 
 ## What it does not do
 
@@ -118,8 +120,11 @@ Evidence that softens one field cannot flow back through that field to soften it
 - Flagging leaves all sensor data in place, including records marked fail or missing.
 - History is kept in memory for each field, with a limited number of readings for spike and
   rate and a limited time window for flat line. Readings that fail syntax or gross range are
-  left out of history. Normalized samples and an unchanged flat-line run are cached so sustained
-  high-rate input does not repeatedly convert and scan the full window. Restarting the logger
-  clears the history and the checks warm up again.
+  left out of history. Each flat-line window tracks its minimum and maximum and retains
+  the last reading at or before the cutoff to establish the full duration. Restarting the
+  logger clears the history and the checks warm up again.
+- A record with a missing timestamp keeps its original readings and timestamp. Flat line,
+  rate of change and timing report flag 2 (`NOT_EVALUATED`). A missing timestamp clears
+  flat-line history, so the next usable reading starts a new window.
 - Monthly climatology gives 2 if the timestamp cannot be converted to a UTC month. The
   transform logs this conversion failure at most once per minute.

@@ -69,13 +69,20 @@ def _comparison_number(value):
     return Fraction(str(value) if isinstance(value, float) else value)
 
 
-def _number_text(value):
+def _number_text(value, distinct_from=None):
     """Format exact numbers compactly without Fraction's version-dependent format."""
     number = _comparison_number(value)
+    numerator, denominator = Decimal(number.numerator), Decimal(number.denominator)
     with localcontext() as context:
-        context.prec = 12
-        decimal = Decimal(number.numerator) / Decimal(number.denominator)
-    return format(decimal, '.12g')
+        context.prec = 34
+        decimal = numerator / denominator
+        if distinct_from is not None and number != distinct_from:
+            other_num = Decimal(distinct_from.numerator)
+            other_den = Decimal(distinct_from.denominator)
+            while decimal == other_num / other_den:
+                context.prec *= 2
+                decimal = numerator / denominator
+        return str(decimal)
 
 
 def _change(value, previous):
@@ -149,6 +156,29 @@ def _front_check(field, settings, fields):
     return {name: limits[name] for name in companions}
 
 
+def _validate_companion_cycles(front_checks):
+    # Reciprocal pairs have a runtime evidence check. For each first edge,
+    # look for a path back to its source that uses a third field.
+    for field, companions in front_checks.items():
+        for first in companions:
+            parents = {first: field}
+            pending = [first]
+            while pending:
+                current = pending.pop()
+                for other in front_checks[current]:
+                    if other == field:
+                        if current != first:
+                            path = [current]
+                            while path[-1] != field:
+                                path.append(parents[path[-1]])
+                            cycle = ' -> '.join([*reversed(path), field])
+                            _config_error(field, 'front_check.companions', cycle,
+                                          'no companion cycle involving three or more fields')
+                    elif other not in parents:
+                        parents[other] = current
+                        pending.append(other)
+
+
 def _test_settings(field, test, settings, fields):
     if test not in ALLOWED_KEYS:
         _config_error(field, str(test), test, f'one of {", ".join(ALLOWED_KEYS)}',
@@ -173,7 +203,7 @@ def _test_settings(field, test, settings, fields):
         return _climatology_spans(field, settings)
     elif test == 'spike':
         window = settings.setdefault('window', 3)
-        if type(window) is not int or not 1 <= window <= maxsize:
+        if type(window) is not int or window < 1:
             _config_error(field, 'spike.window', window,
                           f'a whole number of samples from 1 to {maxsize}')
         if _comparison_number(settings['fail']) < _comparison_number(settings['suspect']):
@@ -206,8 +236,9 @@ def _range_result(test, value, span, flag):
         return _verdict(NOT_EVALUATED)
     value = _comparison_number(value)
     if not span[0] <= value <= span[1]:
-        return _verdict(flag, f'{test} {_number_text(value)} outside '
-                        f'[{_number_text(span[0])}, {_number_text(span[1])}]')
+        bound = span[0] if value < span[0] else span[1]
+        return _verdict(flag, f'{test} {_number_text(value, bound)} outside '
+                        f'[{_number_text(span[0], value)}, {_number_text(span[1], value)}]')
     return _verdict(PASS)
 
 
@@ -224,8 +255,10 @@ def _timing(settings, timestamp, previous, now):
     gap = settings.get('max_gap_seconds')
     if gap is not None and previous is not None:
         elapsed = timestamp - previous
-        if elapsed > _comparison_number(gap):
-            return _verdict(SUSPECT, f'timing gap {_number_text(elapsed)} seconds over limit {gap}')
+        boundary = _comparison_number(gap)
+        if elapsed > boundary:
+            return _verdict(SUSPECT, f'timing gap {_number_text(elapsed, boundary)} seconds '
+                            f'over limit {gap}')
     return _verdict(PASS)
 
 
@@ -241,10 +274,11 @@ def _spike(settings, value, history):
     deviation = abs(_comparison_number(value) - median)
     for key, flag in [('fail', FAIL), ('suspect', SUSPECT)]:
         limit = settings[key]
-        if deviation > _comparison_number(limit):
-            text = _number_text(deviation)
-            if isinstance(value, float):
-                text = str(float(deviation))
+        boundary = _comparison_number(limit)
+        if deviation > boundary:
+            text = _number_text(deviation, boundary)
+            if isinstance(value, float) and text.isdigit():
+                text += '.0'
             return _verdict(flag, f'spike {text} over limit {limit}')
     return _verdict(PASS)
 
@@ -260,40 +294,92 @@ def _rate_of_change(settings, timestamp, value, history):
         return _verdict(NOT_EVALUATED)
     delta = _change(value, previous_value)
     limit = settings['max_rate']
-    if delta > _comparison_number(limit) * elapsed:
+    boundary = _comparison_number(limit)
+    if delta > boundary * elapsed:
         rate = delta / elapsed
-        return _verdict(SUSPECT, f'rate_of_change {_number_text(rate)} per second '
+        return _verdict(SUSPECT, f'rate_of_change {_number_text(rate, boundary)} per second '
                         f'over limit {limit}')
     return _verdict(PASS)
 
 
-def _flat_line(settings, timestamp, value, history, earliest=None):
-    if not history or timestamp is None:
-        return _verdict(NOT_EVALUATED), None
-    timestamp = _comparison_number(timestamp)
-    if timestamp <= history[-1][0]:
-        return _verdict(NOT_EVALUATED), None
-    tolerance = settings['tolerance']
-    allowed_change = _comparison_number(tolerance)
-    suspect = _comparison_number(settings['suspect_seconds'])
-    fail = _comparison_number(settings['fail_seconds'])
-    duration = timestamp - earliest if earliest is not None else Fraction(0)
-    value = _comparison_number(value)
-    if earliest is None:
-        for prior_time, prior_value in reversed(history):
-            if abs(value - prior_value) > allowed_change:
-                break
-            earliest = prior_time
-            duration = timestamp - prior_time
-            if duration >= fail:
-                break
-    if duration >= fail:
-        return (_verdict(FAIL, f'flat_line within {tolerance} for at least '
-                         f'{_number_text(duration)} seconds'), earliest)
-    if duration >= suspect:
-        return (_verdict(SUSPECT, f'flat_line within {tolerance} for '
-                         f'{_number_text(duration)} seconds'), earliest)
-    return _verdict(PASS), earliest
+class _FlatWindow:
+    def __init__(self, seconds):
+        self.seconds = _comparison_number(seconds)
+        self.samples = deque()
+        self.minima = deque()
+        self.maxima = deque()
+
+    def clear(self):
+        self.samples.clear()
+        self.minima.clear()
+        self.maxima.clear()
+
+    def append(self, sample):
+        value = sample[1]
+        while self.minima and self.minima[-1][1] >= value:
+            self.minima.pop()
+        while self.maxima and self.maxima[-1][1] <= value:
+            self.maxima.pop()
+        self.samples.append(sample)
+        self.minima.append(sample)
+        self.maxima.append(sample)
+
+    def flat_duration(self, stamp, value, tolerance):
+        cutoff = stamp - self.seconds
+        # Keep the latest sample on or before the cutoff to establish coverage.
+        while len(self.samples) > 1 and self.samples[1][0] <= cutoff:
+            expired = self.samples.popleft()
+            if self.minima[0] is expired:
+                self.minima.popleft()
+            if self.maxima[0] is expired:
+                self.maxima.popleft()
+        if self.samples and self.samples[0][0] <= cutoff:
+            spread = max(self.maxima[0][1], value) - min(self.minima[0][1], value)
+            if spread <= tolerance:
+                return stamp - self.samples[0][0]
+        return None
+
+
+class _FlatHistory:
+    def __init__(self, settings):
+        self.suspect = _FlatWindow(settings['suspect_seconds'])
+        self.fail = _FlatWindow(settings['fail_seconds'])
+        self.tolerance = settings['tolerance']
+        self.allowed_change = _comparison_number(self.tolerance)
+        self.last_stamp = None
+
+    def __iter__(self):
+        return iter(self.fail.samples)
+
+    def clear(self):
+        self.suspect.clear()
+        self.fail.clear()
+        self.last_stamp = None
+
+    def append(self, value):
+        sample = (self.last_stamp, value)
+        self.suspect.append(sample)
+        self.fail.append(sample)
+
+    def evaluate(self, timestamp, value):
+        if timestamp is None:
+            return _verdict(NOT_EVALUATED)
+        stamp = _comparison_number(timestamp)
+        if self.last_stamp is not None and stamp <= self.last_stamp:
+            self.clear()
+        self.last_stamp = stamp
+        if not self.fail.samples:
+            return _verdict(NOT_EVALUATED)
+        value = _comparison_number(value)
+        suspect = self.suspect.flat_duration(stamp, value, self.allowed_change)
+        fail = self.fail.flat_duration(stamp, value, self.allowed_change)
+        if fail is not None:
+            return _verdict(FAIL, f'flat_line within {self.tolerance} for at least '
+                            f'{_number_text(fail)} seconds')
+        if suspect is not None:
+            return _verdict(SUSPECT, f'flat_line within {self.tolerance} for '
+                            f'{_number_text(suspect)} seconds')
+        return _verdict(PASS)
 
 
 def _aggregate(flags):
@@ -343,6 +429,7 @@ class QartodFlagTransform(Transform):
                         for test, options in tests.items()}
             self.front_checks[field] = settings.pop('front_check', {})
             self.tests[field] = settings
+        _validate_companion_cycles(self.front_checks)
 
         self.flag_suffix = flag_suffix
         self.per_test_flags = per_test_flags
@@ -353,13 +440,17 @@ class QartodFlagTransform(Transform):
             _config_error(field, 'flag_suffix', flag_suffix,
                           f'separate names for raw fields and generated flags; {name!r} is in use',
                           self._suffix_example(fields))
-        self.history = {
-            field: deque(maxlen=settings.get('spike', {}).get('window', 1))
-            for field, settings in self.tests.items()
-        }
-        self.flat_history = {field: deque() for field in self.tests
-                             if 'flat_line' in self.tests[field]}
-        self.flat_cache = dict.fromkeys(self.flat_history)
+        self.history = {}
+        for field, settings in self.tests.items():
+            window = settings.get('spike', {}).get('window', 1)
+            if window > maxsize:
+                logging.warning('QartodFlagTransform: %s spike.window exceeds %d samples. '
+                                'Spike will report NOT_EVALUATED.', field, maxsize)
+                # Spike can never collect this many samples. Rate still needs one.
+                window = 1
+            self.history[field] = deque(maxlen=window)
+        self.flat_history = {field: _FlatHistory(settings['flat_line'])
+                             for field, settings in self.tests.items() if 'flat_line' in settings}
         self.previous_companion = dict.fromkeys(name for companions in self.front_checks.values()
                                                 for name in companions)
         self.has_timing = any('timing' in tests for tests in self.tests.values())
@@ -434,6 +525,9 @@ class QartodFlagTransform(Transform):
     def _flag_fields(self, timestamp, fields):
         self.record_number += 1
         timestamp = timestamp if _is_number(timestamp) else None
+        if timestamp is None:
+            for history in self.flat_history.values():
+                history.clear()
         now = time.time() if self.has_timing else None
         present = {field: _value_flag(fields[field]) for field in self.tests if field in fields}
         results = {field: self._evaluate(field, fields[field], status, timestamp, now)
@@ -472,15 +566,7 @@ class QartodFlagTransform(Transform):
             elif test == 'rate_of_change':
                 result = _rate_of_change(settings, timestamp, value, self.history[field])
             else:
-                normalized = _comparison_number(value)
-                cache = self.flat_cache[field]
-                earliest = None
-                history = self.flat_history[field]
-                if (cache is not None and cache[0] == normalized and history
-                        and history[-1][0] == cache[1]):
-                    earliest = cache[2]
-                result, earliest = _flat_line(settings, timestamp, normalized, history, earliest)
-                self.flat_cache[field] = (normalized, _comparison_number(timestamp), earliest)
+                result = self.flat_history[field].evaluate(timestamp, value)
             checks[test] = result
         return checks
 
@@ -596,15 +682,5 @@ class QartodFlagTransform(Transform):
     def _remember(self, field, timestamp, value):
         normalized = _comparison_number(value)
         self.history[field].append((self.record_number, timestamp, normalized))
-        if field not in self.flat_history:
-            return
-        history = self.flat_history[field]
-        stamp = _comparison_number(timestamp) if timestamp is not None else None
-        if stamp is None or (history and stamp <= _comparison_number(history[-1][0])):
-            history.clear()
-        if stamp is not None:
-            history.append((stamp, normalized))
-            cutoff = stamp - _comparison_number(self.tests[field]['flat_line']['fail_seconds'])
-            # Keep one sample on or before the cutoff to establish a full run.
-            while len(history) > 1 and history[1][0] <= cutoff:
-                history.popleft()
+        if timestamp is not None and field in self.flat_history:
+            self.flat_history[field].append(normalized)
