@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 from logger.utils.das_record import DASRecord
+from contrib.deepsignal.logger.transforms import qartod_flag_transform
 from contrib.deepsignal.logger.transforms.qartod_flag_transform import QartodFlagTransform
 
 
@@ -192,7 +193,7 @@ class QartodFlagTransformTest(unittest.TestCase):
 
     def test_front_moving_flat_missing_bad_and_without_prior_value(self):
         scenarios = [
-            (31, 30, 3, 'UNDECIDED: jump matches a change in Salt; '
+            (31, 30, 3, 'AMBIGUOUS: jump matches a change in Salt; '
              'may be a real front, check before trusting or discarding'),
             (30, 30, 4, 'FAIL: spike 4.0 over limit 2.0'),
             (None, 30, 4, 'FAIL: spike 4.0 over limit 2.0; Salt missing'),
@@ -233,7 +234,9 @@ class QartodFlagTransformTest(unittest.TestCase):
             transform.transform(record(100, SeaTemp=10, Salt=30))
             fields = transform.transform(record(101, SeaTemp=14, Salt=31))['fields']
             self.assertEqual(fields['SeaTemp_QC_rate_of_change'], 3)
-            self.assertIn('UNDECIDED', fields['SeaTemp_QC_reason'])
+            self.assertEqual(fields['SeaTemp_QC_reason'],
+                             'AMBIGUOUS: jump matches a change in Salt; '
+                             'may be a real front, check before trusting or discarding')
             fields = transform.transform(record(102, SeaTemp=25, Salt=32))['fields']
             self.assertEqual(fields['SeaTemp_QC'], 4)
             self.assertIn('gross_range', fields['SeaTemp_QC_reason'])
@@ -258,6 +261,30 @@ class QartodFlagTransformTest(unittest.TestCase):
         self.assertEqual(fields['SeaTemp_QC'], 4)
         self.assertIn('Salt has no previous good value', fields['SeaTemp_QC_reason'])
 
+    def test_ambiguous_verdict_constant(self):
+        self.assertEqual(qartod_flag_transform.VERDICT_AMBIGUOUS, 'AMBIGUOUS')
+
+    def test_front_uses_previous_good_companion_in_jump_window(self):
+        for salt, expected in [(30, 4), (31, 3)]:
+            with self.subTest(salt=salt):
+                transform = QartodFlagTransform(fields={
+                    'SeaTemp': {
+                        'spike': {'window': 2, 'suspect': 1, 'fail': 2},
+                        'front_check': {'companions': ['Salt'], 'min_change': {'Salt': 1}},
+                    },
+                    'Salt': {'timing': {}},
+                })
+                transform.transform(record(100, SeaTemp=10, Salt=30))
+                bad = transform.transform(record(99, SeaTemp=10, Salt=31))['fields']
+                self.assertEqual(bad['Salt_QC'], 4)
+                fields = transform.transform(record(101, SeaTemp=15, Salt=salt))['fields']
+                self.assertEqual(fields['SeaTemp_QC'], expected)
+                if expected == 3:
+                    self.assertIn('AMBIGUOUS: jump matches a change in Salt',
+                                  fields['SeaTemp_QC_reason'])
+                else:
+                    self.assertIn('FAIL: spike', fields['SeaTemp_QC_reason'])
+
     def test_front_reason_keeps_missing_companion_when_suspect_checks_tie(self):
         transform = QartodFlagTransform(fields={
             'SeaTemp': {
@@ -273,6 +300,8 @@ class QartodFlagTransformTest(unittest.TestCase):
         self.assertEqual(fields['SeaTemp_QC_reason'], 'SUSPECT: spike 3 over limit 1; Salt missing')
 
     def test_configuration_errors_explain_setting_value_expectation_and_example(self):
+        with self.assertRaisesRegex(ValueError, r'fields.*got missing.*expected.*Good example'):
+            QartodFlagTransform()
         cases = [
             ({'range': {}}, 'range', 'range'),
             ({'gross_range': {}}, 'gross_range.fail_span', 'missing'),

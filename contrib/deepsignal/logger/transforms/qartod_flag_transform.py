@@ -16,6 +16,7 @@ from logger.utils.das_record import DASRecord
 
 
 PASS, NOT_EVALUATED, SUSPECT, FAIL, MISSING = 1, 2, 3, 4, 9
+VERDICT_AMBIGUOUS = 'AMBIGUOUS'
 EXAMPLES = {
     'gross_range': '{fail_span: [-2, 40], suspect_span: [0, 32]}',
     'climatology': '{suspect_span: [0, 32]} or {months: [{months: [1], suspect_span: [0, 20]}]}',
@@ -243,7 +244,7 @@ class QartodFlagTransform(Transform):
     immediately. Timing and sensor history are held only for this instance.
     """
 
-    def __init__(self, fields, flag_suffix='_QC', per_test_flags=False):
+    def __init__(self, fields=UNSET, flag_suffix='_QC', per_test_flags=False):
         super().__init__()
         if not isinstance(fields, dict) or not fields:
             _config_error('all fields', 'fields', fields, 'a nonempty map of field names to tests',
@@ -281,6 +282,8 @@ class QartodFlagTransform(Transform):
         }
         self.flat_history = {field: deque() for field in self.tests
                              if 'flat_line' in self.tests[field]}
+        self.previous_companion = dict.fromkeys(name for companions in self.front_checks.values()
+                                                for name in companions)
         self.has_timing = any('timing' in tests for tests in self.tests.values())
         self.previous_timestamp = None
         self.record_number = 0
@@ -333,6 +336,8 @@ class QartodFlagTransform(Transform):
             checks = results[field]
             if status == PASS and checks.get('gross_range', (PASS, ''))[0] != FAIL:
                 self._remember(field, timestamp, fields[field])
+            if field in self.previous_companion and status == PASS and field not in bad:
+                self.previous_companion[field] = (self.record_number, fields[field])
         if timestamp is not None:
             self.previous_timestamp = timestamp
         return output
@@ -386,15 +391,15 @@ class QartodFlagTransform(Transform):
     def _companion_verdict(self, companions, start, fields, present, bad, flag, reason):
         unavailable = []
         for name, limit in companions.items():
-            history = self.history[name]
+            previous = self.previous_companion[name]
             if present.get(name, MISSING) == MISSING:
                 unavailable.append(f'{name} missing')
             elif name in bad:
                 unavailable.append(f'{name} bad')
-            elif not history or not start <= history[-1][0] < self.record_number:
+            elif previous is None or previous[0] < start:
                 unavailable.append(f'{name} has no previous good value in the jump window')
-            elif abs(fields[name] - history[-1][2]) >= limit:
-                return (SUSPECT, f'UNDECIDED: jump matches a change in {name}; '
+            elif abs(fields[name] - previous[1]) >= limit:
+                return (SUSPECT, f'{VERDICT_AMBIGUOUS}: jump matches a change in {name}; '
                         'may be a real front, check before trusting or discarding')
         if unavailable:
             reason += '; ' + '; '.join(unavailable)
@@ -415,7 +420,7 @@ class QartodFlagTransform(Transform):
                           if flag == aggregate]
             _, reason = min(candidates, key=lambda item: (
                 not (aggregate == FAIL and item[0] in ('gross_range', 'timing')),
-                not item[1].startswith('UNDECIDED:'),
+                not item[1].startswith(f'{VERDICT_AMBIGUOUS}:'),
                 not (self.front_checks[field] and item[0] in ('spike', 'rate_of_change')),
             ))
         else:

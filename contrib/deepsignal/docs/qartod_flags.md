@@ -79,10 +79,12 @@ before using the flags for alarms.
 
 A sharp temperature jump can be a fault or the ship crossing an ocean front. If a second
 field such as salinity moves enough during the same window, the spike or rate check gives 3
-and marks the jump `UNDECIDED`. Check the readings before trusting or discarding either one.
+and writes `AMBIGUOUS` in the reason field. Check the readings before trusting or discarding
+either one.
 The spike window starts at the oldest reading used in its median. The rate window starts
 at the previous usable reading. In either case the companion needs a previous usable reading
-in that window. A missing or bad companion cannot confirm a jump. If no other companion
+in that window. A missing companion or one that failed a check is skipped, both when
+checking the current record and when saving a reading to compare against later. If no other companion
 confirms it, the original flag stands and the reason names the jump check and any missing or
 bad companions. Two readings that both fail their jump checks cannot confirm each other.
 A gross-range, syntax or timing failure still makes the overall flag 4.
