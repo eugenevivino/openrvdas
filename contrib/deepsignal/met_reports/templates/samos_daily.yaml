@@ -1,0 +1,53 @@
+name: samos_daily
+status: VERIFIED-STRUCTURE
+period: daily
+filename: '{ship}_{yyyymmdd}.txt'
+zip: true
+header: []
+row: $SAMOS:001, CS:{cs}, YMD:{ymd}, HMS:{hms}, LAT:{lat}, LON:{lon}, GYRO:{gyro}, COG:{cog}, SOG:{sog}, RWDIR:{rwdir}, RWSPD:{rwspd}, TWDIR:{twdir}, TWSPD:{twspd}, {relh_designator}:{relh}, {tsgtemp_designator}:{tsgtemp}, {tsgsal_designator}:{tsgsal}, ATEMP:{atemp}
+fields:
+- cs
+- ymd
+- hms
+- lat
+- lon
+- gyro
+- cog
+- sog
+- rwdir
+- rwspd
+- twdir
+- twspd
+- relh_designator
+- relh
+- tsgtemp_designator
+- tsgtemp
+- tsgsal_designator
+- tsgsal
+- atemp
+missing:
+  cs: ''
+  ymd: ''
+  hms: ''
+  lat: ''
+  lon: ''
+  gyro: ''
+  cog: ''
+  sog: ''
+  rwdir: ''
+  rwspd: ''
+  twdir: ''
+  twspd: ''
+  relh_designator: ''
+  relh: ''
+  tsgtemp_designator: ''
+  tsgtemp: ''
+  tsgsal_designator: ''
+  tsgsal: ''
+  atemp: ''
+designator_defaults:
+  relh_designator: RELH
+  tsgtemp_designator: TSGWT
+  tsgsal_designator: TSGS
+parse:
+  pattern: ^\$SAMOS:001, CS:(?P<cs>[^,]*), YMD:(?P<ymd>[^,]*), HMS:(?P<hms>[^,]*), LAT:(?P<lat>[^,]*), LON:(?P<lon>[^,]*), GYRO:(?P<gyro>[^,]*), COG:(?P<cog>[^,]*), SOG:(?P<sog>[^,]*), RWDIR:(?P<rwdir>[^,]*), RWSPD:(?P<rwspd>[^,]*), TWDIR:(?P<twdir>[^,]*), TWSPD:(?P<twspd>[^,]*), (?P<relh_designator>[^:]*):(?P<relh>[^,]*), (?P<tsgtemp_designator>[^:]*):(?P<tsgtemp>[^,]*), (?P<tsgsal_designator>[^:]*):(?P<tsgsal>[^,]*), ATEMP:(?P<atemp>.*)$

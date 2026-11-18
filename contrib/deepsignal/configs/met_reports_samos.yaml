@@ -1,0 +1,9 @@
+# Writer fragment for the one-minute average stream.
+class: ReportWriter
+module: contrib.deepsignal.met_reports.report_writer
+kwargs:
+  template: contrib/deepsignal/met_reports/templates/samos_daily.yaml
+  directory: /var/tmp/openrvdas/met_reports
+  ship: KAOU
+  # Optional SAMOS sample-compatible spellings while field names are confirmed:
+  # designators: {relh_designator: RELHUM, tsgtemp_designator: TSGTEMP, tsgsal_designator: TSGSAL}

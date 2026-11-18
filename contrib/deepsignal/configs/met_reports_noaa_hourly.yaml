@@ -1,0 +1,7 @@
+# UNVERIFIED FM-13 writer fragment. Do not use operationally until sample verification.
+class: ReportWriter
+module: contrib.deepsignal.met_reports.report_writer
+kwargs:
+  template: contrib/deepsignal/met_reports/templates/noaa_hourly.yaml
+  directory: /var/tmp/openrvdas/met_reports
+  ship: KAOU

@@ -1,0 +1,33 @@
+name: noaa_hourly
+status: UNVERIFIED
+period: hourly
+filename: '{ship}_{yyyymmdd}_{hh}.txt'
+header: []
+row: BBXX {ship_designator} {day_time_wind} {latitude_group} {longitude_group} {wind_group} {air_temperature_group} {dew_point_group} {pressure_group} {pressure_tendency_group} 222{ship_course_speed} {sea_temperature_group}
+fields:
+- ship_designator
+- day_time_wind
+- latitude_group
+- longitude_group
+- wind_group
+- air_temperature_group
+- dew_point_group
+- pressure_group
+- pressure_tendency_group
+- ship_course_speed
+- sea_temperature_group
+missing:
+  ship_designator: /
+  day_time_wind: /
+  latitude_group: /
+  longitude_group: /
+  wind_group: /
+  air_temperature_group: /
+  dew_point_group: /
+  pressure_group: /
+  pressure_tendency_group: /
+  ship_course_speed: /
+  sea_temperature_group: /
+notes:
+- 'TODO(sample): confirm every FM-13 group encoding against a complete real message.'
+- Visual groups are omitted; automated groups must be supplied already encoded.
