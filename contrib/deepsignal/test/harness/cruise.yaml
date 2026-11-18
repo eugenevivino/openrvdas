@@ -20,27 +20,43 @@ configs:
   mwx1-replay:
     readers:
     - class: LogfileReader
-      kwargs: {filebase: __MWX1_FILE__, tail: true, use_timestamps: true}
+      kwargs:
+        filebase: __MWX1_FILE__
+        record_format: '{data_id:w} {timestamp:ti} {record}'
+        tail: true
+        use_timestamps: true
     transforms: &parse
     - class: ParseTransform
       kwargs:
         metadata_interval: 10
         definition_path: __DEVICE_DEFINITIONS__
-    writers: &cache
+    writers:
     - class: CachedDataWriter
       kwargs: {data_server: '__DATA_SERVER__'}
   s330-replay:
     readers:
     - class: LogfileReader
-      kwargs: {filebase: __S330_FILE__, tail: true, use_timestamps: true}
+      kwargs:
+        filebase: __S330_FILE__
+        record_format: '{data_id:w} {timestamp:ti} {record}'
+        tail: true
+        use_timestamps: true
     transforms: *parse
-    writers: *cache
+    writers:
+    - class: CachedDataWriter
+      kwargs: {data_server: '__DATA_SERVER__'}
   knud1-replay:
     readers:
     - class: LogfileReader
-      kwargs: {filebase: __KNUD_FILE__, tail: true, use_timestamps: true}
+      kwargs:
+        filebase: __KNUD_FILE__
+        record_format: '{data_id:w} {timestamp:ti} {record}'
+        tail: true
+        use_timestamps: true
     transforms: *parse
-    writers: *cache
+    writers:
+    - class: CachedDataWriter
+      kwargs: {data_server: '__DATA_SERVER__'}
   true_winds-on:
     readers:
     - class: CachedDataReader
@@ -77,4 +93,6 @@ configs:
               MwxPortRelWindDir: 15
               MwxPortRelWindSpeed: 15
             metadata_interval: 10
-        writers: *cache
+        writers:
+        - class: CachedDataWriter
+          kwargs: {data_server: '__DATA_SERVER__'}

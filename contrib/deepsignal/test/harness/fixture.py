@@ -91,7 +91,7 @@ class Fixture:
             first = first or parsed
             scaled = first + (parsed - first) / self.speed
             rendered = scaled.isoformat(timespec="microseconds").replace("+00:00", "Z")
-            output.append(rendered + separator + record)
+            output.append(f"{name.lower()} {rendered}{separator}{record}")
         destination.write_text("".join(output), errors="surrogateescape")
         return destination
 
