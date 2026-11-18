@@ -1,0 +1,10 @@
+streams:
+  met:
+    logger: met_logger
+    key_fields: [wind_speed, wind_direction]
+    expected_period_s: 1
+    endpoint: /dev/ttyUSB0
+    time: ds_time_state
+    calibration: ds_calibration_state
+    derived: [true_wind_speed, true_wind_direction]
+    store: /data/met
