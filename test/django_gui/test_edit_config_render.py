@@ -34,7 +34,7 @@ class TestEditConfigRendersYAML(TestCase):
         api.get_active_mode.return_value = 'underway'
         api.get_logger_config_names.return_value = ['off', 'gyr1->net']
         api.get_logger_config_name.side_effect = lambda *a, **k: 'gyr1->net'
-        api.get_logger_config.side_effect = lambda name: (
+        api.get_logger_config.side_effect = lambda name, logger=None: (
             CONFIG if name == 'gyr1->net' else {'name': 'off'})
         with mock.patch('django_gui.views.api', api):
             return self.client.get('/edit_config/gyr1')

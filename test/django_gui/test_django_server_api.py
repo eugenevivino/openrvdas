@@ -136,6 +136,39 @@ class TestDjangoServerAPI(TestCase):
     ############################
     @unittest.skipUnless('test' in sys.argv, 'test_django_server_api.py must be run by running '
                                              '"./manager.py test gui"')
+    def test_shared_config_names(self):
+        """Config names are only unique within a logger: several loggers may
+        each have a config called 'off'. Selecting one logger's config must
+        not fail or touch another logger's config."""
+        api = DjangoServerAPI()
+        try:
+            api.delete_configuration()
+        except ValueError:
+            pass
+        api.load_configuration(sample_test_0)
+        api.set_active_mode('off')
+        for logger in ('knud', 'gyr1', 'mwx1', 's330'):
+            self.assertEqual(api.get_logger_configs()[logger]['name'], 'off')
+
+        # Move one logger to a config of its own, then back to the shared name.
+        api.set_active_logger_config('gyr1', 'gyr1->net')
+        configs = api.get_logger_configs()
+        self.assertEqual(configs['gyr1']['name'], 'gyr1->net')
+        self.assertEqual(configs['knud']['name'], 'off')
+        api.set_active_logger_config('gyr1', 'off')
+        self.assertEqual(api.get_logger_configs()['gyr1']['name'], 'off')
+
+        # A config of another logger is still refused, and the shared name
+        # needs a logger to be unambiguous when looked up by name.
+        with self.assertRaises(ValueError):
+            api.set_active_logger_config('gyr1', 'knud->net')
+        self.assertEqual(api.get_logger_config('off', 'knud'), {'name': 'off'})
+        with self.assertRaises(ValueError):
+            api.get_logger_config('off')
+
+    ############################
+    @unittest.skipUnless('test' in sys.argv, 'test_django_server_api.py must be run by running '
+                                             '"./manager.py test gui"')
     def test_basic(self):
         api = DjangoServerAPI()
 
@@ -150,7 +183,7 @@ class TestDjangoServerAPI(TestCase):
         api.load_configuration(sample_test_0)
 
         self.assertEqual(api.get_modes(), ['off', 'port', 'underway'])
-        self.assertEqual(api.get_active_mode(), None)
+        self.assertEqual(api.get_active_mode(), 'off')
         self.assertEqual(api.get_default_mode(), 'off')
         api.set_active_mode('off')
         self.assertEqual(api.get_active_mode(), 'off')

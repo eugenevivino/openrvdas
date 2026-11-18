@@ -177,15 +177,26 @@ class DjangoServerAPI(ServerAPI):
                     time.sleep(0.1)
 
     #############################
-    def _get_logger_config_object_by_name(self, config_name):
+    def _get_logger_config_object_by_name(self, config_name, logger=None):
         """Helper function for getting LoggerConfig object from
-        config name. Raise exception if it does not exist."""
+        config name. Raise exception if it does not exist.
+
+        Config names are only unique within a logger (several loggers
+        commonly have a config named, say, 'off'), so pass the logger
+        (a Logger object or logger name) whenever it is known."""
         with self.config_rlock:
             while True:
                 try:
-                    return LoggerConfig.objects.get(name=config_name)
+                    if logger is None:
+                        return LoggerConfig.objects.get(name=config_name)
+                    if not isinstance(logger, Logger):
+                        logger = self._get_logger_object(logger)
+                    return LoggerConfig.objects.get(name=config_name, logger=logger)
                 except LoggerConfig.DoesNotExist:
                     raise ValueError('No config %s in cruise' % config_name)
+                except LoggerConfig.MultipleObjectsReturned:
+                    raise ValueError('Config name %s is used by more than one logger; '
+                                     'specify the logger' % config_name)
                 except django.db.utils.OperationalError as e:
                     logging.warning('_get_logger_config_object_by_name() '
                                     'Got DjangoOperationalError. Trying again: %s', e)
@@ -305,10 +316,11 @@ class DjangoServerAPI(ServerAPI):
                         time.sleep(0.1)
 
     ############################
-    def get_logger_config(self, config_name):
-        """Retrieve the config associated with the specified name."""
+    def get_logger_config(self, config_name, logger=None):
+        """Retrieve the config associated with the specified name. If
+        more than one logger has a config of that name, logger is required."""
         with self.config_rlock:
-            config = self._get_logger_config_object_by_name(config_name)
+            config = self._get_logger_config_object_by_name(config_name, logger)
             return json.loads(config.config_json)
 
     ############################
@@ -470,7 +482,7 @@ class DjangoServerAPI(ServerAPI):
                         old_config.save()
 
                     # Get the new config
-                    new_config = self._get_logger_config_object_by_name(config_name)
+                    new_config = self._get_logger_config_object_by_name(config_name, logger)
                     if new_config.logger != logger:
                         raise ValueError('Config %s is not compatible with logger %s)'
                                          % (config_name, logger))

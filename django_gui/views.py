@@ -281,7 +281,7 @@ def edit_config(request, logger_id):
     # sort_keys=False keeps each config's keys in their stored order rather
     # than alphabetizing them.
     config_map = {
-        config_name: yaml.safe_dump(api.get_logger_config(config_name),
+        config_name: yaml.safe_dump(api.get_logger_config(config_name, logger_id),
                                     default_flow_style=False,
                                     sort_keys=False,
                                     allow_unicode=True,
