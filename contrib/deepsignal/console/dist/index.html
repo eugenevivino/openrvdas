@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <title>DeepSignal Console</title>
+    <script>(() => {
+              const { mode, dim } = (function readLighting() {
+	const fallback = window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dusk" : "day";
+	let mode = null;
+	let lastDay = null;
+	let dim = .6;
+	try {
+		mode = window.localStorage.getItem("ds.mode");
+		lastDay = window.localStorage.getItem("ds.daymode");
+		const stored = window.localStorage.getItem("ds.dim");
+		if (stored !== null && Number.isFinite(Number(stored))) dim = Math.max(.15, Math.min(1, Number(stored)));
+	} catch {}
+	const active = mode === "day" || mode === "dusk" ? mode : lastDay === "day" || lastDay === "dusk" ? lastDay : fallback;
+	return {
+		mode: mode === "night" ? "night" : active,
+		lastDay: active,
+		dim
+	};
+})();
+              (function paintLighting(root, mode, dim) {
+	const fg = [
+		255,
+		38,
+		16
+	];
+	const muted = [
+		150,
+		24,
+		10
+	];
+	const night = {
+		bg: [
+			0,
+			0,
+			0
+		],
+		panel: [
+			5,
+			0,
+			0
+		],
+		panel2: [
+			10,
+			0,
+			0
+		],
+		line: [
+			70,
+			8,
+			4
+		],
+		fg,
+		muted,
+		accent: fg,
+		ok: fg,
+		check: fg,
+		stale: muted,
+		down: [
+			255,
+			60,
+			30
+		],
+		chart: fg,
+		grid: [
+			40,
+			4,
+			2
+		],
+		"scroll-thumb": muted
+	};
+	root.dataset.mode = mode;
+	root.style.colorScheme = mode === "day" ? "light" : "dark";
+	for (const [token, [r, g, b]] of Object.entries(night)) {
+		if (mode !== "night") {
+			root.style.removeProperty("--" + token);
+			continue;
+		}
+		const scale = token === "bg" || token === "panel" || token === "panel2" ? 1 : dim;
+		const red = Math.round(r * scale);
+		const ceiling = Math.floor(.15 * red);
+		const green = Math.min(Math.round(g * scale), ceiling);
+		const blue = Math.min(Math.round(b * scale), ceiling);
+		root.style.setProperty("--" + token, "rgb(" + red + "," + green + "," + blue + ")");
+	}
+	const background = {
+		day: "#e9eef0",
+		dusk: "#081014",
+		night: "#000000"
+	};
+	root.style.backgroundColor = background[mode];
+})(document.documentElement, mode, dim);
+            })();</script>
+    <script type="module" crossorigin src="/console/assets/index-BJfvC7Rp.js"></script>
+    <link rel="stylesheet" crossorigin href="/console/assets/index-Cdk0p1ta.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

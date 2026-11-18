@@ -1,0 +1,5 @@
+# Run from the OpenRVDAS root:
+# python3 -B -m contrib.deepsignal.console.demo_cache contrib/deepsignal/configs/console_demo_logger.yaml
+# The replay logger publishes one MET record per second to a loopback-only cache.
+source: test/NBP1406/mwx1/raw/NBP1406_mwx1-2014-08-01
+port: 18766
