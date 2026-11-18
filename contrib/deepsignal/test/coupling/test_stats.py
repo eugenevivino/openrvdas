@@ -11,6 +11,10 @@ class StatsTest(unittest.TestCase):
         self.assertAlmostEqual(stats.acf([1, 2, 3], 1), 0.0)
         self.assertEqual(stats.decorrelation_lag([1] * 8), 1)
 
+    def test_later_decorrelation_crossing(self):
+        # The first three biased correlations are 17/24, 10/24 and 3/24.
+        self.assertEqual(stats.decorrelation_lag(([0]*6 + [1]*6)*2), 3)
+
     def test_effective_sample_size_falls_with_autocorrelation(self):
         rng = random.Random(4)
         white = [rng.gauss(0, 1) for _ in range(200)]

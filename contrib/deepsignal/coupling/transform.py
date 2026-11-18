@@ -1,7 +1,9 @@
 """Apply frozen ship-contamination evidence to copies of live records."""
 
+from collections import OrderedDict
 import copy
 import json
+import math
 
 from logger.transforms.transform import Transform
 from logger.utils.das_record import DASRecord
@@ -21,48 +23,86 @@ class ShipCouplingTransform(Transform):
         self.fields = list(atlas.get('polar', {})) if fields is None else fields
         self.thresholds = suspect_threshold, fail_threshold
         self.state = {}
+        self.speed_change = None
+        self.latest = None
+        self.history = OrderedDict()
+        self.lookback = 0
         self.clocks = {}
         self.spreads = atlas.get('healthy_spread', {})
         self.evidence = {}
-        for h in atlas.get('hypotheses', []):
+        for h in sorted(atlas.get('hypotheses', []), key=lambda h: -abs(h.get('effect') or 0)):
             if (h.get('status') == 'confirmed' and
                     h.get('invariance') == min_verdict == 'ship_artifact'):
-                self.evidence.setdefault(h['field'], {})[h.get('regime')] = h['ship_variable']
+                lag = h.get('lag', 0)
+                self.evidence.setdefault(h['field'], {}).setdefault(
+                    h.get('regime'), (h['ship_variable'], lag))
+                self.lookback = max(self.lookback, -lag)
         self.cells = {(field, row.get('regime'), row['sector'], row['speed_band']): row
                       for field, table in atlas.get('polar', {}).items() for row in table}
 
     def _state(self, fields, timestamp):
         updates = {}
-        for name in ('relative_heading', 'heading', 'direction', 'sog', 'heading_rate'):
+        for name in ('relative_heading', 'heading', 'direction', 'sog', 'heading_rate', 'regime'):
             source = self.config.get(name + '_field', name)
             if source in fields:
                 updates[name] = fields[source]
-        change = None
         for name in ('heading', 'sog'):
             if name not in updates:
                 continue
-            before, after = self.state.get(name), updates[name]
             previous = self.clocks.get(name)
-            self.clocks[name] = timestamp
-            if (stats.finite(previous) and stats.finite(timestamp) and timestamp > previous and
+            if timestamp is not None and timestamp == previous:
+                continue
+            before, after = self.state.get(name), updates[name]
+            rate = None
+            if (timestamp is not None and previous is not None and
                     stats.finite(before) and stats.finite(after)):
                 dt = timestamp - previous
                 if name == 'sog':
-                    change = abs(after - before) * 60 / dt
+                    rate = abs(after - before) * 60 / dt
                 else:
                     rate = abs(prep.angle_difference(after, before)) / dt
-                    updates.setdefault('heading_rate', rate)
+            if name == 'sog':
+                self.speed_change = rate
+            elif timestamp is None or self.clocks.get('heading_rate') != timestamp:
+                updates.setdefault('heading_rate', rate)
+
         self.state.update(updates)
-        if ('relative_heading' not in updates and ('heading' in updates or 'direction' in updates)
-                and 'direction' in self.state):
-            a, b = self.state.get('direction'), self.state.get('heading')
-            valid = stats.finite(a) and stats.finite(b)
-            self.state['relative_heading'] = (a - b) % 360 if valid else None
-        if 'regime' in fields:
-            self.state['regime'] = fields['regime']
-        elif 'sog' in updates or 'heading' in updates or 'heading_rate' in updates:
-            self.state['regime'] = prep.regime(
-                self.state.get('sog'), self.state.get('heading_rate'), change, self.config)
+        self.clocks.update(dict.fromkeys(updates, timestamp))
+        if updates.keys() & {'relative_heading', 'heading', 'direction'}:
+            direct = self.state.get('relative_heading')
+            same_time = timestamp is not None and self.clocks.get('relative_heading') == timestamp
+            if ('relative_heading' not in updates and not same_time and
+                    'direction' in self.state and 'heading' in self.state):
+                direct = None
+            self.state['relative_heading'] = prep.relative_angle(
+                direct, self.state.get('direction'), self.state.get('heading'))
+        explicit_regime = timestamp is not None and self.clocks.get('regime') == timestamp
+        if ('regime' not in updates and not explicit_regime and
+                updates.keys() & {'sog', 'heading', 'heading_rate'}):
+            self.state['regime'] = prep.regime(self.state.get('sog'),
+                                               self.state.get('heading_rate'),
+                                               self.speed_change, self.config)
+
+    def _calibration(self, field, timestamp):
+        current = self.state.get('regime')
+        evidence = self.evidence[field].get(current)
+        if not evidence:
+            return None
+        variable, lag = evidence
+        state = self.state
+        if lag:
+            if timestamp is None or lag > 0:
+                return None
+            index = math.floor(timestamp / self.config.get('bin_seconds', 10))
+            state = self.history.get(index + lag, {})
+            if state.get('regime') != current:
+                return None
+        cell = prep.polar_cell(state, self.config)
+        entry = self.cells.get((field, current, *cell)) if cell else None
+        if (entry and entry.get('lag', 0) == lag and
+                entry.get('ship_variable', variable) == variable):
+            return variable, current, cell, entry
+        return None
 
     def transform(self, record):
         if record is None:
@@ -76,12 +116,20 @@ class ShipCouplingTransform(Transform):
             fields, timestamp = result.get('fields', result), result.get('timestamp')
         if not isinstance(fields, dict):
             return result
-        if isinstance(timestamp, str):
-            try:
-                timestamp = prep.timestamp(timestamp)
-            except (OverflowError, ValueError):
-                timestamp = None
-        self._state(fields, timestamp)
+        try:
+            timestamp = prep.timestamp(timestamp) if timestamp is not None else None
+        except (ValueError, OverflowError):
+            timestamp = None
+        on_time = timestamp is None or self.latest is None or timestamp >= self.latest
+        if on_time:
+            self._state(fields, timestamp)
+        if on_time and timestamp is not None:
+            self.latest = timestamp
+            if self.lookback:
+                index = math.floor(timestamp / self.config.get('bin_seconds', 10))
+                while self.history and next(iter(self.history)) < index - self.lookback:
+                    self.history.popitem(last=False)
+                self.history[index] = self.state.copy()
         for field in self.fields:
             if field not in fields or field not in self.evidence:
                 continue
@@ -91,13 +139,13 @@ class ShipCouplingTransform(Transform):
             if not stats.finite(fields[field]):
                 fields[field + '_SHIP_QC'] = 9
                 continue
-            regime = self.state.get('regime')
-            evidence = self.evidence[field].get(regime)
-            cell = prep.polar_cell(self.state, self.config)
-            entry = self.cells.get((field, regime, *cell)) if cell else None
+            calibration = self._calibration(field, timestamp) if on_time else None
             spread = self.spreads.get(field)
-            if (not evidence or not entry or not stats.finite(entry.get('median')) or
-                    not stats.finite(spread) or spread <= 0):
+            if not calibration or not stats.finite(spread) or spread <= 0:
+                fields[field + '_SHIP_QC'] = 2
+                continue
+            evidence, regime, cell, entry = calibration
+            if not stats.finite(entry.get('median')):
                 fields[field + '_SHIP_QC'] = 2
                 continue
             score = min(1.0, abs(entry['median']) / spread)

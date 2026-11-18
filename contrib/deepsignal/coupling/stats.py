@@ -1,5 +1,6 @@
 """Dependency-free statistics for autocorrelated ship observations."""
 
+from itertools import product
 import math
 import random
 
@@ -17,11 +18,18 @@ def pearson(x, y):
     pairs = _pairs(x, y)
     if len(pairs) < 2:
         return None
-    return _pearson_finite(*zip(*pairs))
+
+    def scaled(values):
+        exponent = math.frexp(max(map(abs, values)))[1]
+        normalized = [math.ldexp(v, -exponent) for v in values]
+        return [v - normalized[0] for v in normalized]
+
+    xs, ys = zip(*pairs)
+    return _pearson_finite(scaled(xs), scaled(ys))
 
 
 def _pearson_finite(xs, ys):
-    xm, ym = sum(xs) / len(xs), sum(ys) / len(ys)
+    xm, ym = math.fsum(xs) / len(xs), math.fsum(ys) / len(ys)
     numerator = sum((a - xm) * (b - ym) for a, b in zip(xs, ys))
     xx = sum((a - xm) ** 2 for a in xs)
     yy = sum((b - ym) ** 2 for b in ys)
@@ -115,34 +123,51 @@ def block_bootstrap_ci(x, y, stat, block=None, reps=1000, seed=0, spans=None):
 
 def circular_shift_pvalue(x, y, stat, reps=500, min_shift=None, seed=0,
                           lags=None, spans=None):
+    return circular_shift_test(x, y, stat, reps, min_shift, seed, lags, spans)[0]
+
+
+def circular_shift_test(x, y, stat, reps, min_shift, seed, lags, spans):
+    """Return the plus-one p-value and the number of distinct shifts used in it."""
     if min_shift is None:
         min_shift = 4 * max(decorrelation_lag(x, spans), decorrelation_lag(y, spans))
+    if reps < 1:
+        raise ValueError('Shift replicate count must be positive')
     # Each cruise is shifted on its own bin clock, including its missing bins.
     spans = [(0, len(y))] if spans is None else spans
+    spans = [(lo, hi) for lo, hi in spans
+             if any(map(finite, x[lo:hi])) and any(map(finite, y[lo:hi]))]
     shifts = [range(max(1, min_shift), min(end - start, end - start - min_shift + 1))
               for start, end in spans]
     if not shifts or not all(shifts):
-        return None
+        return None, 0
 
     def measure(values):
-        if lags:
-            return lagged_best(x, values, lags, spans)[1]
-        pairs = _pairs(x, values)
-        return stat(*zip(*pairs)) if len(pairs) >= 3 else None
+        return lagged_best(x, values, lags if lags is not None else [0], spans, stat)[1]
 
-    observed, count, rng = measure(y), 0, random.Random(seed)
+    observed = measure(y)
     if observed is None:
-        return None
-    for _ in range(reps):
+        return None, 0
+    support = math.prod(len(options) for options in shifts)
+    draws = min(reps, support)
+    if draws == support:
+        offsets = product(*shifts)
+    else:
+        rng = random.Random(seed)
+        seen = set()
+        while len(seen) < draws:
+            seen.add(tuple(rng.choice(options) for options in shifts))
+        offsets = seen
+    count = 0
+    for offsets_by_cruise in offsets:
         shifted = list(y)
-        for (start, end), allowed in zip(spans, shifts):
-            offset = start + rng.choice(allowed)
+        for (start, end), distance in zip(spans, offsets_by_cruise):
+            offset = start + distance
             shifted[start:end] = list(y[offset:end]) + list(y[start:offset])
         value = measure(shifted)
         if value is None:
-            return None
+            return None, 0
         count += abs(value) >= abs(observed)
-    return (1 + count) / (reps + 1)
+    return (1 + count) / (draws + 1), draws
 
 
 def _fdr(pvals, q):
@@ -176,7 +201,7 @@ def aligned(x, y, lag, spans=None):
     return ax, ay, bounds
 
 
-def lagged_best(x, y, lags, spans=None):
+def lagged_best(x, y, lags, spans=None, stat=spearman):
     best = (None, None)
     for lag in lags:
         ax, ay, _ = aligned(x, y, lag, spans)
@@ -184,9 +209,12 @@ def lagged_best(x, y, lags, spans=None):
         if len(pairs) < 3:
             continue
         xs, ys = zip(*pairs)
-        if min(xs) == max(xs) or min(ys) == max(ys):
+        if stat is spearman:
+            value = _pearson_finite(_ranks(xs), _ranks(ys))
+        else:
+            value = stat(xs, ys)
+        if not finite(value):
             continue
-        value = _pearson_finite(_ranks(xs), _ranks(ys))
         if best[0] is None or abs(value) > abs(best[1]):
             best = (lag, value)
     return best

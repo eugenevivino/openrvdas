@@ -1,6 +1,7 @@
 """Read timestamped archives, enforce named splits and export the offline atlas."""
 
 import csv
+import fcntl
 from io import StringIO
 import json
 import logging
@@ -107,9 +108,18 @@ def _markdown(atlas):
         lines.append(f"* {h['field']} vs {h['ship_variable']} during {h['regime']}: "
                      f"**{h['status']}**. Residual rank correlation {effect}. "
                      f"{replication} Ship-coordinate control: {h['invariance']}.")
+        for name, fit in [('Discovery', h), ('Holdout', holdout)]:
+            lines.append(f"  {name} block {fit.get('block', 'unavailable')}, "
+                         f"min_shift {fit.get('min_shift', 'unavailable')} bins.")
         if h['status'] == 'confirmed':
+            cruises = h['holdout_cruises']
+            count = sum(c['replicated'] for c in cruises)
+            if cruises:
+                lines.append(f"  Replicated on {count} of {len(cruises)} holdout cruises.")
+            else:
+                lines.append("  Cruise IDs unavailable for the holdout.")
             cells = [r for r in atlas['polar'][h['field']] if r['regime'] == h['regime']]
-            if cells:
+            if cells and cells[0].get('ship_variable') == h['ship_variable']:
                 cell = max(cells, key=lambda r: abs(r['median']))
                 lines.append(f"  Sector {cell['sector']}, speed band {cell['speed_band']} has "
                              f"median residual {cell['median']:+.3g} in field units "
@@ -122,19 +132,41 @@ def _markdown(atlas):
     return '\n'.join(lines)
 
 
+def _owned_polar(path):
+    """Recognize this exporter's CSVs, including leftovers from older runs."""
+    if not path.is_file():
+        return False
+    try:
+        with path.open(encoding='utf-8', newline='') as stream:
+            row = next(csv.DictReader(stream), {})
+        if not {'median', 'sector', 'speed_band', 'regime', 'code_version'} <= row.keys():
+            return False
+        fields = json.loads(row['parameters'])['fields']
+        return isinstance(fields, list) and path.stem.removeprefix('polar_') in fields
+    except (csv.Error, KeyError, TypeError, ValueError):
+        return False
+
+
 def write_atlas(atlas, inputs):
+    output = Path(atlas['parameters'].get('output_dir', 'ship-coupling'))
+    output.mkdir(parents=True, exist_ok=True)
+    # Serialize publication and stale-file cleanup across atlas writers sharing this directory.
+    directory = os.open(output, os.O_RDONLY)
+    try:
+        fcntl.flock(directory, fcntl.LOCK_EX)
+        _publish(atlas, output, inputs)
+    finally:
+        os.close(directory)
+
+
+def _publish(atlas, output, inputs):
     params = atlas['parameters']
-    output = Path(params.get('output_dir', 'ship-coupling'))
-    names = ['atlas.json', 'atlas.md']
+    names = {'atlas.json', 'atlas.md'}
     for field in params['fields']:
         if Path(field).name != field:
             raise ValueError('Field names must be single filename components')
-        names.append(f'polar_{field}.csv')
-    for path in (output / name for name in names):
-        if path.exists() and any(os.path.samefile(path, source) for source in inputs):
-            raise ValueError(f'Input file aliases output {path}')
-    files = {'atlas.json': json.dumps(atlas, indent=2, sort_keys=True, allow_nan=False) + '\n',
-             'atlas.md': _markdown(atlas)}
+        names.add(f'polar_{field}.csv')
+    files = {'atlas.md': _markdown(atlas)}
     for field, table in atlas['polar'].items():
         if not table:
             continue
@@ -143,12 +175,31 @@ def write_atlas(atlas, inputs):
                     parameters=json.dumps(params, sort_keys=True),
                     discovery_seed=params['seed'], holdout_seed=params['seed'] + 1,
                     healthy_spread=atlas['healthy_spread'][field])
-        writer = csv.DictWriter(stream, [*table[0], *meta])
+        fits = {(h['regime'], h['ship_variable']): h for h in atlas['hypotheses']
+                if h['field'] == field}
+        lengths = {}
+        for key, h in fits.items():
+            lengths[key] = {f'{name}_{parameter}': fit.get(parameter)
+                            for name, fit in [('discovery', h), ('holdout', h['holdout'])]
+                            for parameter in ('block', 'min_shift', 'shift_reps')}
+        meta['fit_lengths'] = json.dumps([dict(regime=r, ship_variable=v, **length)
+                                          for (r, v), length in lengths.items()], sort_keys=True)
+        records = [dict(row, **lengths[row['regime'], row['ship_variable']], **meta)
+                   for row in table]
+        writer = csv.DictWriter(stream, records[0])
         writer.writeheader()
-        writer.writerows(dict(row, **meta) for row in table)
+        writer.writerows(records)
         files[f'polar_{field}.csv'] = stream.getvalue()
-    output.mkdir(parents=True, exist_ok=True)
+    stale = {p.name for p in output.glob('polar_*.csv') if p.name not in files and _owned_polar(p)}
+    for name in names | stale:
+        path = output / name
+        if path.exists() and any(os.path.samefile(path, source) for source in inputs):
+            raise ValueError(f'Input file aliases output {path}')
+    files['atlas.json'] = json.dumps(atlas, indent=2, sort_keys=True, allow_nan=False) + '\n'
     for name, contents in files.items():
+        if name == 'atlas.json':
+            for old in stale:
+                (output / old).unlink()
         # Replace the directory entry instead of truncating any existing file or link target.
         with NamedTemporaryFile(mode='w', dir=output, encoding='utf-8', newline='',
                                 delete=False) as stream:

@@ -206,8 +206,10 @@ class ReviewTest(unittest.TestCase):
         rows = [dict(temp=100, temp_residual=value, relative_heading=angle, sog=s, regime='transit')
                 for angle, s, value in [(1, 3, 2), (1, 3, 10), (1, 6, -2), (None, 3, 100)]]
         rows[-1].pop('relative_heading')
-        hs = [dict(field='temp', status='confirmed', regime='transit')]
-        table = atlas._polar(rows, hs, {'speed_bands': [1, 5], 'sectors': 4})['temp']
+        hs = [dict(field='temp', ship_variable='sog', status='confirmed', regime='transit',
+                   lag=0, holdout={'lag': 0})]
+        polar, _ = atlas._polar({'discovery': rows}, hs, {'speed_bands': [1, 5], 'sectors': 4})
+        table = polar['temp']
         self.assertEqual(sorted((r['sector'], r['speed_band'], r['median'], r['iqr'])
                                 for r in table), [(0, 1, 6, 4), (0, 2, -2, 0)])
 
@@ -352,13 +354,13 @@ class ReviewTest(unittest.TestCase):
     def test_null_family_and_max_lag(self):
         rng = random.Random(270)
         fields = ['f%d' % i for i in range(50)]
-        rows = [dict({f: rng.random() for f in fields}, v=rng.random(), regime='transit')
-                for _ in range(180)]
-        config = dict(CFG, fields=fields, lags=[-2, 0, 2], reps=99, bootstrap_reps=10)
+        rows = [dict({f: rng.random() for f in fields}, v=rng.random(), regime='transit',
+                     cruise=i // 45, timestamp=i * 10) for i in range(180)]
+        config = dict(CFG, fields=fields, lags=[-2, 0, 2], reps=999, min_shift=2, bootstrap_reps=10)
         hypotheses = atlas.discover(rows[:90], rows[90:], config)['hypotheses']
         self.assertLessEqual(sum(h['q_pass'] for h in hypotheses), 2)
         self.assertTrue(all(h['p'] is not None for h in hypotheses))
-        x, y = [r['f1'] for r in rows[:20]], [r['v'] for r in rows[:20]]
+        x, y = [r['f1'] for r in rows[:80]], [r['v'] for r in rows[:80]]
         lags = (-2, 0, 2)
 
         def maximum(b):
@@ -366,7 +368,9 @@ class ReviewTest(unittest.TestCase):
                        abs(stats.spearman(x[:-2], b[2:])))
 
         observed, rng = maximum(y), random.Random(78)
-        offsets = [rng.choice(range(3, 18)) for _ in range(49)]
+        offsets = set()
+        while len(offsets) < 49:
+            offsets.add(rng.choice(range(3, 78)))
         count = sum(maximum(y[k:] + y[:k]) >= observed for k in offsets)
         self.assertEqual(stats.circular_shift_pvalue(x, y, stats.spearman, 49, 3, 78, lags),
                          (1 + count) / 50)

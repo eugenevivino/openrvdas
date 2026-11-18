@@ -11,7 +11,8 @@ from .archive import read_input, select_splits, write_atlas
 
 DEFAULTS = {
     'fields': [], 'ship_variables': [], 'regimes': ['transit'], 'lags': [0],
-    'bin_seconds': 10, 'median_minutes': 30, 'station_knots': 1, 'turn_deg_s': 2,
+    'max_grid_bins': 250000, 'bin_seconds': 10, 'median_minutes': 30, 'station_knots': 1,
+    'turn_deg_s': 2,
     'sog_change_kn_min': 1, 'min_n_eff': 30, 'max_lag': None, 'block': None,
     'min_shift': None, 'reps': 500, 'bootstrap_reps': 1000, 'method': 'bh',
     'output_dir': 'ship-coupling', 'q': .05, 'seed': 78, 'sectors': 12, 'speed_bands': [1, 5, 10],
@@ -35,9 +36,14 @@ def _evaluate(rows, field, variable, config, seed):
         for r in track:
             x.append(r.get(field))
             y.append(r.get(variable))
-        spans.append((start, len(x)))
+        if any(map(stats.finite, x[start:])) and any(map(stats.finite, y[start:])):
+            spans.append((start, len(x)))
+        else:
+            del x[start:]
+            del y[start:]
     lag, effect = stats.lagged_best(x, y, lags, spans)
-    fit = dict(effect=effect, lag=lag, n_eff=None, p=None, ci=None, seed=seed, insufficient=True)
+    fit = dict(effect=effect, lag=lag, n_eff=None, p=None, ci=None, seed=seed,
+               shift_reps=0, insufficient=True)
     if lag is None:
         return fit
 
@@ -59,17 +65,16 @@ def _evaluate(rows, field, variable, config, seed):
                                   seed, bounds)
     fit.update(n_eff=effective, pairs=count, max_lag=max_lag, block=block, min_shift=min_shift,
                ci=list(ci) if ci else None)
-    if effective is not None and effective >= config.get('min_n_eff', 30) and ci is not None:
-        fit['p'] = stats.circular_shift_pvalue(x, y, stats.spearman, config.get('reps', 500),
-                                               min_shift, seed, lags, spans)
+    if effective is not None and effective >= max(30, config.get('min_n_eff', 30)):
+        fit['p'], fit['shift_reps'] = stats.circular_shift_test(
+            x, y, stats.spearman, config.get('reps', 500), min_shift, seed, lags, spans)
         fit['insufficient'] = fit['p'] is None
     return fit
 
 
 def _correct(items, config):
     method = {'bh': stats.bh, 'by': stats.by}[config['method']]
-    steps = sorted(set(config['lags']))
-    step = min((b - a for a, b in zip(steps, steps[1:])), default=1)
+    steps = {lag: i for i, lag in enumerate(sorted(set(config['lags'])))}
     for _, group in groupby(sorted(items, key=lambda h: h['family']), key=lambda h: h['family']):
         group = list(group)
         first = method([h['p'] for h in group], config['q'])
@@ -78,7 +83,7 @@ def _correct(items, config):
             holdout = h['holdout']
             h['q_pass'], holdout['q_pass'] = i in first, i in second
             replicated = (i in first and i in second and h['effect'] * holdout['effect'] > 0 and
-                          abs(h['lag'] - holdout['lag']) <= step)
+                          abs(steps[h['lag']] - steps[holdout['lag']]) <= 1)
             if h['insufficient']:
                 h['status'] = 'insufficient'
             elif replicated:
@@ -87,24 +92,75 @@ def _correct(items, config):
                 h['status'] = 'discovery_only' if i in first else 'rejected'
 
 
-def _polar(rows, hypotheses, config):
-    result = {}
-    for field in sorted({h['field'] for h in hypotheses if h['status'] == 'confirmed'}):
-        regimes = {h['regime'] for h in hypotheses if h['field'] == field and
-                   h['status'] == 'confirmed'}
+def _polar(grids, hypotheses, config):
+    # One calibration per field and regime. Prefer evidence eligible for live scoring.
+    selected = {}
+    for h in hypotheses:
+        if h['status'] != 'confirmed':
+            continue
+        key = h['field'], h['regime']
+        priority = h.get('invariance') == 'ship_artifact', abs(h.get('effect', 0))
+        if key not in selected or priority > selected[key][0]:
+            selected[key] = priority, h
+
+    tables, deviations = defaultdict(list), defaultdict(list)
+    for (field, regime), (_, h) in selected.items():
         cells = defaultdict(list)
-        for row in rows:
-            cell, value = prep.polar_cell(row, config), row.get(field + '_residual')
-            if cell and row['regime'] in regimes and stats.finite(value):
-                cells[(row['regime'], *cell)].append(value)
-        result[field] = [dict(regime=regime, sector=sector, speed_band=band, median=median(values),
-                              iqr=controls.iqr(values), count=len(values))
-                         for (regime, sector, band), values in sorted(cells.items())]
-    return result
+        for name, rows in grids.items():
+            lag = (h if name == 'discovery' else h['holdout'])['lag']
+            for _, track in groupby(rows, key=lambda r: r.get('cruise')):
+                track = list(track)
+                for i in range(max(0, -lag), len(track) - max(0, lag)):
+                    sample, state = track[i], track[i + lag]
+                    if sample['regime'] != regime or state['regime'] != regime:
+                        continue
+                    cell = prep.polar_cell(state, config)
+                    value = sample.get(field + '_residual')
+                    if (cell and stats.finite(value) and
+                            stats.finite(state.get(h['ship_variable']))):
+                        cells[cell].append(value)
+        table = tables[field]
+        for (sector, band), values in sorted(cells.items()):
+            center = median(values)
+            deviations[field].extend(v - center for v in values)
+            table.append(dict(regime=regime, sector=sector, speed_band=band, median=center,
+                              iqr=controls.iqr(values), count=len(values),
+                              ship_variable=h['ship_variable'], lag=h['lag'],
+                              holdout_lag=h['holdout']['lag']))
+    spreads = {f: controls.iqr(deviations[f]) if deviations[f] else None for f in tables}
+    return dict(tables), spreads
+
+
+def _cruise_replication(items, rows, config):
+    groups = defaultdict(list)
+    for row in rows:
+        groups[row['cruise']].append(row)
+    families = {h['family'] for h in items if h['q_pass']}
+    for h in items:
+        h['holdout_cruises'] = []
+    for cruise, track in groups.items():
+        if cruise is None:
+            continue
+        fits = []
+        for h in items:
+            if h['family'] not in families:
+                continue
+            if len(groups) == 1:
+                fit = h['holdout']
+            else:
+                masked = [r if r['regime'] == h['regime'] else {'cruise': cruise} for r in track]
+                fit = _evaluate(masked, h['field'] + '_residual', h['ship_variable'],
+                                config, config['seed'] + 1)
+            fits.append(dict(h, holdout=dict(fit)))
+        _correct(fits, config)
+        for h in fits:
+            h['holdout_cruises'].append(
+                dict(cruise=cruise, replicated=h['status'] == 'confirmed', fit=h['holdout']))
 
 
 def _parameters(config):
     params = dict(DEFAULTS, **config)
+    params['min_n_eff'] = max(30, params['min_n_eff'])
     if 'splits' in config:
         params['splits'] = {
             name: {k: v.isoformat() if isinstance(v, datetime) else v for k, v in spec.items()}
@@ -148,21 +204,10 @@ def discover(discovery_rows, holdout_rows, config):
     _correct(items, config)
     for item in items:
         controls.invariance(item, grids, config)
-    all_rows = grids['discovery'] + grids['holdout']
-    polar = _polar(all_rows, items, config)
+    _cruise_replication(items, grids['holdout'], config)
+    polar, spreads = _polar(grids, items, config)
     events = [event for grid in grids.values() for event in controls.turns(grid, polar, config)]
-    spreads = {}
     for field, table in polar.items():
-        # Remove the typical bias of each cell before estimating the field-wide healthy spread.
-        lookup = {(r['regime'], r['sector'], r['speed_band']): r['median'] for r in table}
-        deviations = []
-        for row in all_rows:
-            cell = prep.polar_cell(row, config)
-            key = (row['regime'], *cell) if cell else None
-            value = row.get(field + '_residual')
-            if key in lookup and stats.finite(value):
-                deviations.append(value - lookup[key])
-        spreads[field] = controls.iqr(deviations) if deviations else None
         for entry in table:
             deltas = [e['after'] - e['before'] for e in events if e['field'] == field and
                       e['regime'] == entry['regime'] and

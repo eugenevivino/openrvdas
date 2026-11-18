@@ -1,6 +1,6 @@
 """Geographic reciprocal-leg and fixed-clock controls for replicated heading effects."""
 
-from collections import Counter
+from collections import Counter, defaultdict
 from itertools import groupby
 import math
 from statistics import median
@@ -46,18 +46,44 @@ def _legs(rows, field, variable, config):
         yield segment
 
 
+def _site_summary(rows, field, variable):
+    residuals = [r[field] for r in rows]
+    angles = [r['relative_heading'] for r in rows if stats.finite(r.get('relative_heading'))]
+    return dict(relative=prep.angle_mean(angles), ship=median(r[variable] for r in rows),
+                residual=median(residuals), spread=iqr(residuals))
+
+
+def _site_vote(a, b, variable, sign):
+    delta = b['residual'] - a['residual']
+    noise = max(a['spread'], b['spread'])
+    if variable in ('relative_heading_cos', 'relative_heading_sin'):
+        reversed_heading = a['ship'] * b['ship'] < 0
+    else:
+        reversed_heading = (stats.finite(a['relative']) and stats.finite(b['relative']) and
+                            abs(prep.angle_difference(a['relative'], b['relative'])) >= 150)
+    if abs(delta) <= noise or (a['residual'] * b['residual'] > 0 and
+                               abs(delta) < min(abs(a['residual']), abs(b['residual']))):
+        return 'environmental'
+    if (reversed_heading and a['residual'] * b['residual'] < 0 and
+            delta * (b['ship'] - a['ship']) * sign > 0):
+        return 'ship_artifact'
+    return 'ambiguous'
+
+
 def _votes(rows, field, variable, sign, config):
     legs = []
     for segment in _legs(rows, field, variable, config):
-        residuals = [r[field] for r in segment]
-        angles = [r['relative_heading'] for r in segment if stats.finite(r.get('relative_heading'))]
-        legs.append(dict(cruise=segment[0]['cruise'], relative=prep.angle_mean(angles),
+        # Condition on where the environmental observation was made, including at nonzero lag.
+        sites = defaultdict(list)
+        for r in segment:
+            if r.get('sample_site') is not None:
+                sites[r['sample_site']].append(r)
+        legs.append(dict(cruise=segment[0]['cruise'],
                          latitude=median(r['latitude'] for r in segment),
                          longitude=prep.angle_mean([r['longitude'] for r in segment]),
                          heading=prep.angle_mean([r['heading'] for r in segment]),
                          timestamp=median(r['timestamp'] for r in segment),
-                         ship=median(r[variable] for r in segment),
-                         residual=median(residuals), spread=iqr(residuals)))
+                         sites={k: _site_summary(v, field, variable) for k, v in sites.items()}))
     votes = Counter()
     # Match nearest eligible earlier leg. Each transit segment contributes at most once.
     used = set()
@@ -71,28 +97,17 @@ def _votes(rows, field, variable, sign, config):
             if i in used or abs(prep.angle_difference(a['heading'], b['heading'])) < 150:
                 continue
             km = _km(a, b)
-            if km <= config['reciprocal_km']:
+            if km <= config['reciprocal_km'] and not a['sites'].keys().isdisjoint(b['sites']):
                 candidates.append((km, -i))
         if not candidates:
             continue
         i = -min(candidates)[1]
         used.update([i, j])
         a = legs[i]
-        delta = b['residual'] - a['residual']
-        noise = max(a['spread'], b['spread'])
-        if variable in ('relative_heading_cos', 'relative_heading_sin'):
-            relative_reversed = a['ship'] * b['ship'] < 0
-        else:
-            relative_reversed = (stats.finite(a['relative']) and stats.finite(b['relative']) and
-                                 abs(prep.angle_difference(a['relative'], b['relative'])) >= 150)
-        if abs(delta) <= noise or (a['residual'] * b['residual'] > 0 and
-                                   abs(delta) < min(abs(a['residual']), abs(b['residual']))):
-            votes['environmental'] += 1
-        elif (relative_reversed and a['residual'] * b['residual'] < 0 and
-              delta * (b['ship'] - a['ship']) * sign > 0):
-            votes['ship_artifact'] += 1
-        else:
-            votes['ambiguous'] += 1
+        shared = a['sites'].keys() & b['sites'].keys()
+        evidence = {_site_vote(a['sites'][site], b['sites'][site], variable, sign)
+                    for site in shared}
+        votes[evidence.pop() if len(evidence) == 1 else 'ambiguous'] += 1
     return votes
 
 
@@ -136,10 +151,13 @@ def invariance(item, splits, config):
         fit = item if name == 'discovery' else item['holdout']
         # Locate the residual on the ship-state clock using the replicated lag convention.
         lag = fit['lag'] * config['bin_seconds']
-        values = {(r['cruise'], r['timestamp']): r.get(field) for r in rows
-                  if r['regime'] == item['regime']}
-        aligned = [dict(r, paired_residual=values.get((r['cruise'], r['timestamp'] - lag)))
-                   for r in rows]
+        clock = {(r['cruise'], r['timestamp']): r for r in rows if r['regime'] == item['regime']}
+        aligned = []
+        for r in rows:
+            observation = clock.get((r['cruise'], r['timestamp'] - lag), {})
+            lat, lon = observation.get('latitude'), observation.get('longitude')
+            site = (lat, lon % 360) if stats.finite(lat) and stats.finite(lon) else None
+            aligned.append(dict(r, paired_residual=observation.get(field), sample_site=site))
         votes.update(_votes(aligned, 'paired_residual', variable, fit['effect'], config))
         controls[name] = {f'{hours}h': _shifted(rows, field, variable, item['regime'], fit['lag'],
                                                 config['bin_seconds'], hours, config)

@@ -1,6 +1,7 @@
 """Fault-bench plug-in for an additive bias in ship-relative coordinates."""
 
-import math
+from .prep import sine_degrees
+from .stats import finite
 
 
 def heading_coupled_bias(series, ship_heading=None, amplitude=1, sector=0, seed=0,
@@ -20,9 +21,11 @@ def heading_coupled_bias(series, ship_heading=None, amplitude=1, sector=0, seed=
     first = None
     for (t, value), heading in zip(series, ship_heading):
         elapsed = t - series[0][0]
+        original = value
         if (elapsed >= start and (end is None or elapsed <= end) and
-                value is not None and heading is not None):
-            value += amplitude * math.cos(math.radians(heading - sector))
+                finite(value) and finite(heading)):
+            value += amplitude * sine_degrees(heading - sector + 90)
+        if finite(original) and value != original:
             if first is None:
                 first = t
         elif first is not None:

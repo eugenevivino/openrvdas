@@ -36,11 +36,32 @@ def angle_difference(a, b):
     return (a - b + 180) % 360 - 180
 
 
+def normalized_angle(value):
+    # Circular averaging and angle subtraction can each add a few ulps at a sector edge.
+    return round(value % 360, 12) % 360
+
+
+def sine_degrees(angle):
+    angle = normalized_angle(angle)
+    sign = -1 if angle > 180 else 1
+    half = angle % 180
+    folded = round(min(half, 180 - half), 12)
+    return sign * math.sin(math.radians(folded))
+
+
+def relative_angle(direct, direction, heading):
+    if finite(direct):
+        return normalized_angle(direct)
+    if finite(direction) and finite(heading):
+        return normalized_angle(direction - heading)
+    return None
+
+
 def angle_mean(values):
     angles = [math.radians(v) for v in values]
     x, y = sum(map(math.cos, angles)), sum(map(math.sin, angles))
     if math.hypot(x, y) > 1e-12 * len(values):
-        return math.degrees(math.atan2(y, x)) % 360
+        return normalized_angle(math.degrees(math.atan2(y, x)))
     return None
 
 
@@ -58,7 +79,7 @@ def regime(speed, rate, change, config):
 def polar_cell(row, config):
     angle, speed = row.get('relative_heading'), row.get('sog')
     if finite(angle) and finite(speed):
-        sector = int((angle % 360) / 360 * config.get('sectors', 12))
+        sector = int(normalized_angle(angle) * config.get('sectors', 12) / 360)
         return sector, bisect_right(config.get('speed_bands', [1, 5, 10]), speed)
     return None
 
@@ -86,11 +107,11 @@ def _grid(indexed, cruise, config):
         for key, name in names.items():
             if name in row:
                 row[key] = row[name]
-        if finite(row.get('direction')) and finite(row.get('heading')):
-            row['relative_heading'] = (row['direction'] - row['heading']) % 360
-        if finite(row.get('relative_heading')):
-            angle = math.radians(row['relative_heading'])
-            row.update(relative_heading_cos=math.cos(angle), relative_heading_sin=math.sin(angle))
+        angle = relative_angle(row.get('relative_heading'), row.get('direction'),
+                               row.get('heading'))
+        if angle is not None:
+            row.update(relative_heading=angle, relative_heading_cos=sine_degrees(angle + 90),
+                       relative_heading_sin=sine_degrees(angle))
         previous = rows[-1] if rows else {}
         if finite(row.get('heading')) and finite(previous.get('heading')):
             delta = angle_difference(row['heading'], previous['heading'])
@@ -122,4 +143,8 @@ def prepare(rows, config):
         clocked = has_time
         index = math.floor(timestamp(row.get('timestamp', i * seconds)) / seconds)
         cruises[row.get('cruise')][index].append(row)
+    bins = sum(max(series) - min(series) + 1 for series in cruises.values())
+    limit = config.get('max_grid_bins', 250000)
+    if not isinstance(limit, int) or limit < 1 or bins > limit:
+        raise ValueError(f'Split requires {bins} bins with max_grid_bins={limit}')
     return [row for cruise, indexed in cruises.items() for row in _grid(indexed, cruise, config)]
