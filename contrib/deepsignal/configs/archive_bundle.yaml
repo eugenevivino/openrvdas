@@ -1,0 +1,13 @@
+# Run with: python -m contrib.deepsignal.archive bundle archive_bundle.yaml /data/shore
+cruise: NBP1406
+root: /data/openrvdas
+bundles:
+  - priority: 1
+    budget: 10485760
+    globs:
+      - manifests/**
+      - snapshots/**
+  - priority: 3
+    budget: 52428800
+    globs:
+      - logs/**/*.xz
