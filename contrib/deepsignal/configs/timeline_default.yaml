@@ -1,0 +1,3 @@
+class: EventTimelineTransform
+module: contrib.deepsignal.timeline.event_timeline
+path: /var/log/openrvdas/timeline.jsonl
