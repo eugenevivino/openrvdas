@@ -71,7 +71,7 @@ Plain, precise English, no em dashes, headings and tables, under ~45 KB.
    verify".
 6. Open decisions for Eugene (non-blocking), each with a recommended default.
 
-Use ids #162 to #173 in rank order (reserved by the build lead). #161 (sound-speed fusion) already exists on desk main: read its rows in docs/REFERENCE.md and docs/IDEAS.md and any brief for it, cross-reference it, and build the refraction-residual SV inversion on it rather than duplicating it.
+Use ids #170 to #181 in rank order (reserved by the build lead; #162-#169 are pain-points items, next free #182). #161 (sound-speed fusion) already exists on desk main: read its rows in docs/REFERENCE.md and docs/IDEAS.md and any brief for it, cross-reference it, and build the refraction-residual SV inversion on it rather than duplicating it.
 
 Eugene asked for extremely novel math: most picks should be NOVEL constructions with derivations a reviewer can check, not reuses of published methods. Still label honestly.
 
