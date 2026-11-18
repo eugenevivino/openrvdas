@@ -1,0 +1,10 @@
+{
+  "code_version": "1.0.0",
+  "hypotheses": [{
+    "field": "air_temperature", "ship_variable": "relative_heading",
+    "status": "confirmed", "invariance": "ship_artifact"
+  }],
+  "polar": {"air_temperature": [
+    {"sector": 0, "speed_band": "all", "median": 0.4, "iqr": 1.0}
+  ]}
+}

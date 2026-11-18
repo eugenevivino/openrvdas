@@ -1,0 +1,13 @@
+fields: [air_temperature]
+ship_variables: [relative_heading_cos]
+regimes: [transit]
+lags: [0]
+q: 0.05
+method: bh
+min_n_eff: 2
+reps: 99
+bootstrap_reps: 100
+seed: 78
+sectors: 12
+discovery_fraction: 0.5
+output_dir: /tmp/deepsignal/ship-coupling

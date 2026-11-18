@@ -1,0 +1,4 @@
+transform: contrib.deepsignal.coupling.transform:ShipCouplingTransform
+kwargs:
+  atlas_path: contrib/deepsignal/coupling/sample_atlas.json
+  fields: [air_temperature]

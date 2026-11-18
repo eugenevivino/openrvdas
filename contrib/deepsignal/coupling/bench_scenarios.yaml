@@ -1,0 +1,8 @@
+scenarios:
+  - name: heading-coupled-bias
+    injector: contrib.deepsignal.coupling.bench_injectors:heading_coupled_bias
+    expected: flag
+  - name: front-trap
+    expected: pass
+  - name: smooth-turn-trap
+    expected: pass
