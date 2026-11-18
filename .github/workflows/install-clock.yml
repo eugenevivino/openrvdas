@@ -1,0 +1,58 @@
+name: Install Clock
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/install-clock]
+
+permissions:
+  contents: read
+
+jobs:
+  clock:
+    name: Clock clean install (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-22.04]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Record clock start and runner image
+        run: |
+          echo "T_START=$(date +%s)" >> "$GITHUB_ENV"
+          echo "RUNNER_IMAGE=${ImageOS:-unknown}-${ImageVersion:-unknown}" >> "$GITHUB_ENV"
+          echo "BASE_SHA=1a6f1edb786771c9dceeeeaf02e9d11d12bad6a9" >> "$GITHUB_ENV"
+          if command -v python3.12 >/dev/null; then
+            echo "PYTHON_BIN=python3.12" >> "$GITHUB_ENV"
+          else
+            echo "PYTHON_BIN=python3" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install and wait for live simulated data
+        id: clock
+        continue-on-error: true
+        run: bash ci/install-clock/run_clock.sh
+
+      - name: Print result in job summary
+        if: always()
+        run: |
+          echo '## Install clock result' >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat install-clock.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload install clock artifact
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: install-clock-${{ matrix.os }}
+          path: |
+            install-clock.json
+            install-clock.log
+
+      - name: Fail job when a measured step failed
+        if: steps.clock.outcome != 'success'
+        run: exit 1

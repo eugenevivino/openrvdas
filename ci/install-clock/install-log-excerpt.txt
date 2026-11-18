@@ -1,0 +1,5 @@
+OpenRVDAS configuration script
+Name to assign to host (runner)? Hostname will be 'runner'
+Use existing clone at /home/runner/work/openrvdas/openrvdas? (yes/no) [yes]
+Using existing clone — install root set to '/home/runner/work/openrvdas'
+OpenRVDAS install root? (/home/runner/work/openrvdas) Install root selected
