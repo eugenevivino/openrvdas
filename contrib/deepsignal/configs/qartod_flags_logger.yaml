@@ -1,0 +1,35 @@
+# Run from the root of the openrvdas_contrib checkout:
+# python logger/listener/listen.py --config_file contrib/deepsignal/configs/qartod_flags_logger.yaml
+
+readers:
+  class: TextFileReader
+  kwargs:
+    file_spec: test/NBP1406/mwx1/raw/NBP1406_mwx1-2014-08-01
+
+transforms:
+- class: PrefixTransform
+  kwargs:
+    prefix: mwx1
+- class: ParseTransform
+  kwargs:
+    definition_path: test/NBP1406/devices/nbp_devices.yaml
+    return_das_record: true
+- class: QartodFlagTransform
+  module: contrib.deepsignal.logger.transforms.qartod_flag_transform
+  kwargs:
+    per_test_flags: true
+    fields:
+      MwxAirTemp:
+        gross_range:
+          fail_span: [-60, 60]
+          suspect_span: [-30, 40]
+        spike:
+          suspect: 0.5
+          fail: 2.0
+      MwxAirRelHumid:
+        gross_range:
+          fail_span: [0, 100]
+- class: ToJSONTransform
+
+writers:
+  class: TextFileWriter
