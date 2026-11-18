@@ -49,7 +49,7 @@ function generate(ctx: ConsoleContext): string[] {
     const used = new Set<string>()
     const tiles: TileConfig[] = []
     if (heading && windSpeed) {
-      tiles.push(tile(windSpeed, 'wind-dial', ctx, { headingField: heading, directionField: windDirection ?? windSpeed }))
+      tiles.push(tile(windSpeed, 'wind-dial', ctx, { heading_field: heading, direction_field: windDirection ?? windSpeed }))
       used.add(heading); used.add(windSpeed)
       if (windDirection) used.add(windDirection)
     }
@@ -58,10 +58,10 @@ function generate(ctx: ConsoleContext): string[] {
       if (field && !used.has(field)) { tiles.push(tile(field, 'number', ctx)); used.add(field) }
     }
     ctx.pages.register(page('bridge-auto', 'Bridge (auto)', 11, tiles))
-    shownFields.push(...tiles.flatMap((item) => [item.field, item.headingField, item.directionField].filter((value): value is string => typeof value === 'string')))
+    shownFields.push(...tiles.flatMap((item) => [item.field, item.heading_field, item.direction_field].filter((value): value is string => typeof value === 'string')))
   }
 
-  const scienceTiles = SCIENCE_ROLES.flatMap((role) => byRole[role] ? [tile(byRole[role], 'chart', ctx)] : [])
+  const scienceTiles = SCIENCE_ROLES.flatMap((role) => byRole[role] ? [tile(byRole[role], 'chart', ctx, { window: ctx.config.historyS })] : [])
   if (scienceTiles.length && !isBlocked(ctx, 'science-auto')) {
     ctx.pages.register(page('science-auto', 'Science (auto)', 21, scienceTiles))
     shownFields.push(...scienceTiles.map((item) => String(item.field)))
@@ -86,13 +86,19 @@ const engine = {
   id: 'auto-pages',
   start(ctx: ConsoleContext) {
     let unsubscribe = () => {}
+    let catalog = ''
     const refresh = () => {
       unsubscribe()
+      catalog = ctx.store.listFields().join('\0')
       const shownFields = generate(ctx)
       unsubscribe = ctx.store.subscribe(shownFields, refresh)
     }
+    const checkCatalog = () => {
+      if (ctx.store.listFields().join('\0') !== catalog) refresh()
+    }
     refresh()
-    return () => unsubscribe()
+    const catalogTimer = setInterval(checkCatalog, 1000)
+    return () => { clearInterval(catalogTimer); unsubscribe() }
   },
 }
 

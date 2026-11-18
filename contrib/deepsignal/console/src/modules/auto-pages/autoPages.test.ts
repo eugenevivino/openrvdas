@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import feed from '../../contract/fake-feed.json'
 import type { ConsoleContext, FieldDescription, Page } from '../../contract'
 import autoPages, { recognizeFields } from './index'
@@ -21,12 +21,19 @@ function context(initial: Record<string, FieldDescription>, existing: Page[] = [
     lighting: { get: () => ({ mode: 'day', dayMode: 'day', nightPalette: 'red', dim: 1 }), set: () => {}, subscribe: () => () => {} },
     clock: { now: () => 0 }, route: { get: () => '', go: () => {} },
   } as ConsoleContext
-  return { ctx, registered, change(next: Record<string, FieldDescription>) { fields = next; callback?.() } }
+  return {
+    ctx,
+    registered,
+    change(next: Record<string, FieldDescription>) { fields = next; callback?.() },
+    catalogArrives(next: Record<string, FieldDescription>) { fields = next },
+  }
 }
 
 const engine = autoPages.engines![0]
 
 describe('auto-pages', () => {
+  afterEach(() => vi.useRealTimers())
+
   it('recognizes fake-feed roles and registers the expected pages', () => {
     const test = context(feed.fields)
     const roles = recognizeFields(test.ctx.store)
@@ -64,6 +71,35 @@ describe('auto-pages', () => {
     test.change({ ...feed.fields })
     expect(test.registered.length).toBeGreaterThan(firstCount)
     expect(test.registered.slice(firstCount).some((page) => page.id === 'bridge-auto')).toBe(true)
+  })
+
+  it('generates pages when the catalog arrives after the engine starts', () => {
+    vi.useFakeTimers()
+    const test = context({})
+    engine.start(test.ctx)
+
+    test.catalogArrives(feed.fields)
+    vi.advanceTimersByTime(1000)
+
+    expect(test.registered.map((page) => page.id)).toEqual(['bridge-auto', 'science-auto', 'all-fields'])
+  })
+
+  it('uses the installed wind and chart tile setting names', () => {
+    const test = context(feed.fields)
+    engine.start(test.ctx)
+    const bridge = test.registered.find((page) => page.id === 'bridge-auto')!
+    const wind = bridge.tiles.find((tile) => tile.type === 'wind-dial')!
+    const science = test.registered.find((page) => page.id === 'science-auto')!
+
+    expect(wind).toMatchObject({ heading_field: expect.any(String), direction_field: expect.any(String) })
+    expect(wind).not.toHaveProperty('headingField')
+    expect(wind).not.toHaveProperty('directionField')
+    expect(science.tiles.every((tile) => tile.window === test.ctx.config.historyS)).toBe(true)
+  })
+
+  it('does not treat status text as a generic numeric field', () => {
+    const test = context({ 'status:message': { description: 'Logger status text' }, Counter: { units: 'count' } })
+    expect(recognizeFields(test.ctx.store).numeric).toEqual(['Counter'])
   })
 
   it('does not register over an id supplied by a file', () => {
