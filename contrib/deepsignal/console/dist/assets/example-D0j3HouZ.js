@@ -1,4 +1,4 @@
-title: Weather
+var e={id:`example`,presets:[{id:`example`,yaml:`title: Weather
 tiles:
   - type: number
     label: Air temperature
@@ -14,3 +14,4 @@ tiles:
     unit: '%'
     decimals: 1
     sparkline: 5
+`}]};export{e as default};

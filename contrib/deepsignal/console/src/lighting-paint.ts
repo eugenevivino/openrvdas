@@ -44,7 +44,7 @@ export function readLighting(): Lighting {
 export function paintLighting(root: HTMLElement, mode: LightingMode, dim: number, palette: NightPalette) {
   // Leave headroom for antialiasing at the edges of text and chart strokes.
   const redFg = [255, 38, 16]
-  const redMuted = [150, 24, 10]
+  const redMuted = [200, 24, 10]
   const red = {
     bg: [0, 0, 0], panel: [5, 0, 0], panel2: [10, 0, 0], line: [70, 8, 4],
     fg: redFg, muted: redMuted, accent: redFg, ok: redFg, check: redFg,

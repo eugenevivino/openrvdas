@@ -1,0 +1,35 @@
+@layer components {
+  .number-tile { display: flex; flex-direction: column; gap: 8px; }
+  .number-tile .tile-header { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: 8px; }
+  .number-tile .tile-header h2 {
+    font: 600 20px/1.2 var(--f-number);
+  }
+
+  .number-tile .tile-states { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+  .number-tile .tile-states .status {
+    padding: 1px 6px;
+    border: 2px solid var(--muted);
+    border-radius: 4px;
+    font: 600 18px/1.25 var(--f-number);
+  }
+  .number-tile .tile-states .status-normal {
+    border: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 16px;
+  }
+  .number-tile .value { font: 600 48px/1 var(--f-number); }
+  .number-tile .unit { color: var(--muted); font-size: 20px; }
+  .number-tile .tile-meta {
+    font: 400 16px/1.4 var(--f-mono);
+    color: var(--muted);
+    display: flex; flex-wrap: wrap; justify-content: space-between; column-gap: 8px;
+    margin-top: auto;
+    padding-top: 5px;
+    border-top: 1px solid var(--line);
+  }
+  .number-tile .reading-exception, .last-reading { color: var(--fg); }
+  .number-tile .last-reading { flex-basis: 100%; }
+  .number-tile .sparkline { height: 46px; overflow: hidden; }
+
+  .number-tile .number-trend { color: var(--muted); font: 400 16px/1.4 var(--f-body); }
+}

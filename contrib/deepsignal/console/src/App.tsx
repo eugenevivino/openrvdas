@@ -1,44 +1,40 @@
-import { useEffect, useEffectEvent, useMemo, useState, useSyncExternalStore } from 'react'
-import { CdsClient } from './cds'
-import { fieldData } from './field-data'
-import type { Freshness, Quality, Reading } from './field-data'
+import { Component, useEffect, useEffectEvent, useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
+import { createConsoleContext, realClock } from './context'
+import type { ConsoleContext, ConsoleModule, Page, RouteDef, TileConfig, TileDef } from './contract'
 import { LightingControls } from './LightingControls'
 import { isShortcut } from './lighting'
-import type { NightPalette } from './lighting'
-import { loadConsole } from './pages'
-import type { LoadedConsole, NumberTileConfig } from './pages'
-import { Sparkline } from './Sparkline'
+import { loadConsole, parsePage } from './pages'
+import type { LoadedConsole } from './pages'
+import { discoverModules } from './registry'
+import { describeSetting, formatPageProblem, isMapping, isPageProblem, isPositive } from './settings'
+import { Status } from './Status'
+import { ConsoleStore } from './store'
+import type { FieldRequest } from './store'
 
-const emptyHistory: readonly Reading[] = []
-
-const statusStyles = {
-  ok: ['circle', 'ok'], check: ['triangle', 'check'], down: ['cross', 'down'],
-  LIVE: ['circle', 'normal'], AGING: ['triangle', 'check'], STALE: ['square', 'stale'], 'NO DATA': ['dash', 'missing'],
-  PASS: ['circle', 'normal'], 'NOT EVALUATED': ['diamond', 'normal'], SUSPECT: ['triangle', 'check'],
-  FAIL: ['cross', 'down'], MISSING: ['square', 'missing'],
-} satisfies Record<Freshness | Quality | 'ok' | 'check' | 'down', readonly [string, string]>
-
-type State = keyof typeof statusStyles
-
-function Status({ state, children }: { state: State; children?: string }) {
-  const [shape, color] = statusStyles[state]
-  return (
-    <span className={'status status-' + color}>
-      <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
-        {shape === 'circle' && <circle cx="6" cy="6" r="5" fill="currentColor" />}
-        {shape === 'triangle' && <path d="M6 1 11 11H1Z" fill="currentColor" />}
-        {shape === 'square' && <rect x="1.5" y="1.5" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="2" />}
-        {shape === 'cross' && <path d="M2 2l8 8m0-8-8 8" stroke="currentColor" strokeWidth="2.4" />}
-        {shape === 'diamond' && <path d="m6 1 5 5-5 5-5-5Z" fill="none" stroke="currentColor" strokeWidth="1.5" />}
-        {shape === 'dash' && <path d="M1 6h10" stroke="currentColor" strokeWidth="2" />}
-      </svg>
-      {children ?? state}
-    </span>
-  )
+function message(error: unknown) {
+  return error instanceof Error ? error.message : String(error)
 }
 
-function age(timestamp: number, now: number) {
-  return Math.max(0, Math.floor(now - timestamp))
+function moduleProblem(id: string, error: unknown) {
+  return `Module ${id}: ${message(error)}`
+}
+
+function Message({ children }: { children: ReactNode }) {
+  return <p className="message" role="alert">{children}</p>
+}
+
+class ModuleBoundary extends Component<{ id: string; children: ReactNode }, { problem?: string }> {
+  state: { problem?: string } = {}
+
+  static getDerivedStateFromError(error: unknown) {
+    return { problem: message(error) }
+  }
+
+  render() {
+    const { problem } = this.state
+    return problem === undefined ? this.props.children : <Message>{moduleProblem(this.props.id, problem)}</Message>
+  }
 }
 
 function Clock({ now, timeZone }: { now: number; timeZone: string }) {
@@ -54,54 +50,7 @@ function Clock({ now, timeZone }: { now: number; timeZone: string }) {
   )
 }
 
-function NumberTile({ tile, data, history, now }: {
-  tile: NumberTileConfig
-  data: ReturnType<typeof fieldData>
-  history: readonly Reading[]
-  now: number
-}) {
-  const { value, timestamp, freshness, quality, lastGood, expectedPeriod, age: secondsOld } = data
-  const noData = freshness === 'NO DATA'
-  const showValue = !noData && value !== null
-  const observed = timestamp === undefined ? undefined : new Date(timestamp * 1000).toISOString()
-  const lastGoodTime = lastGood && new Date(lastGood.timestamp * 1000).toISOString()
-  return (
-    <article className={tile.wide ? 'tile wide' : 'tile'}>
-      <div className="tile-header">
-        <h2>{tile.label}</h2>
-        <div className="tile-states">
-          <span className="freshness" role="group" aria-label="Freshness"><Status state={freshness} /></span>
-          <span className="quality" role="group" aria-label="Data quality"><Status state={quality} /></span>
-        </div>
-      </div>
-      <div className="value">
-        {showValue ? <>{value.toFixed(tile.decimals)}<span className="unit"> {tile.unit}</span></> : '—'}
-      </div>
-      {tile.sparkline && <Sparkline history={history} now={now} minutes={tile.sparkline} period={expectedPeriod} />}
-      <div className="tile-meta">
-        <span>Source {tile.field}</span>
-        {secondsOld !== undefined
-          ? <span className={freshness !== 'LIVE' || value === null ? 'reading-exception' : undefined}>
-              {!noData && value === null && 'Bad reading. '}
-              {Math.floor(secondsOld)} s old
-              {freshness !== 'LIVE' && <time dateTime={observed}> · {observed?.slice(11, 19)}Z</time>}
-            </span>
-          : <span>Waiting for data</span>}
-        {noData && lastGood?.value != null && (
-          <span className="last-reading">Last: {lastGood.value.toFixed(tile.decimals)} {tile.unit} at{' '}
-            <time dateTime={lastGoodTime}>{lastGoodTime?.slice(11, 19)}Z</time>
-          </span>
-        )}
-      </div>
-    </article>
-  )
-}
-
-function Header({ children, ship, defaultPalette }: {
-  children?: React.ReactNode
-  ship?: string
-  defaultPalette?: NightPalette
-}) {
+function Header({ children, ctx }: { children?: ReactNode; ctx?: Runtime['ctx'] }) {
   return (
     <header className="bar">
       <div className="brand">
@@ -110,123 +59,342 @@ function Header({ children, ship, defaultPalette }: {
           <path d="M2 14c3-4 5-4 8 0s5 4 8 0 3-3 4-2M2 19c3-3 5-3 8 0s5 3 8 0" />
         </svg>
         <span>DeepSignal</span>
-        {ship && <span className="ship">{ship}</span>}
+        {ctx && <span className="ship">{ctx.config.ship}</span>}
       </div>
       <span className="monitoring-label">Research system monitoring</span>
       {children}
-      <LightingControls defaultPalette={defaultPalette} />
+      <LightingControls controller={ctx?.lighting} />
     </header>
   )
 }
 
-function Console({ config, pages }: LoadedConsole) {
-  const [route, setRoute] = useState(() => window.location.hash.slice(1))
-  const selected = pages.find(({ id }) => id === route) ?? pages[0]
-  const page = selected.page
-  const [now, setNow] = useState(() => Date.now() / 1000)
-  const client = useMemo(() => new CdsClient(config.websocket), [config.websocket])
-  const { connection, fields, history, lastData } = useSyncExternalStore(client.subscribe, client.getSnapshot)
-  const connected = connection === 'connected'
+function definitions<K extends 'tiles' | 'routes' | 'engines' | 'adapters' | 'slots'>(modules: ConsoleModule[], key: K) {
+  type Definition = NonNullable<ConsoleModule[K]>[number]
+  return modules.flatMap((module) => ((module[key] ?? []) as Definition[])
+    .map((def) => ({ owner: module.id, def })))
+}
+
+interface Plugin<T> {
+  owner: string
+  def: T
+}
+
+function index<T>(entries: Array<Plugin<T>>, key: (def: T) => string, problems: string[]) {
+  const unique = new Map<string, Plugin<T>>()
+  for (const plugin of entries) {
+    const id = key(plugin.def)
+    if (unique.has(id)) problems.push(moduleProblem(plugin.owner, `"${id}" is already provided by ${unique.get(id)!.owner}.`))
+    else unique.set(id, plugin)
+  }
+  return unique
+}
+
+function initialize({ config, files, periods }: LoadedConsole, modules: ConsoleModule[], problems: string[]) {
+  const store = new ConsoleStore(config, realClock)
+  const ctx = createConsoleContext(config, store, realClock)
+  const pageProblems = new Map<string, string>()
+  for (const module of modules) {
+    for (const preset of module.presets ?? []) {
+      const file = preset.id + '.yaml'
+      try {
+        ctx.pages.register({ ...parsePage(file, preset.yaml), source: 'preset:' + module.id })
+      } catch (error) {
+        problems.push(moduleProblem(module.id, message(error)))
+      }
+    }
+  }
+  for (const { page, problem } of files) {
+    ctx.pages.register(page)
+    if (problem) pageProblems.set(page.id, problem)
+  }
+  const tiles = index(definitions(modules, 'tiles'), (tile) => tile.type, problems)
+  const routes = index(definitions(modules, 'routes'), (route) => route.id, problems)
+  const engines = definitions(modules, 'engines')
+  const adapters = definitions(modules, 'adapters')
+  const slots = definitions(modules, 'slots').sort((a, b) => a.def.order - b.def.order)
+  return { ctx, store, periods, tiles, routes, engines, adapters, slots, problems, pageProblems }
+}
+
+type Runtime = ReturnType<typeof initialize>
+
+interface Destination {
+  id: string
+  title: string
+  order?: number
+  page?: Page
+  route?: Plugin<RouteDef>
+  problem?: string
+}
+
+function destinations({ ctx, routes, pageProblems }: Runtime): Destination[] {
+  const items = new Map<string, Destination>()
+  for (const [id, route] of routes) items.set(id, { id, title: route.def.title, order: route.def.order, route })
+  for (const page of ctx.pages.list()) items.set(page.id, {
+    id: page.id, title: page.title, order: page.order, page, problem: pageProblems.get(page.id),
+  })
+  const order = ctx.config.pages
+  const listed = order.map((id) => items.get(id) ?? {
+    id, title: id, problem: `Page ${id} is unavailable. Expected pages/${id}.yaml or a module that provides ${id}.`,
+  })
+  const extra = [...items.values()].filter(({ id }) => !order.includes(id))
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+  return [...listed, ...extra]
+}
+
+interface PreparedTile {
+  wide: boolean
+  plugin?: Plugin<TileDef>
+  cfg?: TileConfig
+  problem?: string
+}
+
+function prepareTiles(page: Page | undefined, tiles: Runtime['tiles']): PreparedTile[] {
+  return (page?.tiles ?? []).map((raw, index) => {
+    const where = { file: page?.source?.startsWith('file:') ? page.source.slice(5) : page!.id + '.yaml', tile: index + 1 }
+    const input: Record<string, unknown> = isMapping(raw) ? raw : {}
+    const type = typeof input.type === 'string' ? input.type : ''
+    const fallback = typeof input.fallback === 'string' ? input.fallback : ''
+    const plugin = tiles.get(type) ?? tiles.get(fallback)
+    const wide = input.wide === true
+    if (!plugin) {
+      const types = [...tiles.keys()]
+      return { wide, problem: formatPageProblem({
+        where, setting: 'type', saw: describeSetting(input.type),
+        expected: types.length ? 'an installed tile type (' + types.join(', ') + ')' : 'an installed tile type',
+        example: 'type: ' + (types[0] ?? 'number'),
+      }) }
+    }
+    try {
+      const cfg = plugin.def.validate({ ...input, type: plugin.def.type }, where)
+      if (!isMapping(cfg)) throw new Error('Tile validation must return settings.')
+      return { wide: cfg.wide ?? wide, plugin, cfg }
+    } catch (error) {
+      return { wide, problem: isPageProblem(error) ? formatPageProblem(error) : moduleProblem(plugin.owner, error) }
+    }
+  })
+}
+
+function requestedFields(owner: string, read: () => string[], problems: string[], adapter = false) {
+  try {
+    const fields = read()
+    if (!Array.isArray(fields) || fields.some((field) => typeof field !== 'string' || !field ||
+      (field.includes('*') && !(adapter && field === 'status:*')))) throw new Error('Expected a list of cache fields.')
+    return fields
+  } catch (error) {
+    problems.push(moduleProblem(owner, error))
+    return []
+  }
+}
+
+function demands(runtime: Runtime, selected: Destination | undefined, tiles: PreparedTile[], problems: string[]) {
+  const { ctx, adapters, periods } = runtime
+  const visible = new Set<string>()
+  const fields = new Map<string, FieldRequest>()
+  const add = (field: string, period?: number, logger?: string) => {
+    const previous = fields.get(field)
+    fields.set(field, { period: previous?.period ?? period, logger: previous?.logger ?? logger })
+  }
+  for (const { plugin, cfg } of tiles) {
+    if (!plugin || !cfg) continue
+    const logger = typeof cfg.logger === 'string' ? cfg.logger : undefined
+    for (const field of requestedFields(plugin.owner, () => plugin.def.fields(cfg, ctx), problems)) {
+      visible.add(field)
+      add(field, isPositive(cfg.period) ? cfg.period : undefined, logger)
+    }
+  }
+  const route = selected?.route
+  if (route?.def.fields) {
+    for (const field of requestedFields(route.owner, () => route.def.fields!(ctx), problems)) {
+      visible.add(field)
+      add(field)
+    }
+  }
+  const subscriptions = adapters.map((plugin) => {
+    const names = requestedFields(plugin.owner, () => plugin.def.fields(ctx), problems, true)
+    for (const name of names) add(name)
+    return { ...plugin, fields: new Set(names) }
+  })
+  for (const [field, request] of fields) request.period ??= periods.get(field)
+  return { visible, fields, subscriptions }
+}
+
+function ConnectionStatus({ store, visible }: { store: ConsoleStore; visible: Set<string> }) {
+  const connection = store.connection()
+  const age = store.lastMessageAgeS()
+  let latest: number | undefined
+  for (const field of visible) {
+    const data = store.get(field)
+    if (data.freshness === 'LIVE' && data.ageS !== undefined && data.value != null) {
+      latest = Math.min(latest ?? Infinity, data.ageS)
+    }
+  }
+  let label = 'Connecting'
+  let shape: 'triangle' | 'circle' | 'cross' = 'triangle'
+  let tone = 'check'
+  if (connection === 'reconnecting') {
+    label = age === undefined ? 'Reconnecting, no messages yet' : `Reconnecting, last message ${Math.floor(age)} s ago`
+    shape = 'cross'
+    tone = 'down'
+  } else if (connection === 'connected' && latest !== undefined) {
+    label = `Live ${Math.floor(latest)} s`
+    shape = 'circle'
+    tone = 'ok'
+  } else if (connection === 'connected') {
+    label = 'Waiting for current data'
+  }
+  return <div className="live" role="group" aria-label="Data connection">
+    <Status shape={shape} tone={tone}>{label}</Status>
+  </div>
+}
+
+function Slots({ runtime, slot }: { runtime: Runtime; slot: 'topbar' | 'banner' }) {
+  return runtime.slots.filter(({ def }) => def.slot === slot).map(({ owner, def }, i) => (
+    <ModuleBoundary id={owner} key={owner + '/' + i}><def.Component ctx={runtime.ctx} /></ModuleBoundary>
+  ))
+}
+
+function PageView({ selected, prepared, ctx }: { selected?: Destination; prepared: PreparedTile[]; ctx: ConsoleContext }) {
+  if (!selected) return <p className="message" role="status">No pages are available.</p>
+  if (selected.problem) return <Message>{selected.problem}</Message>
+  const route = selected.route
+  if (route) return <ModuleBoundary id={route.owner} key={selected.id}><route.def.Component ctx={ctx} /></ModuleBoundary>
+  return <div className="tiles">
+    {prepared.map(({ plugin, cfg, problem, wide }, i) => (
+      <div className={wide ? 'tile-frame wide' : 'tile-frame'} key={selected.id + '/' + i}>
+        {plugin && cfg
+          ? <ModuleBoundary id={plugin.owner} key={plugin.def.type}><plugin.def.Component cfg={cfg} ctx={ctx} /></ModuleBoundary>
+          : <Message>{problem}</Message>}
+      </div>
+    ))}
+  </div>
+}
+
+function Console({ runtime }: { runtime: Runtime }) {
+  const { ctx, store, engines } = runtime
+  const hash = ctx.route.get()
+  const [, redraw] = useState(0)
+  const [runtimeProblems, setRuntimeProblems] = useState<string[]>([])
+  const pages = destinations(runtime)
+  const selected = pages.find(({ id }) => id === hash) ?? pages[0]
+  const prepared = useMemo(() => prepareTiles(selected?.page, runtime.tiles), [selected?.page, runtime.tiles])
+  const fieldProblems: string[] = []
+  const { fields, visible, subscriptions } = demands(runtime, selected, prepared, fieldProblems)
+
+  function report(problem: string) {
+    setRuntimeProblems((previous) => previous.includes(problem) ? previous : [...previous, problem])
+  }
+
+  const onValue = useEffectEvent((field: string, value: unknown, time: number) => {
+    for (const { owner, def, fields } of subscriptions) {
+      if (!fields.has(field) && !(field.startsWith('status:') && fields.has('status:*'))) continue
+      try {
+        def.onValue(field, value, time, ctx)
+      } catch (error) {
+        report(moduleProblem(owner, error))
+      }
+    }
+  })
 
   const onShortcut = useEffectEvent((event: KeyboardEvent) => {
     if (!isShortcut(event) || !/^[1-9]$/.test(event.key)) return
     const target = pages[Number(event.key) - 1]
-    if (target) window.location.hash = target.id
+    if (target) ctx.route.go(target.id)
   })
+
+  const selectedId = selected?.id
   useEffect(() => {
+    if (selectedId && hash !== selectedId) {
+      window.history.replaceState(null, '', '#' + encodeURIComponent(selectedId))
+    }
+  }, [hash, selectedId])
+
+  useEffect(() => {
+    const changed = () => redraw((value) => value + 1)
     const onKey = (event: KeyboardEvent) => onShortcut(event)
-    const onHash = () => setRoute(window.location.hash.slice(1))
-    const tick = window.setInterval(() => setNow(Date.now() / 1000), 1000)
+    const unsubscribeStore = store.observe(changed)
+    const unsubscribePages = ctx.pages.subscribe(changed)
+    const unsubscribeValues = store.observeValues((field, reading) => onValue(field, reading.value, reading.timestamp))
+    const tick = window.setInterval(() => store.tick(), 1000)
     window.addEventListener('keydown', onKey)
-    window.addEventListener('hashchange', onHash)
+    window.addEventListener('hashchange', changed)
+    store.start()
+    const stops = engines.flatMap(({ def, owner }) => {
+      try {
+        const stop = def.start(ctx)
+        if (typeof stop !== 'function') throw new Error(`Engine ${def.id} must return a stop function.`)
+        return [{ stop, owner }]
+      } catch (error) {
+        report(moduleProblem(owner, error))
+        return []
+      }
+    })
     return () => {
       window.clearInterval(tick)
       window.removeEventListener('keydown', onKey)
-      window.removeEventListener('hashchange', onHash)
+      window.removeEventListener('hashchange', changed)
+      unsubscribeStore()
+      unsubscribePages()
+      unsubscribeValues()
+      for (const { stop, owner } of stops.reverse()) {
+        try {
+          stop()
+        } catch (error) {
+          console.error(moduleProblem(owner, error))
+        }
+      }
+      store.stop()
     }
-  }, [])
+  }, [ctx, store, engines])
 
-  useEffect(() => {
-    if (route !== selected.id) window.history.replaceState(null, '', '#' + selected.id)
-  }, [route, selected.id])
+  useEffect(() => store.select(fields), [store, fields])
 
-  useEffect(() => () => client.stop(), [client])
-
-  useEffect(() => {
-    const wanted = new Map<string, number>()
-    for (const tile of page?.tiles ?? []) {
-      const seconds = Math.max(config.history, (tile.sparkline ?? 0) * 60)
-      wanted.set(tile.field, Math.max(wanted.get(tile.field) ?? -1, seconds || -1))
-    }
-    client.setFields(Object.fromEntries(wanted))
-  }, [client, page, config.history])
-
-  const tiles = (page?.tiles ?? []).map((tile) => ({ tile, data: fieldData(fields.get(tile.field), tile.period, now) }))
-  const last = tiles.reduce<number | undefined>((latest, { data }) => {
-    if (data.timestamp !== undefined && data.value !== null && data.freshness === 'LIVE') {
-      return Math.max(latest ?? 0, data.timestamp)
-    }
-    return latest
-  }, undefined)
-
-  let pillState: State = 'check'
-  let pill = page ? 'Connecting' : 'Page unavailable'
-  if (page && connection === 'reconnecting') {
-    pillState = 'down'
-    pill = lastData === undefined ? 'Reconnecting, no data yet' : `Reconnecting, last data ${age(lastData, now)} s ago`
-  } else if (page && connected && last !== undefined) {
-    pillState = 'ok'
-    pill = `Live ${age(last, now)} s`
-  } else if (page && connected) {
-    pill = 'Waiting for current data'
-  }
-
+  const problems = new Set([...runtime.problems, ...runtimeProblems, ...fieldProblems])
   return (
     <>
-      <Header ship={config.ship} defaultPalette={config.night_palette}>
+      <Header ctx={ctx}>
         <nav className="tabs" aria-label="Pages">
           {pages.map(({ id, title }, index) => (
-            <a href={'#' + id} key={id} aria-current={id === selected.id ? 'page' : undefined}
+            <a href={'#' + encodeURIComponent(id)} key={id} aria-current={id === selected?.id ? 'page' : undefined}
               aria-keyshortcuts={index < 9 ? String(index + 1) : undefined}>{title}</a>
           ))}
         </nav>
-        <div className="live" role="group" aria-label="Data connection"><Status state={pillState}>{pill}</Status></div>
-        <Clock now={now} timeZone={config.ship_timezone} />
+        <ConnectionStatus store={store} visible={visible} />
+        <Clock now={ctx.clock.now()} timeZone={ctx.config.shipTimezone} />
+        <Slots runtime={runtime} slot="topbar" />
       </Header>
+      <div className="banners" role="region" aria-label="Console banners"><Slots runtime={runtime} slot="banner" /></div>
       <main>
-        <h1>{page?.title ?? selected.title}</h1>
-        {page ? (
-          <div className="tiles">
-            {tiles.map(({ tile, data }, index) => (
-              <NumberTile key={page.id + '/' + index} tile={tile} data={data}
-                history={history.get(tile.field) ?? emptyHistory} now={now} />
-            ))}
-          </div>
-        ) : <p className="message" role="alert">{selected.error} Reload this page after correcting the file.</p>}
+        <h1>{selected?.title ?? 'Data console'}</h1>
+        {[...problems].map((problem) => <Message key={problem}>{problem}</Message>)}
+        <PageView selected={selected} prepared={prepared} ctx={ctx} />
       </main>
     </>
   )
 }
 
 export default function App() {
-  const [result, setResult] = useState<{ data: LoadedConsole } | { error: string }>()
+  const [result, setResult] = useState<{ runtime: Runtime } | { error: string }>()
   useEffect(() => {
     const controller = new AbortController()
-    loadConsole(controller.signal).then(
-      (data) => { if (!controller.signal.aborted) setResult({ data }) },
-      (error: Error) => { if (!controller.signal.aborted) setResult({ error: error.message }) },
-    )
+    Promise.all([loadConsole(controller.signal), discoverModules()])
+      .then(([config, { modules, problems }]) => {
+        if (!controller.signal.aborted) setResult({ runtime: initialize(config, modules, problems) })
+      })
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) setResult({ error: message(error) })
+      })
     return () => controller.abort()
   }, [])
 
-  if (result && 'data' in result) return <Console {...result.data} />
+  if (result && 'runtime' in result) return <Console runtime={result.runtime} />
   return (
     <>
       <Header />
+      <div className="banners" role="region" aria-label="Console banners" />
       <main>
         <h1>Data console</h1>
         {result
-          ? <p className="message" role="alert">{result.error} Reload this page after correcting the file.</p>
+          ? <Message>{result.error} Reload this page after correcting the file.</Message>
           : <p className="message" role="status">Loading pages…</p>}
       </main>
     </>

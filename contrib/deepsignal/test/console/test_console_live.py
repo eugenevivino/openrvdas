@@ -16,13 +16,15 @@ sys.path.append(str(Path(__file__).resolve().parents[4]))
 from contrib.deepsignal.console.demo_cache import LocalCachedDataServer  # noqa: E402
 
 
-DIST = Path(__file__).resolve().parents[2] / 'console' / 'dist'
+CONSOLE = Path(__file__).resolve().parents[2] / 'console'
+DIST = CONSOLE / 'dist'
 
 
+@pytest.mark.lead_run
 def test_console_live(tmp_path):
     playwright = pytest.importorskip(
         'playwright.sync_api',
-        reason='Python Playwright is not installed; Chromium console test skipped',
+        reason='browser test, run by lead outside the sandbox',
     )
     assert (DIST / 'index.html').is_file(), 'Run npm run build before the live test'
 
@@ -36,7 +38,8 @@ def test_console_live(tmp_path):
             config['websocket'] = f'ws://127.0.0.1:{cache.port}'
             config_path.write_text(yaml.safe_dump(config), encoding='utf-8')
             weather_path = console / 'pages/example.yaml'
-            weather = yaml.safe_load(weather_path.read_text(encoding='utf-8'))
+            preset = CONSOLE / 'src/modules/example/example.yaml'
+            weather = yaml.safe_load(preset.read_text(encoding='utf-8'))
             for tile in weather['tiles']:
                 tile['period'] = 5
             weather_path.write_text(yaml.safe_dump(weather), encoding='utf-8')
@@ -133,3 +136,15 @@ def check_night(playwright, page):
     assert page.evaluate('window.firstConsoleFrame') == {
         'mode': 'night', 'palette': 'red', 'background': 'rgb(0, 0, 0)',
     }
+
+    # The same boot palette should survive a reload with a config error.
+    page.route('**/console.yaml', lambda route: route.fulfill(status=503))
+    page.reload()
+    assert page.evaluate('window.firstConsoleFrame') == {
+        'mode': 'night', 'palette': 'red', 'background': 'rgb(0, 0, 0)',
+    }
+    playwright.expect(page.get_by_role('alert')).to_contain_text('console.yaml')
+    muted = page.evaluate("""() => getComputedStyle(document.documentElement)
+        .getPropertyValue('--muted').match(/\\d+/g).map(Number)""")
+    assert muted[0] >= 150
+    assert 100 * max(muted[1:]) <= 15 * muted[0]

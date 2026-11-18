@@ -5,3 +5,7 @@ ship_timezone: UTC
 pages: [example]
 history: 300
 night_palette: red
+qc_suffix: _QC
+modules: {}
+# Optional expected update periods in seconds, by field name.
+period: {}

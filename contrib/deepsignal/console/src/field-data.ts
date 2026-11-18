@@ -1,5 +1,5 @@
 export interface Reading {
-  value: number | null
+  value: unknown
   timestamp: number
   receivedAt: number
 }
@@ -19,7 +19,7 @@ export interface FieldSamples {
 const intervalCount = 20
 const provisionalPeriod = 1
 
-export function qualityFromFlag(flag: number | null | undefined): Quality {
+export function qualityFromFlag(flag: unknown): Quality {
   switch (flag) {
     case 1: return 'PASS'
     case 3: return 'SUSPECT'
@@ -29,7 +29,7 @@ export function qualityFromFlag(flag: number | null | undefined): Quality {
   }
 }
 
-function mergeReadings(previous: readonly Reading[], incoming: readonly Reading[]) {
+export function mergeReadings(previous: readonly Reading[], incoming: readonly Reading[]) {
   const byTimestamp = new Map(previous.map((reading) => [reading.timestamp, reading]))
   for (const reading of incoming) {
     if (byTimestamp.get(reading.timestamp)?.value !== reading.value) {
@@ -67,7 +67,7 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
     } else {
       quality = 'NOT EVALUATED'
     }
-    if (sample.value !== null && (quality === 'PASS' || quality === 'NOT EVALUATED') &&
+    if (sample.value != null && (quality === 'PASS' || quality === 'NOT EVALUATED') &&
         (lastGood === undefined || sample.timestamp > lastGood.timestamp)) {
       lastGood = sample
       if (index < firstRecent) olderGood = sample

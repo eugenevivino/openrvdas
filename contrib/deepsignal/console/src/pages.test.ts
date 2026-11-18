@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest'
-import { parseConsole, parsePage } from './pages'
+import { parseConsole } from './pages'
+import { parseNumberPage as parsePage } from './modules/number/validate'
 
 const tile = `title: Bridge
 tiles:

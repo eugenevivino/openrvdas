@@ -1,28 +1,31 @@
 import { useEffect, useRef } from 'react'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
-import type { Reading } from './field-data'
+import type { ConsoleContext } from '../../contract'
 
-function plotData(history: readonly Reading[], period: number): uPlot.AlignedData {
+type Sample = ReturnType<ConsoleContext['store']['history']>[number]
+
+function plotData(history: readonly Sample[], period: number): uPlot.AlignedData {
   const timestamps: number[] = []
   const values: (number | null)[] = []
-  for (const { timestamp, value } of history) {
+  for (const { time: timestamp, value } of history) {
     const previous = timestamps.at(-1)
     if (previous !== undefined && timestamp - previous > 5 * period) {
       timestamps.push((previous + timestamp) / 2)
       values.push(null)
     }
     timestamps.push(timestamp)
-    values.push(value)
+    values.push(typeof value === 'number' ? value : null)
   }
   return [timestamps, values]
 }
 
-export function Sparkline({ history, now, minutes, period }: {
-  history: readonly Reading[]
+export function Sparkline({ history, now, minutes, period, lighting }: {
+  history: readonly Sample[]
   now: number
   minutes: number
   period: number
+  lighting: ConsoleContext['lighting']
 }) {
   const container = useRef<HTMLDivElement>(null)
   const chart = useRef<uPlot | null>(null)
@@ -44,15 +47,14 @@ export function Sparkline({ history, now, minutes, period }: {
       plot.setSize({ width: Math.max(1, Math.floor(entry.contentRect.width)), height: 46 })
     })
     resize.observe(element)
-    const repaint = () => plot.redraw()
-    window.addEventListener('consolelighting', repaint)
+    const unsubscribe = lighting.subscribe(() => plot.redraw())
     return () => {
-      window.removeEventListener('consolelighting', repaint)
+      unsubscribe()
       resize.disconnect()
       plot.destroy()
       chart.current = null
     }
-  }, [])
+  }, [lighting])
 
   useEffect(() => {
     chart.current?.setData(plotData(history, period), false)
