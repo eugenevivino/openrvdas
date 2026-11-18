@@ -1,0 +1,4 @@
+# Copy this file and replace the example identifiers with terms from your imported lists.
+TSG_Temp:
+  cf: sea_water_temperature
+  units: degree_C

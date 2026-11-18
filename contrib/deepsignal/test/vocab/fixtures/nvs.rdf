@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:skos="http://www.w3.org/2004/02/skos/core#"
+         xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <skos:Concept rdf:about="https://example.invalid/L22/TOOL0001">
+    <skos:prefLabel>Fixture thermometer</skos:prefLabel>
+    <skos:notation>TOOL0001</skos:notation>
+    <dc:identifier>TOOL0001</dc:identifier>
+    <skos:definition>A thermometer used only in tests.</skos:definition>
+  </skos:Concept>
+</rdf:RDF>
