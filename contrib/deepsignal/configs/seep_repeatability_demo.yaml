@@ -1,0 +1,12 @@
+# Offline-safe declarations for a fixture reader, transform, and local text writer.
+reader:
+  class: contrib.deepsignal.seep_repeatability.fixtures.demo_records
+transform:
+  class: contrib.deepsignal.seep_repeatability.transform.SeepRepeatabilityTransform
+  kwargs:
+    window_id: synthetic-demo
+    height_band_m: [10.0, 15.0]
+writer:
+  class: logger.writers.text_file_writer.TextFileWriter
+  kwargs:
+    filename: /tmp/seep_repeatability_demo.txt
