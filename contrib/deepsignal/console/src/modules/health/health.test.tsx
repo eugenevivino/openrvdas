@@ -116,6 +116,15 @@ describe('health logger adapter and route', () => {
     expect(screen.queryByTestId('logger-row')).not.toBeInTheDocument()
   })
 
+  it('shows manager status as missing when the latest snapshot is malformed', () => {
+    const f = fakeContext(); f.at(10)
+    f.send({ t: 11, field: 'status:logger_status', value: { mwx1: { config: 'mwx', status: 'BROKEN' } } })
+    render(<HealthPage ctx={f.ctx} />)
+    expect(screen.getByText('Logger manager status missing from the latest report.')).toBeInTheDocument()
+    expect(screen.queryByTestId('logger-row')).not.toBeInTheDocument()
+    expect(screen.queryByText('No action needed.')).not.toBeInTheDocument()
+  })
+
   it('uses first-match hint precedence and reports a bad override while using defaults', async () => {
     const hints = parseHints(`- match:\n    logger: "flr*"\n  hint: First\n- match:\n    stderr: "serial"\n  hint: Second\n`)
     expect(resolveHint(hints, 'flr1', 'serial stopped')).toBe('First')

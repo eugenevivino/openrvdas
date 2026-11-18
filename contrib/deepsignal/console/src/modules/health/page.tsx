@@ -123,6 +123,9 @@ function HealthPage({ ctx }: { ctx: ConsoleContext }) {
     const since = manager.receiveTime ?? manager.sourceTime ?? ctx.clock.now()
     return <main className="health-page"><h1>Health</h1><p className="health-message">Logger manager not reporting since {utc(since)}</p></main>
   }
+  if (!isStatuses(manager.value)) {
+    return <main className="health-page"><h1>Health</h1><p className="health-message">Logger manager status missing from the latest report.</p></main>
+  }
   const counts = { RUNNING: 0, STARTING: 0, FAILED: 0, EXITED: 0 }
   for (const [, entry] of loggerRows) counts[entry.status]++
   return <main className="health-page">
