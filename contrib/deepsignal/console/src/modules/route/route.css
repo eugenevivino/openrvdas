@@ -1,0 +1,22 @@
+.route-tile {
+  background: var(--panel);
+  color: var(--fg);
+  font: 400 18px/1.35 var(--f-body);
+  font-variant-numeric: tabular-nums;
+  border: 1px solid var(--line);
+  padding: 16px;
+  overflow-wrap: anywhere;
+}
+.route-tile h2, .route-tile h3 { font: 600 20px/1.25 var(--f-number); }
+.route-tile section { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
+.route-tile dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
+.route-tile dt { color: var(--muted); }
+.route-tile dd { font-family: var(--f-number); }
+.route-name { font: 600 24px/1.2 var(--f-number); }
+.route-tile section:first-of-type dd:first-of-type { font: 600 48px/1 var(--f-number); }
+.route-notice { margin: 6px 0; }
+.route-ok { color: var(--ok); }
+.route-check { color: var(--check); }
+.route-stale { color: var(--stale); }
+.route-down { color: var(--down); }
+.route-old { font: 400 16px/1.35 var(--f-mono); opacity: 0.45; }
