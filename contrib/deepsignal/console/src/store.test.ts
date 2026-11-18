@@ -34,6 +34,7 @@ beforeEach(() => {
 afterEach(() => {
   store?.stop()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 function connect(qcSuffix = '_QC', fields = ['Depth', 'Depth' + qcSuffix]) {
@@ -120,4 +121,49 @@ it('requests the latest reading once after an empty first backfill', () => {
   expect(store.get('status:logger_status').value).toEqual({ knud1: { status: 'FAILED' } })
   expect(store.lastMessageAgeS()).toBe(0)
   expect(socket.sent.filter(({ type }) => type === 'subscribe')).toHaveLength(2)
+})
+
+it.each(['field', 'value'] as const)('isolates a throwing %s subscriber and requests the next CDS batch', (kind) => {
+  const { store, socket } = connect()
+  const error = new Error('Subscriber failed')
+  const reported = vi.spyOn(console, 'error').mockImplementation(() => {})
+  const failing = () => { throw error }
+  const healthy = vi.fn()
+  const subscribe = kind === 'field' ? (listener: () => void) => store.subscribe(['Depth'], listener)
+    : (listener: () => void) => store.observeValues(listener)
+  const unsubscribe = subscribe(failing)
+  subscribe(healthy)
+
+  try {
+    const batches = socket.sent.length
+    socket.receive('data', { Depth: [[110, 12]], Temp: [[110, 6]], 'status:logger_status': [[110, {}]] })
+    expect(healthy).toHaveBeenCalledTimes(kind === 'field' ? 1 : 3)
+    expect(reported).toHaveBeenCalledWith(expect.any(String), error)
+    expect(socket.sent.slice(batches)).toEqual([{ type: 'ready' }])
+    socket.receive('data', { Depth: [[111, 13]] })
+    expect(store.get('Depth').value).toBe(13)
+  } finally {
+    unsubscribe()
+  }
+})
+
+it('requests and applies quality flags for namespaced measurements', () => {
+  const field = 'gnss:Latitude'
+  const flag = `${field}_flag`
+  const status = 'status:logger_status'
+  const stderr = 'stderr:logger:gnss'
+  store = new ConsoleStore({ websocket: 'ws://test:8766', historyS: 0, qcSuffix: '_flag' }, { now: () => now })
+  store.select(new Map([[field, {}], [status, {}], [stderr, {}]]))
+  store.start()
+  const socket = MockSocket.current
+  socket.dispatchEvent(new Event('open'))
+  socket.receive('fields', [field, flag, flag + '_range', flag + '_reason', status, stderr])
+  socket.receive('describe', {})
+  expect(socket.sent.at(-1)?.fields).toEqual(Object.fromEntries(
+    [field, flag, flag + '_range', flag + '_reason', status, stderr].map((name) => [name, { seconds: -1 }]),
+  ))
+  socket.receive('subscribe')
+  socket.receive('data', { [field]: [[110, 40]], [flag]: [[110, 4]],
+    [flag + '_range']: [[110, 4]], [flag + '_reason']: [[110, 'Out of range']] })
+  expect(store.get(field)).toMatchObject({ value: 40, quality: 'FAIL', qualityTests: { range: 4 }, qualityReason: 'Out of range' })
 })

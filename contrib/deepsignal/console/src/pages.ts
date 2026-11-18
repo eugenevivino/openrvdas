@@ -37,6 +37,10 @@ function isTimeZone(value: unknown): value is string {
   }
 }
 
+function relayUrl({ protocol, host }: Pick<Location, 'protocol' | 'host'>) {
+  return `${protocol === 'https:' ? 'wss:' : 'ws:'}//${host}/cds-ws`
+}
+
 export function parseConsole(text: string, location: Pick<Location, 'protocol' | 'host'>) {
   const file = 'console.yaml'
   const values = mapping(yaml(text, file), file, 'console', 'ship: R/V Example')
@@ -47,8 +51,7 @@ export function parseConsole(text: string, location: Pick<Location, 'protocol' |
     ship_timezone: setting(file, values, 'ship_timezone', isTimeZone,
       'a time zone such as UTC or America/Santiago', 'ship_timezone: UTC', 'UTC'),
     websocket: setting(file, values, 'websocket', isWebSocketUrl,
-      'a ws:// or wss:// address', 'websocket: ws://localhost:8766',
-      `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/cds-ws`),
+      'a ws:// or wss:// address', `websocket: ${relayUrl(location)}`, relayUrl(location)),
     pages: setting(file, values, 'pages', (value): value is string[] =>
       Array.isArray(value) && new Set(value).size === value.length &&
       value.every((id) => typeof id === 'string' && pageIdPattern.test(id)),
@@ -96,8 +99,12 @@ async function pageIds(signal: AbortSignal) {
 
 export async function loadConsole(signal: AbortSignal) {
   const raw = parseConsole((await fetchFile('console.yaml', signal))!, window.location)
+  const websocket = relayUrl(window.location)
+  if (new URL(raw.websocket).href !== new URL(websocket).href) {
+    throw new Error('console.yaml: Use the same-origin /cds-ws read-only relay. Remove the websocket setting to use it automatically.')
+  }
   const config: ConsoleConfig = {
-    ship: raw.ship, shipTimezone: raw.ship_timezone, websocket: raw.websocket, pages: raw.pages,
+    ship: raw.ship, shipTimezone: raw.ship_timezone, websocket, pages: raw.pages,
     historyS: raw.history, qcSuffix: raw.qc_suffix, nightPalette: raw.night_palette, modules: raw.modules,
   }
   const files = await Promise.all((config.pages.length ? config.pages : await pageIds(signal)).map(async (id) => {

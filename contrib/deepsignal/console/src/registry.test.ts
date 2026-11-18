@@ -22,3 +22,14 @@ it('discovers the bundled number and example modules through the registry', asyn
   expect(modules.map(({ id }) => id)).toEqual(expect.arrayContaining(['number', 'example']))
   expect(problems).toEqual([])
 })
+
+it('discovers the Science preset and the stale alert engine and banner from the shipped registry', async () => {
+  const { modules, problems } = await discoverModules()
+  expect(modules.find(({ id }) => id === 'chart')?.presets).toEqual([
+    expect.objectContaining({ id: 'science' }),
+  ])
+  const stale = modules.find(({ id }) => id === 'stale-banner')
+  expect(stale?.engines).toEqual([expect.objectContaining({ id: 'stale-alerts' })])
+  expect(stale?.slots).toEqual([expect.objectContaining({ slot: 'banner' })])
+  expect(problems).toEqual([])
+})

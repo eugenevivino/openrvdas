@@ -1,5 +1,5 @@
-import { expect, it } from 'vitest'
-import { parseConsole } from './pages'
+import { expect, it, vi } from 'vitest'
+import { loadConsole, parseConsole } from './pages'
 import { parseNumberPage as parsePage } from './modules/number/validate'
 
 const tile = `title: Bridge
@@ -46,3 +46,15 @@ it('uses the same-origin CDS endpoint unless websocket is configured', () => {
   expect(https).not.toContain(':8766')
   expect(http).not.toContain(':8766')
 })
+
+it.each(['ws://ship.example:8766', 'wss://other.example/cds-ws', 'wss://ship.example/raw']) (
+  'refuses a browser CDS URL outside the same-origin relay: %s', async (url) => {
+    vi.stubGlobal('window', { location: { protocol: 'https:', host: 'ship.example' } })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(`ship: Example\nwebsocket: ${url}\n`)))
+    try {
+      await expect(loadConsole(new AbortController().signal)).rejects.toThrow('same-origin /cds-ws')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  },
+)

@@ -17,6 +17,14 @@ type HealthState = Pick<FieldState, 'health' | 'healthEvidence'>
 
 const unknownHealth: HealthState = { health: 'UNKNOWN' }
 
+function notifySubscriber<Args extends unknown[]>(listener: (...args: Args) => void, ...args: Args) {
+  try {
+    listener(...args)
+  } catch (error) {
+    console.error('Console store subscriber failed.', error)
+  }
+}
+
 export class ConsoleStore implements FieldStore {
   private readonly source: Source
   private readonly clock: Clock
@@ -43,7 +51,7 @@ export class ConsoleStore implements FieldStore {
     this.unlisten = this.source.subscribe(() => {
       const batch = this.source.getSnapshot().batch
       for (const [field, readings] of batch ?? []) {
-        for (const reading of readings) this.valueListeners.forEach((listener) => listener(field, reading))
+        for (const reading of readings) this.valueListeners.forEach((listener) => notifySubscriber(listener, field, reading))
       }
       this.notify()
     })
@@ -163,7 +171,7 @@ export class ConsoleStore implements FieldStore {
   }
 
   private notify() {
-    this.listeners.forEach((listener) => listener())
+    this.listeners.forEach((listener) => notifySubscriber(listener))
   }
 
   private requestFields() {

@@ -218,7 +218,8 @@ export class CdsClient {
         continue
       }
       set(field, seconds)
-      if (this.catalog && (field.includes(':') || field.endsWith(this.qcSuffix) ||
+      if (this.catalog && (field.startsWith('status:') || field.startsWith('stderr:logger:') ||
+        field.endsWith(this.qcSuffix) ||
         field.includes(this.qcSuffix + '_'))) continue
       const flag = field + this.qcSuffix
       set(flag, seconds)
