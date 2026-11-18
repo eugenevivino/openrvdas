@@ -35,6 +35,17 @@ class PairedFieldDetector:
         return record
 
 
+class BufferedDetector:
+    def __init__(self):
+        self.pending = None
+
+    def transform(self, record):
+        result, self.pending = self.pending, record
+        if result is not None:
+            result.fields['MwxAirTemp_QC'] = 4
+        return result
+
+
 def plugin(series, *, start, end, seed, offset):
     injected = [(timestamp, value + offset + seed if index == 1 else value)
                 for index, (timestamp, value) in enumerate(series)]
@@ -43,6 +54,14 @@ def plugin(series, *, start, end, seed, offset):
 
 
 class ScoringTests(unittest.TestCase):
+    def test_stub_reports_nan_and_unconfigured_range_as_missing(self):
+        detector = StubThresholdDetector()
+        record = DASRecord(timestamp=0, fields={'MwxAirTemp': float('nan'),
+                                                'MwxBarometer': 1023})
+        result = detector.transform(record)
+        self.assertEqual(result.fields['MwxAirTemp_QC'], 9)
+        self.assertEqual(result.fields['MwxBarometer_QC'], 9)
+
     def test_latency_misses_false_flag_rates_and_traps(self):
         flags = list(zip(range(0, 3601, 600), [3, 1, 4, 9, 3, 4, 2]))
         truth = [(600, 1200, 'step'), (1800, 1800, 'spikes'), (3000, 3000, 'trap')]
@@ -51,9 +70,9 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(result['missed'], 1)
         self.assertEqual(result['trap_flags'], 1)
         self.assertEqual(result['false_flags'], 3)
-        self.assertEqual(result['false_flags_per_hour'], 6)
-        self.assertEqual(result['trap_flags_per_hour'], 6)
-        self.assertEqual(result['false_alarms_per_ship_day'], 144)
+        self.assertEqual(result['false_flags_per_hour'], 4.5)
+        self.assertIsNone(result['trap_flags_per_hour'])
+        self.assertEqual(result['false_alarms_per_ship_day'], 108)
 
     def test_threshold_missing_verdict_and_boundaries(self):
         flags = [(0, 3), (20, 9), (30, None), (40, 4), (41, 4)]
@@ -61,11 +80,36 @@ class ScoringTests(unittest.TestCase):
         result = score_flags(flags, truth, threshold=4)
         self.assertEqual([event['latency_seconds'] for event in result['faults']], [None, 0])
         self.assertEqual(result['missed'], 1)
-        self.assertEqual(result['missing_flag_samples'], 1)
+        self.assertEqual(result['missing_flag_samples'], 2)
         self.assertEqual(result['false_flags'], 1)
-        self.assertIsNone(result['false_flags_per_hour'])
+        self.assertEqual(result['false_flags_per_hour'], 3600)
         self.assertIsNone(result['trap_flags_per_hour'])
-        self.assertIsNone(result['false_alarms_per_ship_day'])
+        self.assertEqual(result['false_alarms_per_ship_day'], 86400)
+
+    def test_missing_suffix_has_no_reported_rate(self):
+        result = score_flags([(0, None), (10, None)], [(0, 0, 'spikes')])
+        self.assertEqual(result['missing_flag_samples'], 2)
+        self.assertIsNone(result['false_flags_per_hour'])
+
+    def test_suffix_does_not_turn_qartod_missing_into_alarm(self):
+        result = score_flags([(0, 9), (10, 1)], [(0, 0, 'dropout')],
+                             flag_suffix='_DG')
+        self.assertEqual(result['missed'], 1)
+        self.assertEqual(result['missing_flag_samples'], 1)
+
+    def test_invalid_qartod_code_is_an_error(self):
+        with self.assertRaisesRegex(ValueError, 'Invalid QARTOD verdict code'):
+            score_flags([(0, 7)], [(0, 0, 'spikes')])
+
+    def test_point_fault_does_not_remove_following_exposure(self):
+        result = score_flags([(0, 1), (1, 4), (100, 1)], [(1, 1, 'spikes')])
+        self.assertEqual(result['outside_fault_seconds'], 100)
+
+    def test_duplicate_timestamp_uses_injected_sample_identity(self):
+        result = score_flags([(0, 1), (1, 4), (1, 1), (2, 1)],
+                             [(1, 1, 'spikes')], truth_samples=[[2]])
+        self.assertEqual(result['missed'], 1)
+        self.assertEqual(result['false_flags'], 1)
 
 
 class ReplayTests(unittest.TestCase):
@@ -114,6 +158,24 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(result['false_flags'], 0)
         self.assertEqual(result['missing_flag_samples'], 0)
 
+    def test_clock_jump_recovery_flag_is_not_scored(self):
+        root = self.fixture()
+        self.sample(root, SAMPLE_LAYOUTS[0])
+        scenario = {'field': 'MwxAirTemp', 'fault': 'clock_jump',
+                    'params': {'start': 1, 'end': 1, 'seconds': 90}}
+        result = run(scenario, MODULE, 'TimingDetector', {}, sample_root=root,
+                     flag_suffix='_DG', threshold=4)
+        self.assertEqual(result['false_flags'], 0)
+
+    def test_buffered_output_is_scored_at_returned_record_source_time(self):
+        root = self.fixture()
+        self.sample(root, SAMPLE_LAYOUTS[0])
+        scenario = {'field': 'MwxAirTemp', 'fault': 'step',
+                    'params': {'start': 1, 'end': 1, 'bias': 5}}
+        result = run(scenario, MODULE, 'BufferedDetector', {}, sample_root=root)
+        self.assertEqual(result['faults'][0]['latency_seconds'], 0)
+        self.assertEqual(result['missing_flag_samples'], 1)
+
     def test_front_replays_two_linked_fields_on_one_record(self):
         root = self.fixture()
         self.sample(root, SAMPLE_LAYOUTS[0])
@@ -143,3 +205,11 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(results['custom']['truth'], [[ROW_START + 1, ROW_START + 1, 'custom']])
         self.assertEqual(results['custom']['faults'][0]['latency_seconds'], 0)
         self.assertIn('| custom |', (output / 'summary.md').read_text(encoding='utf-8'))
+
+    def test_duplicate_scenario_names_are_rejected(self):
+        root = self.fixture()
+        scenarios = root / 'scenarios.yaml'
+        scenarios.write_text('same: {}\nsame: {}\n', encoding='utf-8')
+        with self.assertRaisesRegex(SystemExit, '2'):
+            main(['run', '--scenarios', str(scenarios), '--detector',
+                  f'{MODULE}:TimingDetector', '--sample-root', str(root)])

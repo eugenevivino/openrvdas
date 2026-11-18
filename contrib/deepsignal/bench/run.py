@@ -86,7 +86,8 @@ def _flag_number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
-def score_flags(flags, truth, *, threshold=3, flag_suffix='_QC'):
+def score_flags(flags, truth, *, threshold=3, flag_suffix='_QC', truth_samples=None,
+                ignored_samples=()):
     """Score (source timestamp, flag) pairs against inclusive injector truth intervals."""
     if not _flag_number(threshold):
         raise ValueError('Flag threshold must be a finite number')
@@ -94,34 +95,67 @@ def score_flags(flags, truth, *, threshold=3, flag_suffix='_QC'):
     timestamps = [timestamp for timestamp, _ in flags]
     if any(current < previous for previous, current in zip(timestamps, timestamps[1:])):
         raise ValueError('Score timestamps must be in source order')
-    present = [_flag_number(flag) for _, flag in flags]
-    flagged = [valid and flag >= threshold and (flag_suffix != '_QC' or flag in (3, 4))
+    del flag_suffix  # Verdict semantics do not depend on the field spelling.
+    numeric = [_flag_number(flag) for _, flag in flags]
+    invalid = sorted({flag for (_, flag), valid in zip(flags, numeric)
+                      if valid and flag not in (1, 2, 3, 4, 9)})
+    if invalid:
+        raise ValueError(f'Invalid QARTOD verdict code(s): {invalid}')
+    present = [valid and flag != 9 for (_, flag), valid in zip(flags, numeric)]
+    flagged = [valid and flag in (3, 4) and flag >= threshold
                for (_, flag), valid in zip(flags, present)]
 
     on_fault = [False] * len(flags)
     on_trap = [False] * len(flags)
     events = []
-    for start, end, name in truth:
+    ignored = set(ignored_samples)
+    if any(index < 0 or index >= len(flags) for index in ignored):
+        raise ValueError('Ignored sample index is out of range')
+    if truth_samples is not None and len(truth_samples) != len(truth):
+        raise ValueError('Truth sample selections must match truth intervals')
+    for truth_index, (start, end, name) in enumerate(truth):
         if not (math.isfinite(start) and math.isfinite(end) and start <= end):
             raise ValueError(f'Invalid truth interval {start!r}, {end!r}')
         first = bisect_left(timestamps, start)
         stop = bisect_right(timestamps, end)
         if first == stop:
             raise ValueError(f'Truth interval {start!r}, {end!r} has no source samples')
+        selected = (list(range(first, stop)) if truth_samples is None else
+                    list(truth_samples[truth_index]))
+        if not selected:
+            raise ValueError(f'Truth interval {start!r}, {end!r} has no injected samples')
         if name == 'trap':
-            on_trap[first:stop] = [True] * (stop - first)
+            for index in selected:
+                on_trap[index] = True
         else:
-            on_fault[first:stop] = [True] * (stop - first)
-            detected = next((timestamps[i] for i in range(first, stop) if flagged[i]), None)
+            for index in selected:
+                on_fault[index] = True
+            detected = next((timestamps[i] for i in selected
+                             if i not in ignored and flagged[i]), None)
             events.append({'name': name, 'start': start, 'end': end,
                            'latency_seconds': None if detected is None else detected - start})
 
-    # Attribute the interval to the next source sample to the current sample.
+    # Verdict coverage is attributed forward, but fault exposure is continuous.
     durations = [after - before for before, after in zip(timestamps, timestamps[1:])] + [0]
-    outside_seconds = sum(seconds for seconds, fault in zip(durations, on_fault) if not fault)
-    trap_seconds = sum(seconds for seconds, trap in zip(durations, on_trap) if trap)
-    false_flags = sum(raised and not fault for raised, fault in zip(flagged, on_fault))
-    trap_flags = sum(raised and trap for raised, trap in zip(flagged, on_trap))
+    fault_ranges = [(start, end) for start, end, name in truth if name != 'trap']
+    trap_ranges = [(start, end) for start, end, name in truth if name == 'trap']
+
+    def overlap(begin, end, ranges):
+        return sum(max(0, min(end, last) - max(begin, first))
+                   for first, last in ranges)
+
+    outside_seconds = sum(
+        max(0, seconds - overlap(timestamp, timestamp + seconds, fault_ranges))
+        for index, ((timestamp, _), seconds, valid) in
+        enumerate(zip(flags, durations, present)) if valid and index not in ignored)
+    trap_seconds = sum(
+        overlap(timestamp, timestamp + seconds, trap_ranges)
+        for index, ((timestamp, _), seconds, valid) in
+        enumerate(zip(flags, durations, present)) if valid and index not in ignored)
+    false_flags = sum(raised and not fault and index not in ignored
+                      for index, (raised, fault) in enumerate(zip(flagged, on_fault)))
+    trap_flags = sum(raised and trap and index not in ignored
+                     for index, (raised, trap) in enumerate(zip(flagged, on_trap)))
     false_rate = false_flags * 3600 / outside_seconds if outside_seconds else None
 
     return {
@@ -187,7 +221,8 @@ def run(scenario, detector_module, detector_class, kwargs, *,
     injected, linked, truth = _inject(scenario, series, rows)
     detector = _resolve(detector_module, detector_class)(**kwargs)
 
-    flags = []
+    flags = [[source_time, None] for source_time, _, _ in rows]
+    record_sources = {}
     for i, ((source_time, message, fields), (timestamp, value)) in enumerate(zip(rows, injected)):
         record_fields = dict(fields)
         record_fields[field] = value
@@ -195,13 +230,30 @@ def run(scenario, detector_module, detector_class, kwargs, *,
             record_fields[scenario['companion_field']] = linked[i][1]
         record = DASRecord(timestamp=timestamp, fields=record_fields, data_id='mwx1',
                            message_type=message)
+        record_sources[id(record)] = i
         if timestamp == 0:
             record.timestamp = timestamp
         result = detector.transform(record)
-        flag = None if result is None else result.fields.get(field + flag_suffix)
-        flags.append((source_time, flag))
+        if result is not None:
+            result_index = record_sources.get(id(result))
+            if result_index is None:
+                raise ValueError('Detector returned a record that was not supplied by the replay')
+            flags[result_index][1] = result.fields.get(field + flag_suffix)
 
-    scores = score_flags(flags, truth, threshold=threshold, flag_suffix=flag_suffix)
+    changed = [original != modified for original, modified in zip(series, injected)]
+    truth_samples = []
+    for start, end, _ in truth:
+        truth_samples.append([index for index, ((timestamp, _), altered) in
+                              enumerate(zip(series, changed))
+                              if start <= timestamp <= end and altered])
+    ignored = []
+    if scenario.get('fault') == 'clock_jump':
+        altered = [index for index, value in enumerate(changed) if value]
+        if altered and altered[-1] + 1 < len(rows):
+            ignored.append(altered[-1] + 1)
+    scores = score_flags([tuple(item) for item in flags], truth, threshold=threshold,
+                         flag_suffix=flag_suffix, truth_samples=truth_samples,
+                         ignored_samples=ignored)
     return {'field': field, 'flag_field': field + flag_suffix, 'threshold': threshold,
             'truth': truth, **scores}
 
@@ -234,6 +286,18 @@ def main(argv=None):
     """Run named scenarios from YAML and write results.json and summary.md."""
     import yaml
 
+    class UniqueKeyLoader(yaml.SafeLoader):
+        """Safe YAML loader that rejects silently overwritten scenario names."""
+
+        def construct_mapping(self, node, deep=False):
+            mapping = {}
+            for key_node, value_node in node.value:
+                key = self.construct_object(key_node, deep=deep)
+                if key in mapping:
+                    raise ValueError(f'Duplicate scenario name {key!r}')
+                mapping[key] = self.construct_object(value_node, deep=deep)
+            return mapping
+
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     command = commands.add_parser('run', help='replay and score a scenario file')
@@ -251,7 +315,7 @@ def main(argv=None):
         if not isinstance(kwargs, dict):
             raise ValueError('--kwargs must be a JSON object')
         with args.scenarios.open(encoding='utf-8') as stream:
-            scenarios = yaml.safe_load(stream)
+            scenarios = yaml.load(stream, Loader=UniqueKeyLoader)
         if not isinstance(scenarios, dict) or not scenarios:
             raise ValueError('Expected a nonempty mapping of scenario names to configurations')
         results = {}

@@ -128,7 +128,8 @@ def flatline(series, *, start=0, end=None, seed=0):
     """Hold the first value in the window for its duration."""
     window = _window(series, start, end)
     held = series[window.start][1] if window.start < window.stop else None
-    values = [(timestamp, held) for timestamp, _ in series[window]]
+    values = [(timestamp, None if value is None else held)
+              for timestamp, value in series[window]]
     return _replace(series, window, values, 'flatline')
 
 

@@ -29,11 +29,11 @@ range limits with `{}`. Optional `minimum` and `maximum` kwargs set explicit
 range limits.
 
 Set `--flag-suffix _DG` or `--flag-suffix _SHIP` to read a different output
-field, and `--threshold` to select its minimum alarm value. For `_QC`, the
-default threshold of 3 counts suspect (3) and bad (4). A threshold of 4 counts
-bad only. Missing (9) is a separate QARTOD status, so a dropout scored only
-as missing will show as a missed detection. Custom suffixes use a numeric
-comparison against the configured threshold.
+field, and `--threshold` to select its minimum alarm value. Verdict semantics
+are independent of the suffix. The default threshold of 3 counts QARTOD
+suspect (3) and bad (4), while a threshold of 4 counts bad only. Missing (9)
+and an absent verdict are reported as missing verdicts and never count as an
+alarm or detection. Other numeric QARTOD codes are configuration errors.
 
 ## Scenarios
 
@@ -52,13 +52,14 @@ so clock resets remain visible and latency uses the original clock.
 - **Clock reset** shifts timestamps backward by `seconds`. Set the window and
   shift so its first timestamp moves behind the preceding source timestamp.
 - **Spikes** adds signed `size` to each of `count` samples chosen using the seed.
-- **Flatline** holds the first value in the window.
+- **Flatline** holds the first value in the window without filling source gaps.
 - **Dropout** replaces values with `None`.
 - **Front** adds the same `bias` to two linked fields on the same records, using
   `companion_field` for the second field and labeling the interval as a trap.
-- **Turn** eases through a signed `degrees` sweep with wraparound at 360 and
-  labels the interval as a trap. The sample uses relative wind direction as
-  a proxy for the angular sweep of a turn.
+- **Turn** eases through a signed `degrees` excursion, returns smoothly to the
+  source heading at the window boundary, preserves source gaps, and labels the
+  interval as a trap. The sample uses relative wind direction as a proxy for
+  the angular sweep of a turn.
 
 Set `injector: package.module:function` to use a plug-in. It receives a list
 of `(epoch_seconds, value)` pairs and keyword arguments for `seed` and
@@ -77,12 +78,15 @@ and executed.
   qualifying flag, with each spike scored as its own interval.
 - **False flags/h** counts flagged samples per observed hour outside fault
   intervals, including samples in traps. **False alarms/ship-day** scales that
-  rate to 24 hours. Consecutive flagged samples count individually.
+  rate to 24 hours. Consecutive flagged samples count individually. Point
+  faults do not remove the interval until the following sample from exposure.
 - **Trap flags** counts flagged samples in traps. **Trap flags/h** uses time
   within traps as its denominator. Both hourly rates assign elapsed time to
   the preceding source sample. Rates with zero observed time show as `n/a`.
-- **Missing flag samples** counts absent or nonnumeric verdicts, including when
-  the configured suffix is wrong. A QARTOD verdict of 9 is a present verdict.
+- **Missing flag samples** counts absent, nonnumeric, and QARTOD 9 verdicts,
+  including when the configured suffix is wrong. Time following a missing
+  verdict is not included in a rate denominator. Unsupported numeric QARTOD
+  codes stop the scenario rather than silently contributing no alarms.
 
 The sample spans part of a single cruise and the injected faults are
 idealized. The 24-hour rate is an extrapolation from the replay. These results

@@ -64,6 +64,11 @@ class FaultTests(unittest.TestCase):
         expected = [(100, 10), (110, 12), (120, 12), (130, 12), (140, 15)]
         self.check_injection(faults.flatline, expected)
 
+    def test_flatline_preserves_source_gaps(self):
+        series = [(100, 10), (110, None), (120, 12)]
+        output, _ = faults.flatline(series, start=0, end=20)
+        self.assertEqual(output, [(100, 10), (110, None), (120, 10)])
+
     def test_dropout(self):
         expected = [(100, 10), (110, None), (120, None), (130, None), (140, 15)]
         self.check_injection(faults.dropout, expected)
@@ -79,6 +84,13 @@ class FaultTests(unittest.TestCase):
     def test_turn_is_smooth_and_wraps_heading(self):
         heading = [(100, 340), (110, 350), (115, 347), (120, 344), (130, 342), (140, 341)]
         output, truth = traps.turn(heading, **self.window, degrees=40)
-        self.assertEqual(output, [(100, 340), (110, 350), (115, 356.25), (120, 10),
-                                  (130, 30), (140, 341)])
+        self.assertEqual(output, [(100, 340), (110, 350), (115, 369.5 % 360),
+                                  (120, 24), (130, 342), (140, 341)])
         self.assertEqual(truth, [(110, 130, 'trap')])
+
+    def test_turn_preserves_source_gaps_and_recovers_at_boundary(self):
+        heading = [(0, 300), (1, 310), (2, None), (3, 320), (4, 318)]
+        output, _ = traps.turn(heading, start=1, end=3, degrees=145)
+        self.assertEqual(output[2], (2, None))
+        self.assertEqual(output[3], (3, 320))
+        self.assertEqual(output[4], (4, 318))

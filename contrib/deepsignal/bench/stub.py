@@ -1,5 +1,7 @@
 """A small range check for exercising the benchmark without other QC modules."""
 
+import math
+
 from logger.transforms.transform import Transform
 from logger.utils import formats
 
@@ -26,7 +28,9 @@ class StubThresholdDetector(Transform):
             minimum, maximum = self.minimum, self.maximum
             if minimum is None and maximum is None:
                 minimum, maximum = self.DEFAULT_RANGES.get(field, (None, None))
-            if value is None:
+            if (value is None or not isinstance(value, (int, float)) or
+                    isinstance(value, bool) or not math.isfinite(value) or
+                    minimum is None or maximum is None):
                 flag = 9
             elif ((minimum is not None and value < minimum) or
                   (maximum is not None and value > maximum)):

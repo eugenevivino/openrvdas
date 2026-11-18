@@ -21,8 +21,11 @@ def turn(series, *, degrees, start=0, end=None, seed=0):
     first, initial = samples[0]
     duration = samples[-1][0] - first
     values = []
-    for timestamp, _ in samples:
+    for timestamp, value in samples:
         fraction = (timestamp - first) / duration if duration else 0
-        eased = fraction ** 2 * (3 - 2 * fraction)
-        values.append((timestamp, (initial + degrees * eased) % 360))
+        # Return to the source heading at the boundary so ending the synthetic
+        # manoeuvre cannot create an out-of-truth reversal.
+        eased = 16 * fraction ** 2 * (1 - fraction) ** 2
+        values.append((timestamp, None if value is None else
+                       (value + degrees * eased) % 360))
     return _replace(series, window, values, 'trap')
