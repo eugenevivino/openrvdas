@@ -67,15 +67,48 @@ if [ ! -f "$NGINX_CONF" ]; then
 fi
 
 installer_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
-temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/deepsignal-console.XXXXXX")
+nginx_helper=$installer_dir/nginx-site.awk
+
+trusted_path() (
+    path=$1
+    [ -f "$path" ] || return 1
+    while :; do
+        [ ! -L "$path" ] || return 1
+        metadata=$(stat -c '%u %a' -- "$path" 2>/dev/null ||
+                   stat -f '%u %Lp' -- "$path" 2>/dev/null) || return 1
+        read -r owner mode <<EOF
+$metadata
+EOF
+        case "$mode" in ''|*[!0-7]*) return 1 ;; esac
+        [ "$owner" = 0 ] && [ "$((0$mode & 022))" -eq 0 ] || return 1
+        [ "$path" != / ] || return 0
+        path=${path%/*}
+        path=${path:-/}
+    done
+)
+
+uid=$(id -u)
+if [ "$uid" -eq 0 ] || $CHECK; then
+    for program in "$installer_dir/${0##*/}" "$nginx_helper"; do
+        if ! trusted_path "$program"; then
+            echo "$program must be in a root-owned release with no symlinks or group/world-writable path components." >&2
+            exit 1
+        fi
+    done
+fi
+
+temp_parent=${TMPDIR:-/tmp}
+# Root's snapshot must not sit in a caller-selected writable directory.
+if [ "$uid" -eq 0 ]; then temp_parent=/tmp; fi
+temp_dir=$(mktemp -d "$temp_parent/deepsignal-console.XXXXXX")
 trap 'rm -rf "$temp_dir"' EXIT
 trap 'exit 1' HUP INT TERM
 original=$temp_dir/original
 tmp=$temp_dir/proposed
 cp "$NGINX_CONF" "$original"
 
-if region=$(LC_ALL=C CONSOLE_SERVER_NAME="$SERVER_NAME" awk -f "$installer_dir/nginx-site.awk" "$original"); then
-    read -r start end relay <<EOF
+if region=$(LC_ALL=C CONSOLE_SERVER_NAME="$SERVER_NAME" awk -f "$nginx_helper" "$original"); then
+    read -r start end relay server_start server_size probe_name probe_port probe_scheme probe_address <<EOF
 $region
 EOF
 else
@@ -93,17 +126,66 @@ relay_warning() {
 }
 
 check_relay() (
-    if [ ! -f "$OPENRVDAS_ROOT/contrib/deepsignal/security/check_cds.py" ]; then
-        echo "The #197 read-only relay checker is missing." >&2
+    release_root=$(CDPATH='' cd -- "$installer_dir/../../../.." && pwd -P) || return 1
+    checker=$release_root/contrib/deepsignal/security/check_cds.py
+    if [ ! -f "$checker" ]; then
+        echo "The #197 read-only relay checker is missing at $checker. Stage a release that includes #197." >&2
         return 1
     fi
-    cd "$OPENRVDAS_ROOT" || return 1
+    if ! trusted_path "$checker"; then
+        echo "The #197 read-only relay checker at $checker must be root-owned, with no symlinks or group/world-writable path components." >&2
+        return 1
+    fi
+    case "$probe_name" in
+        ''|[!a-zA-Z0-9]*|*[!a-zA-Z0-9.-]*|*[!a-zA-Z0-9])
+            echo "Set a concrete server_name on the selected nginx server to check /cds-ws." >&2
+            return 1 ;;
+    esac
+    selected_site=$temp_dir/selected-site
+    {
+        printf 'server '
+        dd if="$original" bs=1 skip="$server_start" count="$server_size" 2>/dev/null
+    } > "$selected_site" || return 1
+    gateway_url=$probe_scheme://$probe_name:$probe_port/cds-ws
+    set -- --gateway-url "$gateway_url" --nginx-config "$selected_site" \
+        --nginx-react-config "$selected_site" \
+        --console-source "$release_root/contrib/deepsignal/console/src/pages.ts"
     if [ -n "$UDP_PORT" ]; then
-        set -- --udp-port "$UDP_PORT" --udp-interface "$UDP_INTERFACE"
+        set -- "$@" --udp-port "$UDP_PORT" --udp-interface "$UDP_INTERFACE"
     else
         echo "If the cache uses --udp, supply --udp-port and --udp-interface to check its UDP bind." >&2
     fi
-    python3 -B -E -s -m contrib.deepsignal.security.check_cds "$@"
+    cd / || return 1
+    export NO_PROXY='*' no_proxy='*'
+    # The eadb0a2 checker doesn't send the Origin required by its nginx snippets.
+    # Give only the nginx handshake a browser Origin and pin it to the listen address.
+    python3 -I -B - "$checker" "$gateway_url" "$probe_address" "$@" <<'PY'
+import ipaddress
+import runpy
+import sys
+from urllib.parse import urlsplit
+
+checker, gateway_url, address = sys.argv[1:4]
+try:
+    address = str(ipaddress.ip_address(address.strip('[]')))
+except ValueError:
+    sys.exit('Use an IP address or wildcard in the selected nginx listen directive.')
+sys.argv = [checker, *sys.argv[4:]]
+program = runpy.run_path(checker)
+websockets = program.get('websockets')
+if websockets is not None:
+    connect = websockets.connect
+    scheme = 'https' if gateway_url.startswith('wss:') else 'http'
+    origin = f'{scheme}://{urlsplit(gateway_url).netloc}'
+
+    def connect_with_origin(uri, **kwargs):
+        if uri == gateway_url:
+            kwargs.update(host=address, origin=origin)
+        return connect(uri, **kwargs)
+
+    websockets.connect = connect_with_origin
+sys.exit(program['main']())
+PY
 )
 
 if ! $UNINSTALL; then
@@ -163,7 +245,7 @@ if $DRY_RUN; then
     exit 0
 fi
 
-if [ "$(id -u)" -ne 0 ]; then
+if [ "$uid" -ne 0 ]; then
     echo "Run this installer as root, or use --dry-run to preview the change." >&2
     exit 1
 fi

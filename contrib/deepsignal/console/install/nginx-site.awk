@@ -1,6 +1,6 @@
 # Return byte offsets for the managed block (or its insertion point), and the
-# selected server's local /cds-ws configuration. The installer copies all other
-# bytes verbatim. Run with LC_ALL=C so offsets are bytes even in UTF-8 files.
+# selected server's bounds and local /cds-ws endpoint. The installer copies all
+# other bytes verbatim. Run with LC_ALL=C so offsets are bytes even in UTF-8 files.
 
 function word() {
     if (in_word) {
@@ -10,11 +10,30 @@ function word() {
     }
 }
 
+function listener(    address, port, scheme, i) {
+    address = words[2]
+    port = 80
+    scheme = "ws"
+    if (address ~ /^[0-9]+$/) {
+        port = address
+        address = "*"
+    } else if (address ~ /:[0-9]+$/) {
+        port = address
+        sub(/^.*:/, "", port)
+        sub(/:[0-9]+$/, "", address)
+    }
+    if (address == "*" || address == "0.0.0.0") address = "127.0.0.1"
+    if (address == "[::]") address = "[::1]"
+    for (i = 3; i <= count; i++) if (words[i] == "ssl") scheme = "wss"
+    endpoints[server] = port " " scheme " " address
+}
+
 function directive(end, position, line_prefix,    i, path, exact) {
     if (end == "{") {
         if (words[1] == "server" && count == 1 && depth == http_depth) {
             server = ++servers
             server_depth = depth + 1
+            server_start[server] = position
         } else if (words[1] == "http" && depth == 0) {
             http_depth = 1
         } else if (server && depth == server_depth && !in_marker && words[1] == "location") {
@@ -31,7 +50,10 @@ function directive(end, position, line_prefix,    i, path, exact) {
         depth++
     } else if (end == ";") {
         if (server && depth == server_depth && words[1] == "server_name") {
+            if (!(server in primary_name)) primary_name[server] = words[2]
             for (i = 2; i <= count; i++) if (words[i] == ENVIRON["CONSOLE_SERVER_NAME"]) named[server] = 1
+        } else if (server && depth == server_depth && words[1] == "listen") {
+            if (!(server in endpoints)) listener()
         } else if (server && depth == server_depth && words[1] == "include") {
             regex_or_include[server] = 1
         } else if (route_depth && words[1] == "proxy_pass") {
@@ -50,6 +72,7 @@ function directive(end, position, line_prefix,    i, path, exact) {
             if (in_marker) bad_markers[server] = 1
             in_marker = 0
             insert_at[server] = (line_prefix ~ /^[ \t]*$/) ? offset : position
+            server_end[server] = position
             server = 0
         }
         if (depth <= http_depth) http_depth = 0
@@ -122,8 +145,13 @@ END {
     if (bad_markers[selected]) exit 5
     if (begin_at[selected] != "") printf "%d %d", begin_at[selected], end_at[selected]
     else printf "%d %d", insert_at[selected], insert_at[selected]
-    if (!routes[selected]) print " missing"
+    if (!routes[selected]) status = "missing"
     else if (routes[selected] == 1 && gateway[selected] == 1 && !other_proxy[selected] &&
-        (protected_route[selected] || !regex_or_include[selected])) print " gateway"
-    else print " unsafe"
+        (protected_route[selected] || !regex_or_include[selected])) status = "gateway"
+    else status = "unsafe"
+    name = ENVIRON["CONSOLE_SERVER_NAME"]
+    if (name == "") name = primary_name[selected]
+    if (name == "") name = "_"
+    endpoint = selected in endpoints ? endpoints[selected] : "80 ws 127.0.0.1"
+    print " " status, server_start[selected], server_end[selected] - server_start[selected] + 1, name, endpoint
 }

@@ -25,7 +25,9 @@ def nginx_stub(tmp_path):
         "exec /usr/bin/id \"$@\"\n",
         encoding="utf-8",
     )
-    for command in ("nginx", "systemctl", "id"):
+    # The checkout stands in for a trusted release when simulating root.
+    (tools / "stat").write_text("#!/bin/sh\necho '0 755'\n", encoding="utf-8")
+    for command in ("nginx", "systemctl", "id", "stat"):
         (tools / command).chmod(0o755)
     return str(tools)
 

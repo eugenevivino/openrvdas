@@ -1,27 +1,36 @@
 # Turn on the DeepSignal Console in 5 minutes
 
-The installer serves the already-built DeepSignal Console through the ship server's existing nginx service; it does not alter OpenRVDAS data or processes.
+The installer serves the already-built DeepSignal Console through the ship server's existing nginx service.
+
+## Stage the installer and relay checker
+
+#197 must land before deploying the console with live data. Stage a trusted release at `/opt/deepsignal-release`. The release must include `contrib/deepsignal/console/install/install.sh`, its sibling `nginx-site.awk`, and `contrib/deepsignal/security/check_cds.py` from #197. These files and each directory on their paths must be root-owned and free of symlinks and group or other write permission. The stock installer assigns the `/opt/openrvdas` deployment to `rvdas`. That deployment supplies the console assets. The root-owned release supplies the installer and checker. Use a root-managed Python installation with the #197 checker's existing `websockets` dependency available.
+
+Configure the selected nginx virtual host to serve `/cds-ws` through the #197 relay and load that configuration in nginx before running the console installer. Use a concrete `server_name` that matches the browser hostname. The check connects to the host's first `listen` address and port using that name and validates TLS for HTTPS. Use `--server-name NAME` to select one server if the file contains several. If the cache receives UDP, pass `--udp-port PORT --udp-interface ADDRESS`.
 
 ## Turn it on and see it working
 
 These are the three setup actions:
 
-1. Run `sudo /opt/openrvdas/contrib/deepsignal/console/install/install.sh`.
+1. Run `sudo /opt/deepsignal-release/contrib/deepsignal/console/install/install.sh`.
 2. Open `http://<server>/console/`, replacing `<server>` with the ship server name or address.
 3. Read the **Self-test** page. Every healthy check says **Pass** and has a filled-circle shape; a failed check says **Down** and has a cross.
 
 The command auto-detects the normal Ubuntu or RHEL nginx configuration, makes a timestamped backup, checks the complete nginx configuration, and reloads nginx. To inspect its proposed edit without root or any file change, add `--dry-run`. Nonstandard installations can use:
 
 ```sh
-sudo ./install.sh --openrvdas-root /srv/openrvdas --nginx-conf /etc/nginx/conf.d/ship.conf
+sudo /opt/deepsignal-release/contrib/deepsignal/console/install/install.sh \
+    --openrvdas-root /srv/openrvdas --nginx-conf /etc/nginx/conf.d/ship.conf
 ```
+
+Use `--check` with the same server and UDP options to rerun the relay gate without editing nginx. For a host with `/cds-ws` configured, the gate must pass before the installer edits nginx.
 
 If a check is down, use **Copy report** and send the plain-text result to the technician responsible for the server. The report includes the cache URL, field and logger counts, cruise mode, newest-record age, and page-file result.
 
 ## Turn it off
 
 ```sh
-sudo /opt/openrvdas/contrib/deepsignal/console/install/install.sh --uninstall
+sudo /opt/deepsignal-release/contrib/deepsignal/console/install/install.sh --uninstall
 ```
 
 This removes only the nginx text between the `BEGIN deepsignal-console` and `END deepsignal-console` markers, tests nginx, and reloads it. Add `--no-reload` to either real command to print the reload command instead of running it.
