@@ -1,0 +1,9 @@
+cruise_id: RR2205
+ship: {name: Roger Revelle, ices_code: null, call_sign: KAOU}
+start: 2022-04-01T00:00Z
+end: 2022-05-10T00:00Z
+departure_port: {name: San Diego, unlocode: USSAN}
+arrival_port: {name: Honolulu, unlocode: null}
+chief_scientist: {name: Example Person}
+participants: []
+data_policy: release_policy.yaml
