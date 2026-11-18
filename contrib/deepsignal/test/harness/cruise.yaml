@@ -1,0 +1,80 @@
+cruise:
+  id: NBP1406-deepsignal-fixture
+  start: '2014-08-01'
+  end: '2014-08-02'
+
+loggers:
+  mwx1: {configs: [mwx1-replay]}
+  s330: {configs: [s330-replay]}
+  knud1: {configs: [knud1-replay]}
+  true_winds: {configs: [true_winds-on]}
+
+modes:
+  replay:
+    mwx1: mwx1-replay
+    s330: s330-replay
+    knud1: knud1-replay
+    true_winds: true_winds-on
+
+configs:
+  mwx1-replay:
+    readers:
+    - class: LogfileReader
+      kwargs: {filebase: __MWX1_FILE__, tail: true, use_timestamps: true}
+    transforms: &parse
+    - class: ParseTransform
+      kwargs:
+        metadata_interval: 10
+        definition_path: __DEVICE_DEFINITIONS__
+    writers: &cache
+    - class: CachedDataWriter
+      kwargs: {data_server: '__DATA_SERVER__'}
+  s330-replay:
+    readers:
+    - class: LogfileReader
+      kwargs: {filebase: __S330_FILE__, tail: true, use_timestamps: true}
+    transforms: *parse
+    writers: *cache
+  knud1-replay:
+    readers:
+    - class: LogfileReader
+      kwargs: {filebase: __KNUD_FILE__, tail: true, use_timestamps: true}
+    transforms: *parse
+    writers: *cache
+  true_winds-on:
+    readers:
+    - class: CachedDataReader
+      kwargs:
+        data_server: '__DATA_SERVER__'
+        subscription:
+          fields:
+            MwxPortRelWindSpeed: {seconds: -1}
+            MwxPortRelWindDir: {seconds: -1}
+            MwxStbdRelWindSpeed: {seconds: -1}
+            MwxStbdRelWindDir: {seconds: -1}
+            S330SpeedKt: {seconds: -1}
+            S330HeadingTrue: {seconds: -1}
+    writers:
+    - class: ComposedWriter
+      kwargs:
+        transforms:
+        - class: TrueWindsTransform
+          kwargs:
+            apparent_dir_name: PortApparentWindDir
+            convert_speed_factor: 0.5144
+            course_field: S330CourseTrue
+            heading_field: S330HeadingTrue
+            speed_field: S330SpeedKt
+            wind_dir_field: MwxPortRelWindDir
+            wind_speed_field: MwxPortRelWindSpeed
+            true_dir_name: PortTrueWindDir
+            true_speed_name: PortTrueWindSpeed
+            update_on_fields: [MwxPortRelWindDir]
+            max_field_age:
+              S330CourseTrue: 15
+              S330HeadingTrue: 15
+              S330SpeedKt: 15
+              MwxPortRelWindDir: 15
+              MwxPortRelWindSpeed: 15
+            metadata_interval: 10
+        writers: *cache
