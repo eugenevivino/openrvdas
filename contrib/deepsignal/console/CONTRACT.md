@@ -44,6 +44,9 @@ Page files are YAML: `title`, optional `order`, `tiles: [ {type, label, wide, ..
 Built-in pages come from module `presets`; a ship's own files in `public/pages/`
 override presets with the same id; `console.yaml` `pages:` sets which show and in
 what order (empty = all). Auto-generated pages use `ctx.pages.register()`.
+A tile may carry `fallback: <type>`: when its `type` is not installed, core renders
+the fallback type with the same settings; without a fallback, core shows a
+PageProblem for that tile only and the rest of the page still works.
 `TileDef.validate` throws a `PageProblem`; core shows it as:
 "<file>, tile <n>: <setting> is <saw>. Expected <expected>. Example: <example>".
 
