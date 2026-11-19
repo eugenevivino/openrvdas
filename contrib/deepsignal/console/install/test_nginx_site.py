@@ -1,4 +1,4 @@
-"""Regression tests for selecting the console nginx host and checking the relay."""
+"""Installer trust, isolation, and live nginx regression tests."""
 
 import asyncio
 from contextlib import contextmanager
@@ -9,544 +9,393 @@ import shlex
 import shutil
 import socket
 import subprocess
-import sys
-import tempfile
-import unittest
+from urllib.error import HTTPError
+from urllib.request import ProxyHandler, Request, build_opener
+
+import pytest
+
+from contrib.deepsignal.console.install import test_owned_site
 
 
-INSTALLER = Path(__file__).with_name('install.sh').resolve()
-README = INSTALLER.parent.parent / 'README.md'
-SECURITY = README.parents[1] / 'security'
-RELAY_TEMPLATES = ('cds-ws.conf', 'cds-ws-react.conf')
+nginx_install = test_owned_site.nginx_install
 
 
-class InstallTests(unittest.TestCase):
-    def setUp(self):
-        temp = tempfile.TemporaryDirectory()
-        self.addCleanup(temp.cleanup)
-        self.root = Path(temp.name)
-        self.conf = self.root / 'ship.conf'
-        self.installer = self.root / 'contrib/deepsignal/console/install/install.sh'
-        self.installer.parent.mkdir(parents=True)
-        shutil.copyfile(INSTALLER, self.installer)
-        shutil.copyfile(INSTALLER.with_name('nginx-site.awk'),
-                        self.installer.with_name('nginx-site.awk'))
-        self.tools = self.root / 'bin'
-        self.tools.mkdir()
-        # Simulate root ownership on the developer's filesystem. The trust
-        # regressions override ownership or mode for a single fixture path.
-        for name, body in {
-            'id': 'echo 0',
-            'nginx': 'if [ "$1" = -T ]; then printf "# configuration file %s:\\n" '
-                     '"$TEST_NGINX_MAIN"; fi',
-            'python3': f'exec {shlex.quote(sys.executable)} "$@"',
-            'stat': 'for path do :; done\n'
-                    'case "$path" in\n'
-                    '  "$SERVICE_OWNED") echo "1000 755" ;;\n'
-                    '  "$SERVICE_WRITABLE") echo "0 775" ;;\n'
-                    '  *) echo "0 755" ;;\n'
-                    'esac',
-        }.items():
-            command = self.tools / name
-            command.write_text(f'#!/bin/sh\n{body}\n', encoding='utf-8')
-            command.chmod(0o755)
+CONSOLE = Path(__file__).resolve().parents[1]
+SECURITY = CONSOLE.parent / 'security'
 
-    def run_install(self, *args, env=None):
-        return subprocess.run(
-            ['/bin/sh', str(self.installer), '--nginx-conf', str(self.conf),
-             '--no-reload', '--openrvdas-root', str(self.root), *args],
-            env=(os.environ | {'PATH': str(self.tools) + os.pathsep + os.environ['PATH'],
-                               'TEST_NGINX_MAIN': str(self.conf)}
-                 | (env or {})),
-            capture_output=True, text=True, check=False,
-        )
 
-    def test_multisite_requires_an_unambiguous_name(self):
-        original = 'server { server_name ship; }\nserver { server_name ship other; }\n'
-        for args in [(), ('--server-name', 'ship'), ('--server-name', 'absent')]:
-            with self.subTest(args=args):
-                self.conf.write_text(original, encoding='utf-8')
-                result = self.run_install(*args)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn('server', result.stderr)
-                self.assertEqual(self.conf.read_text(encoding='utf-8'), original)
+def test_multiple_includes_refuse_an_ambiguous_target(nginx_install):
+    _, main, site, run = nginx_install
+    original = f'events {{}} http {{ include sites/*.conf; include {site}; }}\n'
+    main.write_text(original)
+    result = run()
+    assert result.returncode != 0
+    assert 'exactly one include' in result.stderr
+    assert main.read_text() == original
+    assert not site.exists()
 
-    def test_install_and_uninstall_only_touch_named_server(self):
-        self.stage_static_gate()
-        other = ('server {\n    server_name other;\n'
-                 '    # BEGIN deepsignal-console\n'
-                 '    location /console/ { return 404; }\n'
-                 '    # END deepsignal-console\n}\n')
-        selected = ('server { # }\n    server_name ship alias;\n'
-                    '    location / { return 200 "a } # b"; }}\n')
-        suffix = '# Preserve this last line without a newline'
-        original = other + selected + suffix
-        self.conf.write_text(original, encoding='utf-8')
-        result = self.run_install('--server-name', 'alias')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        installed = self.conf.read_text(encoding='utf-8')
-        self.assertTrue(installed.startswith(other))
-        self.assertTrue(installed.endswith(suffix))
-        self.assertEqual(installed.count('# BEGIN deepsignal-console'), 2)
-        self.assertIn('location = /cds-ws { return 503; }', installed)
-        again = self.run_install('--server-name', 'alias')
-        self.assertEqual(again.returncode, 0, again.stderr)
-        self.assertEqual(self.conf.read_text(encoding='utf-8'), installed)
-        removed = self.run_install('--server-name', 'alias', '--uninstall')
-        self.assertEqual(removed.returncode, 0, removed.stderr)
-        self.assertEqual(self.conf.read_text(encoding='utf-8'), original)
 
-    def test_rejects_nginx_syntax_in_install_root(self):
-        original = 'server {\n    server_name ship;\n}\n'
-        self.conf.write_text(original, encoding='utf-8')
-        result = self.run_install('--openrvdas-root', '/srv/ship; include extra.conf; #')
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('--openrvdas-root', result.stderr)
-        self.assertEqual(self.conf.read_text(encoding='utf-8'), original)
+def test_install_and_uninstall_only_touch_dedicated_site(nginx_install):
+    _, main, site, run = nginx_install
+    other = site.with_name('other.conf')
+    original = (b'server { # }\n    server_name other;\n'
+                b'    location / { return 200 "a } # b"; }}\n'
+                b'# Preserve this last line without a newline')
+    other.write_bytes(original)
+    before = main.read_bytes()
+    for mode in [(), (), ('--uninstall',)]:
+        result = run(*mode)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert other.read_bytes() == original
+        assert main.read_bytes() == before
+        assert site.exists() == (mode != ('--uninstall',))
 
-    def test_refuses_stock_cds_proxy_in_either_template(self):
-        for template in ('Django', 'React'):
-            with self.subTest(template=template):
-                original = (f'# {template}\nserver {{\n    server_name ship;\n'
-                            '    location /cds-ws { proxy_pass http://localhost:8766; }\n}\n')
-                self.conf.write_text(original, encoding='utf-8')
-                result = self.run_install()
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn('read-only relay', result.stderr)
-                self.assertIn('Django and React', result.stderr)
-                self.assertIn('UDP', result.stderr)
-                self.assertEqual(self.conf.read_text(encoding='utf-8'), original)
 
-    def test_refuses_direct_cds_and_udp_exposure_before_changing_nginx(self):
-        checker = self.root / 'contrib/deepsignal/security/check_cds.py'
-        checker.parent.mkdir(parents=True)
-        checker.write_text('def main(): print("checker ran")\n', encoding='utf-8')
-        relay = ('location = /cds-ws { '
-                 'proxy_pass http://unix:/run/deepsignal/cds-gateway.sock:; }\n')
-        for extra, stream in (
-            ('location /raw { proxy_pass http://127.0.0.1:8766; }', ''),
-            ('', 'stream { server { listen 6225 udp; proxy_pass 127.0.0.1:6225; } }'),
-        ):
-            with self.subTest(extra=extra, stream=stream):
-                original = (f'events {{}}\nhttp {{ server {{ server_name ship;\n'
-                            f'{relay}{extra}\n}} }}\n{stream}\n')
-                self.conf.write_text(original, encoding='utf-8')
-                result = self.run_install('--udp-port', '6225', '--udp-interface', '127.0.0.1')
-                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertIn('read-only relay', result.stderr)
-                self.assertNotIn('checker ran', result.stdout)
-                self.assertEqual(self.conf.read_text(encoding='utf-8'), original)
-                self.assertFalse(list(self.root.glob('*.deepsignal-backup-*')))
+def test_rejects_nginx_syntax_in_install_root(nginx_install):
+    _, main, site, run = nginx_install
+    before = main.read_bytes()
+    result = run('--openrvdas-root', '/srv/ship; include extra.conf; #')
+    assert result.returncode != 0
+    assert '--openrvdas-root' in result.stderr
+    assert main.read_bytes() == before
+    assert not site.exists()
 
-    def stage_static_gate(self):
-        checker = self.root / 'contrib/deepsignal/security/check_cds.py'
-        checker.parent.mkdir(parents=True)
-        checker.write_text(
-            (SECURITY / 'check_cds.py').read_text(encoding='utf-8').split(
-                "if __name__ == '__main__':", 1)[0] +
-            '\ndef check_cds_listener(**kwargs): return True, "CDS bound"\n'
-            'def check_udp_listener(*args): return True, "UDP bound"\n'
-            'async def check_live(*args, **kwargs): return []\n',
-            encoding='utf-8',
-        )
-        source = self.root / 'contrib/deepsignal/console/src/pages.ts'
-        source.parent.mkdir()
-        shutil.copyfile(README.parent / 'src/pages.ts', source)
-        return (SECURITY / 'nginx/cds-ws.conf').read_text(encoding='utf-8')
 
-    def test_refuses_direct_cds_in_nested_include_or_sibling_host(self):
-        relay = self.stage_static_gate()
-        original = f'server {{ server_name ship;\n{relay}\n}}\n'
-        extra = 'server { server_name other; location /raw { proxy_pass http://127.0.0.1:8766; } }'
-        main = self.root / 'nginx.conf'
-        sites = self.root / 'sites'
-        sites.mkdir()
-        (sites / 'extra.conf').write_text('include sibling.conf;', encoding='utf-8')
-        (self.root / 'sibling.conf').write_text(extra, encoding='utf-8')
-        for site, includes in (
-            (original, 'include sites/*.conf;'),
-            (original + extra, ''),
-        ):
-            with self.subTest(includes=includes):
-                self.conf.write_text(site, encoding='utf-8')
-                main.write_text(f'events {{}} http {{ include ship.conf; {includes} }}',
-                                encoding='utf-8')
-                result = self.run_install('--server-name', 'ship',
-                                          env={'TEST_NGINX_MAIN': str(main)})
-                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertEqual(self.conf.read_text(encoding='utf-8'), site)
-                self.assertFalse(list(self.root.glob('*.deepsignal-backup-*')))
+@pytest.mark.parametrize('app', ('Django', 'React'))
+def test_refuses_stock_cds_proxy_in_either_app(nginx_install, app):
+    root, _, site, run = nginx_install
+    extra = site.with_name('other.conf')
+    original = (f'# {app}\nserver {{ server_name ship;\n'
+                'location /cds-ws { proxy_pass http://localhost:8766; }\n}\n')
+    extra.write_text(original)
+    result = run()
+    assert result.returncode != 0
+    assert 'unowned /cds-ws location' in result.stderr
+    assert str(extra) in result.stderr
+    assert extra.read_text() == original
+    assert not site.exists()
+    assert not (root / 'checker-args').exists()
 
-    def test_refuses_named_stream_upstream_to_cds_udp_bind(self):
-        relay = self.stage_static_gate()
-        original = (f'events {{}} http {{ server {{ server_name ship;\n{relay}\n}} }}\n'
-                    'stream { upstream feed { server 127.0.0.1:6225; } '
-                    'server { listen 7225 udp; proxy_pass feed; } }\n')
-        self.conf.write_text(original, encoding='utf-8')
-        result = self.run_install('--udp-port', '6225', '--udp-interface', '127.0.0.1')
-        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.conf.read_text(encoding='utf-8'), original)
-        self.assertFalse(list(self.root.glob('*.deepsignal-backup-*')))
 
-    def test_refuses_variable_proxy_when_relay_is_absent(self):
-        self.stage_static_gate()
-        original = ('server { server_name ship; set $backend 127.0.0.1:8766; '
-                    'location /raw { proxy_pass http://$backend; } }\n')
-        self.conf.write_text(original, encoding='utf-8')
-        result = self.run_install()
-        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.conf.read_text(encoding='utf-8'), original)
-        self.assertFalse(list(self.root.glob('*.deepsignal-backup-*')))
+@pytest.mark.parametrize('direct', [
+    'http { server { location /raw { proxy_pass http://127.0.0.1:8766; } } }',
+    'stream { server { listen 6225 udp; proxy_pass 127.0.0.1:6225; } }',
+])
+def test_refuses_direct_cds_and_udp_exposure_before_changing_nginx(nginx_install, direct):
+    root, main, site, run = nginx_install
+    original = main.read_text() + direct + '\n'
+    main.write_text(original)
+    result = run('--udp-port', '6225', '--udp-interface', '127.0.0.1')
+    assert result.returncode != 0
+    assert str(main) in result.stderr and 'CDS port' in result.stderr
+    assert main.read_text() == original
+    assert list(site.parent.iterdir()) == []
+    assert not (root / 'checker-args').exists()
 
-    def test_install_accepts_guarded_relay_in_include(self):
-        relay = self.stage_static_gate()
-        main = self.root / 'nginx.conf'
-        main.write_text('events {} http { include ship.conf; }', encoding='utf-8')
-        self.conf.write_text('server { server_name ship; include relay.conf; }', encoding='utf-8')
-        (self.root / 'relay.conf').write_text(relay, encoding='utf-8')
-        result = self.run_install(env={'TEST_NGINX_MAIN': str(main)})
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('# BEGIN deepsignal-console', self.conf.read_text(encoding='utf-8'))
-        self.assertNotIn('return 503', self.conf.read_text(encoding='utf-8'))
 
-    def test_backup_stays_out_of_nginx_wildcard_includes(self):
-        self.stage_static_gate()
-        main = self.root / 'nginx.conf'
-        sites = self.root / 'sites'
-        sites.mkdir()
-        self.conf = sites / 'ship.conf'
-        original = 'server { server_name ship; }\n'
-        self.conf.write_text(original, encoding='utf-8')
-        main.write_text('events {} http { include sites/*; }', encoding='utf-8')
-        (self.tools / 'nginx').write_text(
-            '#!/bin/sh\n'
-            'if [ "$1" = -T ]; then\n'
-            '    printf "# configuration file %s:\\n" "$TEST_NGINX_MAIN"\n'
-            '    for path in "$TEST_SITES"/*; do\n'
-            '        printf "# configuration file %s:\\n" "$path"\n'
-            '    done\n'
-            'fi\n', encoding='utf-8',
-        )
-        result = self.run_install(env={'TEST_NGINX_MAIN': str(main), 'TEST_SITES': str(sites)})
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(list(sites.glob('ship.conf.deepsignal-backup-*')), [])
-        [backup] = sites.glob('.ship.conf.deepsignal-backup-*')
-        self.assertEqual(backup.read_text(encoding='utf-8'), original)
+@pytest.mark.parametrize('nested', [True, False])
+def test_refuses_direct_cds_in_nested_include_or_sibling_host(nginx_install, nested):
+    root, _, site, run = nginx_install
+    extra = site.with_name('other.conf')
+    unsafe = 'server { location /raw { proxy_pass http://127.0.0.1:8766; } }'
+    sibling = root / 'sibling.conf'
+    if nested:
+        extra.write_text('include sibling.conf;')
+        sibling.write_text(unsafe)
+    else:
+        extra.write_text(unsafe)
+    before = extra.read_bytes()
+    result = run(DUMP_FILES=str(sibling) if nested else '')
+    assert result.returncode != 0
+    assert str(sibling if nested else extra) in result.stderr
+    assert 'targets CDS port 8766' in result.stderr
+    assert extra.read_bytes() == before
+    assert not site.exists()
 
-    def test_tcp_relay_requires_the_trusted_checker(self):
-        original = ('server { server_name ship; location = /cds-ws { '
-                    'proxy_pass http://127.0.0.1:8767; } }\n')
-        self.conf.write_text(original, encoding='utf-8')
-        result = self.run_install()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('read-only relay checker is missing', result.stderr)
-        self.assertEqual(self.conf.read_text(encoding='utf-8'), original)
 
-    def test_refuses_direct_cds_in_security_templates(self):
-        for template in RELAY_TEMPLATES:
-            with self.subTest(template=template):
-                relay = (SECURITY / 'nginx' / template).read_text(encoding='utf-8')
-                self.assertIn('127.0.0.1:8767', relay)
-                original = f'server {{ server_name ship;\n{relay.replace("8767", "8766")}\n}}\n'
-                self.conf.write_text(original, encoding='utf-8')
-                result = self.run_install()
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn('read-only relay', result.stderr)
-                self.assertEqual(self.conf.read_text(encoding='utf-8'), original)
-                self.assertFalse(list(self.root.glob('*.deepsignal-backup-*')))
+def test_refuses_named_stream_upstream_to_cds_udp_bind(nginx_install):
+    _, main, site, run = nginx_install
+    original = (main.read_text() + 'stream { upstream feed { server 127.0.0.1:6225; } '
+                'server { listen 7225 udp; proxy_pass feed; } }\n')
+    main.write_text(original)
+    result = run('--udp-port', '6225', '--udp-interface', '127.0.0.1')
+    assert result.returncode != 0
+    assert 'upstream targets CDS port 6225' in result.stderr
+    assert main.read_text() == original
+    assert list(site.parent.iterdir()) == []
 
-    def test_relay_self_check_reports_missing_checker(self):
-        self.conf.write_text(
-            'server { server_name ship; location = /cds-ws { '
-            'proxy_pass http://unix:/run/deepsignal/cds-gateway.sock:; } }\n',
-            encoding='utf-8',
-        )
-        result = self.run_install('--check')
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('read-only relay checker is missing', result.stderr)
-        self.assertIn('Django and React', result.stderr)
-        self.assertIn('UDP', result.stderr)
 
-    def test_readme_routes_initial_setup_through_the_relay_gate(self):
-        readme = README.read_text(encoding='utf-8')
-        setup = readme.split('### Try it without a ship', 1)[0]
-        command = '/opt/deepsignal-release/contrib/deepsignal/console/install/install.sh'
-        self.assertIn(command, setup)
-        self.assertNotIn('sudo /opt/openrvdas/', setup)
-        self.assertIn('install.sh --check', setup)
-        self.assertIn('Django and React', setup)
-        self.assertIn('UDP', setup)
-        self.assertNotIn('location /console/', setup)
+def test_refuses_variable_proxy_when_relay_is_absent(nginx_install):
+    _, _, site, run = nginx_install
+    extra = site.with_name('other.conf')
+    original = 'server { location /raw { proxy_pass http://$backend; } }'
+    extra.write_text(original)
+    result = run()
+    assert result.returncode != 0
+    assert 'variable backend' in result.stderr
+    assert extra.read_text() == original
+    assert not site.exists()
 
-    def test_relay_self_check_refuses_a_release_missing_its_checker(self):
-        original = ('server { server_name ship; location = /cds-ws { '
-                    'proxy_pass http://unix:/run/deepsignal/cds-gateway.sock:; } }\n')
-        self.conf.write_text(original, encoding='utf-8')
-        # A checker in the service checkout cannot replace the release checker.
-        deployment = self.root / 'deployment'
-        checker = deployment / 'contrib/deepsignal/security/check_cds.py'
-        checker.parent.mkdir(parents=True)
-        checker.write_text('raise SystemExit(0)\n', encoding='utf-8')
 
-        for args in ((), ('--check',)):
-            with self.subTest(args=args):
-                result = self.run_install('--openrvdas-root', str(deployment), *args)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn('read-only relay checker is missing', result.stderr)
-                self.assertEqual(self.conf.read_text(encoding='utf-8'), original)
+def test_refuses_even_origin_guarded_relay_in_include(nginx_install):
+    root, _, site, run = nginx_install
+    extra = site.with_name('other.conf')
+    extra.write_text('server { include relay.conf; }')
+    route = root / 'relay.conf'
+    route.write_text('location = /cds-ws { '
+                     'if ($http_origin != "http://ship.example:8080") { return 403; } '
+                     'proxy_pass http://127.0.0.1:8767; }')
+    before = route.read_bytes()
+    result = run(DUMP_FILES=str(route))
+    assert result.returncode != 0
+    assert str(route) in result.stderr and 'unowned /cds-ws' in result.stderr
+    assert route.read_bytes() == before
+    assert not site.exists()
 
-    def test_relay_self_check_delegates_to_197_and_propagates_failure(self):
-        self.conf.write_text(
-            'server { server_name ship; location = /cds-ws { '
-            'proxy_pass http://unix:/run/deepsignal/cds-gateway.sock:; } }\n',
-            encoding='utf-8',
-        )
-        checker = self.root / 'contrib/deepsignal/security/check_cds.py'
-        checker.parent.mkdir(parents=True)
-        for exit_code in (0, 1):
-            with self.subTest(exit_code=exit_code):
-                checker.write_text(
-                    'def main():\n    print("#197 checker called")\n'
-                    f'    raise SystemExit({exit_code})\n'
-                    'if __name__ == "__main__": main()\n', encoding='utf-8',
-                )
-                result = self.run_install('--check')
-                self.assertEqual(result.returncode, exit_code, result.stderr)
-                self.assertIn('#197 checker called', result.stdout)
-                if exit_code:
-                    original = self.conf.read_bytes()
-                    result = self.run_install()
-                    self.assertEqual(result.returncode, exit_code, result.stderr)
-                    self.assertIn('#197 checker called', result.stdout)
-                    self.assertEqual(self.conf.read_bytes(), original)
 
-    def test_relay_self_check_passes_the_optional_udp_bind_to_197(self):
-        self.conf.write_text(
-            'server { server_name ship; location /cds-ws { '
-            'proxy_pass http://unix:/run/deepsignal/cds-gateway.sock:; } }\n',
-            encoding='utf-8',
-        )
-        checker = self.root / 'contrib/deepsignal/security/check_cds.py'
-        checker.parent.mkdir(parents=True)
-        checker.write_text(
-            'import sys\n'
-            'def main():\n'
-            '    assert sys.argv[-4:] == ["--udp-port", "6225", "--udp-interface", "127.0.0.1"]\n'
-            'if __name__ == "__main__": main()\n',
-            encoding='utf-8',
-        )
-        result = self.run_install('--check', '--udp-port', '6225', '--udp-interface', '127.0.0.1')
-        self.assertEqual(result.returncode, 0, result.stderr)
+def test_backup_stays_out_of_nginx_wildcard_includes(nginx_install):
+    root, main, site, run = nginx_install
+    main.write_text('events {} http { include sites/*; }\n')
+    stub = root / 'nginx_stub.py'
+    stub.write_text(stub.read_text().replace('glob("*.conf")', 'glob("*")'))
+    original = b''
+    site.write_bytes(original)
+    invalid = run(NGINX_TEST_EXIT='1')
+    assert invalid.returncode != 0
+    assert site.read_bytes() == original
+    assert list(site.parent.iterdir()) == [site]
+    valid = run()
+    assert valid.returncode == 0, valid.stdout + valid.stderr
+    assert list(site.parent.iterdir()) == [site]
 
-    def test_refuses_service_writable_checker_and_helper_before_execution(self):
-        original = ('server { server_name ship; location = /cds-ws { '
-                    'proxy_pass http://unix:/run/deepsignal/cds-gateway.sock:; } }\n')
-        self.conf.write_text(original, encoding='utf-8')
-        checker = self.root / 'contrib/deepsignal/security/check_cds.py'
-        checker.parent.mkdir(parents=True)
-        checker.write_text('print("checker executed")\n', encoding='utf-8')
-        helper = self.installer.with_name('nginx-site.awk')
-        with helper.open('a', encoding='utf-8') as stream:
-            stream.write('\nBEGIN { print "helper executed" > "/dev/stderr" }\n')
 
-        checker_diagnostic = '#197 read-only relay checker'
-        for variable, path, diagnostic, marker in (
-            ('SERVICE_OWNED', checker, checker_diagnostic, 'checker executed'),
-            ('SERVICE_WRITABLE', checker.parent, checker_diagnostic, 'checker executed'),
-            ('SERVICE_WRITABLE', helper, 'nginx-site.awk', 'helper executed'),
-            ('SERVICE_OWNED', helper.parent, 'install.sh', 'helper executed'),
-        ):
-            with self.subTest(path=path):
-                result = self.run_install(env={variable: str(path.resolve())})
-                self.assertNotIn(marker, result.stdout + result.stderr)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(diagnostic, result.stderr)
-                self.assertIn('root-owned', result.stderr)
-                self.assertEqual(self.conf.read_text(encoding='utf-8'), original)
-                self.assertFalse(list(self.root.glob('*.deepsignal-backup-*')))
+def release_file(root, suffix):
+    return root / 'release/contrib/deepsignal' / suffix
 
-    def test_relay_self_check_uses_selected_host_port_and_config(self):
-        checker = self.root / 'contrib/deepsignal/security/check_cds.py'
-        checker.parent.mkdir(parents=True)
-        checker.write_text(
-            'import os, sys\n'
-            'from pathlib import Path\n'
-            'from types import SimpleNamespace\n'
-            'websockets = SimpleNamespace(connect=lambda uri, **kwargs: kwargs)\n'
-            'def main():\n'
-            '    url = sys.argv[sys.argv.index("--gateway-url") + 1]\n'
-            '    assert url == os.environ["TEST_GATEWAY_URL"], url\n'
-            '    source = sys.argv[sys.argv.index("--console-source") + 1]\n'
-            '    assert source == os.environ["TEST_CONSOLE_SOURCE"], source\n'
-            '    assert websockets.connect(url) == {\n'
-            '        "host": os.environ["TEST_ADDRESS"], "origin": os.environ["TEST_ORIGIN"]\n'
-            '    }\n'
-            '    assert websockets.connect("ws://127.0.0.1:8766") == {}\n'
-            '    for flag in ("--nginx-config", "--nginx-react-config", "--nginx-site"):\n'
-            '        assert sys.argv[sys.argv.index(flag) + 1] == os.environ["TEST_NGINX_MAIN"]\n'
-            '    snapshot_path = sys.argv[sys.argv.index("--nginx-site-snapshot") + 1]\n'
-            '    snapshot = Path(snapshot_path).read_bytes()\n'
-            '    assert b"server_name ship.example" in snapshot and b"other.example" in snapshot\n'
-            '    offset = int(sys.argv[sys.argv.index("--nginx-server-offset") + 1])\n'
-            '    assert snapshot[offset:].startswith(b"{ listen ")\n'
-            '    assert b"server_name ship.example" in snapshot[offset:]\n'
-            '    assert b"server_name other.example" in snapshot[:offset]\n'
-            '    assert websockets.connect(url, origin="https://foreign.invalid") == {\n'
-            '        "host": os.environ["TEST_ADDRESS"], "origin": "https://foreign.invalid"\n'
-            '    }\n'
-            'if __name__ == "__main__": main()\n',
-            encoding='utf-8',
-        )
-        listeners = (
-            ('80', 'http', '80', '127.0.0.1'),
-            ('443 ssl', 'https', '443', '127.0.0.1'),
-            ('8080', 'http', '8080', '127.0.0.1'),
-            ('*:8443 ssl', 'https', '8443', '127.0.0.1'),
-            ('[::]:8444 ssl', 'https', '8444', '::1'),
-        )
-        for listen, scheme, port, address in listeners:
-            with self.subTest(listen=listen):
-                self.conf.write_text(
-                    'server { server_name other.example; location /cds-ws { '
-                    'proxy_pass http://localhost:8766; } }\n'
-                    f'server {{ listen {listen}; server_name ship.example; location /cds-ws {{ '
-                    'proxy_pass http://unix:/run/deepsignal/cds-gateway.sock:; } }\n',
-                    encoding='utf-8',
-                )
-                ws = 'wss' if scheme == 'https' else 'ws'
-                origin_port = '' if port in ('80', '443') else f':{port}'
-                deployment = self.root / 'deployment'
-                result = self.run_install(
-                    '--check', '--server-name', 'ship.example', '--openrvdas-root', str(deployment),
-                    env={
-                        'TEST_GATEWAY_URL': f'{ws}://ship.example:{port}/cds-ws',
-                        'TEST_ORIGIN': f'{scheme}://ship.example{origin_port}',
-                        'TEST_ADDRESS': address,
-                        'TEST_CONSOLE_SOURCE': str(deployment / 'contrib/deepsignal/console'),
-                    },
-                )
-                self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_real_197_gate_through_django_and_react_nginx(self):
-        source = SECURITY / 'check_cds.py'
-        self.assertTrue(source.is_file(), '#197 check_cds.py is required for the integration test')
+@pytest.mark.parametrize('mode', [(), ('--check',)])
+def test_relay_requires_trusted_checker_even_if_deployment_supplies_one(nginx_install, mode):
+    root, _, site, run = nginx_install
+    checker = release_file(root, 'security/check_cds.py')
+    checker.unlink()
+    deployment = root / 'deployment'
+    copied = deployment / 'contrib/deepsignal/security/check_cds.py'
+    copied.parent.mkdir(parents=True)
+    copied.write_text('print("untrusted checker executed")\n')
+    result = run('--openrvdas-root', str(deployment), *mode)
+    assert result.returncode != 0
+    assert str(checker) in result.stderr and 'root-owned' in result.stderr
+    assert 'untrusted checker executed' not in result.stdout
+    assert not site.exists()
 
-        nginx = shutil.which('nginx')
-        self.assertIsNotNone(nginx, 'nginx is required to run the #197 integration test')
-        nginx_command = self.tools / 'nginx'
-        nginx_command.write_text(
-            f'#!/bin/sh\nexec {shlex.quote(nginx)} -p {shlex.quote(str(self.root) + "/")} '
-            f'-c {shlex.quote(str(self.root / "nginx.conf"))} "$@"\n',
-            encoding='utf-8',
-        )
-        checker = self.root / 'contrib/deepsignal/security/check_cds.py'
-        checker.parent.mkdir(parents=True)
-        shutil.copyfile(source, checker)
-        console_source = self.root / 'contrib/deepsignal/console/src/pages.ts'
-        console_source.parent.mkdir(parents=True)
-        shutil.copyfile(README.parent / 'src/pages.ts', console_source)
-        for name, body in {
-            'ss': 'echo "LISTEN 0 128 127.0.0.1:8766 0.0.0.0:*"',
-            'supervisorctl': 'exit 0',
-        }.items():
-            command = self.tools / name
-            command.write_text(f'#!/bin/sh\n{body}\n', encoding='utf-8')
-            command.chmod(0o755)
 
-        app_routes = ('location / { uwsgi_pass unix:/tmp/django.sock; }',
-                      'location / { try_files $uri /index.html; }')
-        for snippet, app_route in zip(RELAY_TEMPLATES, app_routes):
-            with self.subTest(snippet=snippet):
-                route = (SECURITY / 'nginx' / snippet).read_text(encoding='utf-8')
-                asyncio.run(self.exercise_live_gate(nginx, route, app_route))
+@pytest.mark.parametrize('app', ('Django', 'React'))
+def test_refuses_direct_cds_when_the_owned_template_was_edited(nginx_install, app):
+    _, _, site, run = nginx_install
+    assert run().returncode == 0
+    original = site.read_bytes().replace(b'8767', b'8766') + f'# {app}\n'.encode()
+    site.write_bytes(original)
+    result = run()
+    assert result.returncode != 0
+    assert 'site differs from the rendered template' in result.stderr
+    assert site.read_bytes() == original
 
-    @contextmanager
-    def running_nginx(self, nginx, listener):
-        nginx_conf = self.root / 'nginx.conf'
-        nginx_conf.write_text(
-            'daemon off; master_process off; error_log stderr; pid nginx.pid;\n'
-            'events {}\nhttp { access_log off;\n'
-            'client_body_temp_path client_body; proxy_temp_path proxy;\n'
-            'fastcgi_temp_path fastcgi; uwsgi_temp_path uwsgi; scgi_temp_path scgi;\n'
-            f'include "{self.conf}";\n}}\n', encoding='utf-8',
-        )
-        # nginx inherits the already listening socket, so clients can connect at startup.
-        fd = listener.fileno()
+
+def test_relay_self_check_delegates_to_197_and_propagates_failure(nginx_install):
+    root, _, site, run = nginx_install
+    assert run().returncode == 0
+    original = site.read_bytes()
+    for status in (0, 1):
+        result = run('--check', CHECKER_STATUS=str(status))
+        assert result.returncode == status
+        assert '#197 checker called' in result.stdout
+        assert site.read_bytes() == original
+    site.unlink()
+    result = run(CHECKER_STATUS='1')
+    assert result.returncode == 1
+    assert '#197 checker called' in result.stdout
+    assert 'restored' in result.stderr
+    assert not site.exists()
+    assert (root / 'reloads').read_text().splitlines() == ['reload'] * 3
+
+
+def test_relay_self_check_passes_all_optional_udp_binds_to_197(nginx_install):
+    root, _, _, run = nginx_install
+    args = ['--udp-port', '6225', '--udp-port', '6226', '--udp-interface', '127.0.0.1']
+    assert run(*args).returncode == 0
+    result = run('--check', *args)
+    assert result.returncode == 0, result.stderr
+    assert json.loads((root / 'checker-args').read_text())[-6:] == args
+
+
+def test_refuses_service_writable_checker_and_helper_before_execution(nginx_install):
+    root, _, site, run = nginx_install
+    checker = release_file(root, 'security/check_cds.py')
+    helper = release_file(root, 'console/install/nginx_inventory.py')
+    with helper.open('a') as stream:
+        stream.write('\nprint("untrusted helper executed")\n')
+    for variable, path in (
+        ('SERVICE_OWNED', checker),
+        ('SERVICE_WRITABLE', checker.parent),
+        ('SERVICE_WRITABLE', helper),
+        ('SERVICE_OWNED', helper.parent),
+        ('SERVICE_WRITABLE', release_file(root, 'security/nginx/render_site.py')),
+        ('SERVICE_WRITABLE', release_file(root, 'security/nginx/deepsignal-console.conf.template')),
+    ):
+        result = run(**{variable: str(path)})
+        assert result.returncode != 0
+        assert 'root-owned' in result.stderr
+        assert '#197 checker called' not in result.stdout
+        assert 'untrusted helper executed' not in result.stdout
+        assert not site.exists()
+
+
+def test_relay_self_check_uses_owned_site_and_configured_origins(nginx_install):
+    root, _, site, run = nginx_install
+    deployment = root / 'deployment'
+    assert run('--openrvdas-root', str(deployment)).returncode == 0
+    result = run('--check', '--openrvdas-root', str(deployment))
+    assert result.returncode == 0, result.stderr
+    assert json.loads((root / 'checker-args').read_text()) == [
+        '--nginx-site', str(site), '--openrvdas-root', str(deployment), '--local-nginx',
+        '--origin', 'http://ship.example:8080', '--origin', 'http://alias.example:8080',
+    ]
+
+
+def test_readme_routes_initial_setup_through_the_relay_gate():
+    setup = (CONSOLE / 'README.md').read_text().split('### Try it without a ship', 1)[0]
+    assert '/opt/deepsignal-release/contrib/deepsignal/console/install/install.sh' in setup
+    assert 'sudo /opt/openrvdas/' not in setup
+    assert 'install.sh --check' in setup
+    assert 'Django and React' in setup and 'UDP' in setup
+    assert 'location /console/' not in setup
+
+
+@contextmanager
+def running_nginx(nginx, root, main, listener):
+    fd = listener.fileno()
+    with (root / 'nginx-stderr').open('w+') as errors:
         process = subprocess.Popen(
-            [nginx, '-p', str(self.root) + '/', '-c', str(nginx_conf)],
-            stderr=subprocess.PIPE, text=True, pass_fds=(fd,),
+            [nginx, '-p', str(root) + '/', '-c', str(main)],
+            stderr=errors, text=True, pass_fds=(fd,),
             env=os.environ | {'NGINX': f'{fd};'},
         )
         try:
-            yield
+            # The inherited socket queues this request until the worker is ready.
+            opener = build_opener(ProxyHandler({}))
+            address = f'http://127.0.0.1:{listener.getsockname()[1]}'
+            with pytest.raises(HTTPError) as response:
+                opener.open(f'{address}/', timeout=5)
+            assert response.value.code == 404
+            response.value.close()
+            yield process.pid
             if process.poll() is not None:
-                self.fail(process.stderr.read())
+                errors.seek(0)
+                pytest.fail(errors.read())
         finally:
             if process.poll() is None:
                 process.terminate()
-            process.communicate(timeout=5)
-
-    async def exercise_live_gate(self, nginx, route, app_route):
-        from contrib.deepsignal.security.cds_gateway import ReadOnlyGateway
-        import websockets
-
-        cache = {'temperature': [[1, 19.1]]}
-        publishes = []
-
-        async def cached_data(websocket):
-            fields = {}
-            async for message in websocket:
-                request = json.loads(message)
-                kind = request['type']
-                response = {'type': kind, 'status': 200}
-                if kind == 'publish':
-                    record = request['data']
-                    publishes.append(record)
-                    for field, value in record['fields'].items():
-                        cache.setdefault(field, []).append([record['timestamp'], value])
-                elif kind == 'subscribe':
-                    fields = request['fields']
-                elif kind == 'ready':
-                    response = {'type': 'data', 'data': {field: cache[field] for field in fields}}
-                await websocket.send(json.dumps(response))
-
-        with socket.socket() as listener:
-            listener.bind(('127.0.0.1', 0))
-            listener.listen()
-            port = listener.getsockname()[1]
-            site = (f'server {{ listen 127.0.0.1:{port} default_server; return 404; }}\n'
-                    f'server {{ listen 127.0.0.1:{port}; server_name ship.example;\n'
-                    f'{app_route}\n{route}\n}}\n')
-            self.conf.write_text(site, encoding='utf-8')
-            async with websockets.serve(cached_data, '127.0.0.1', 8766):
-                gateway = ReadOnlyGateway()
-                async with websockets.serve(gateway.handler, '127.0.0.1', 8767):
-                    for args in ((), ('--check',)):
-                        with self.running_nginx(nginx, listener):
-                            result = await asyncio.to_thread(self.run_install, '--server-name',
-                                                             'ship.example', *args)
-                            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                            self.assertIn('live publish through the gateway is refused',
-                                          result.stdout)
-                            self.assertIn('live subscribe through the gateway returns data',
-                                          result.stdout)
-                            self.assertIn('nginx refuses a WebSocket with a foreign Origin',
-                                          result.stdout)
-                            self.assertIn('# BEGIN deepsignal-console', self.conf.read_text())
-                    self.assertEqual(cache['temperature'], [[1, 19.1]])
-                    # Only the checker's two direct loopback seeds may reach the cache.
-                    self.assertEqual([record['fields'] for record in publishes],
-                                     [{'deepsignal_gateway_self_test': 1}] * 2)
-
-                self.conf.write_text(site, encoding='utf-8')
-                async with websockets.serve(cached_data, '127.0.0.1', 8767):
-                    with self.running_nginx(nginx, listener):
-                        result = await asyncio.to_thread(self.run_install, '--server-name',
-                                                         'ship.example')
-                        self.assertNotEqual(result.returncode, 0)
-                        self.assertIn('FAIL: gateway accepted a live publish', result.stdout)
-                        self.assertEqual(self.conf.read_text(encoding='utf-8'), site)
+            process.wait(timeout=5)
 
 
-if __name__ == '__main__':
-    unittest.main()
+@pytest.mark.parametrize('app_route', ('uwsgi_pass unix:/tmp/django.sock;',
+                                       'try_files $uri /index.html;'), ids=['django', 'react'])
+def test_real_197_gate_through_django_and_react_nginx(nginx_install, app_route):
+    root, main, site, run = nginx_install
+    nginx = shutil.which('nginx')
+    assert nginx is not None, 'nginx is required to run the #197 integration test'
+    tools = root / 'bin'
+    (tools / 'nginx').write_text(
+        f'#!/bin/sh\nexec {shlex.quote(nginx)} -p {shlex.quote(str(root) + "/")} "$@"\n')
+    (tools / 'ps').unlink()
+    (tools / 'systemctl').write_text(
+        '#!/bin/sh\ncase "$1" in\n'
+        ' show) echo "$TEST_MASTER";;\n'
+        ' reload) kill -HUP "$TEST_MASTER";;\n'
+        ' is-active) kill -0 "$TEST_MASTER";;\nesac\n')
+    shutil.copyfile(SECURITY / 'check_cds.py', release_file(root, 'security/check_cds.py'))
+    dist = root / 'deployment/contrib/deepsignal/console/dist'
+    dist.mkdir(parents=True)
+    (dist / 'index.html').write_text('<script type="module" src="/console/app.js"></script>')
+    (dist / 'app.js').write_text('export const ready = true')
+    with socket.socket() as listener:
+        listener.bind(('0.0.0.0', 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        main.write_text(
+            'daemon off; error_log stderr; pid nginx.pid;\n'
+            'events {}\nhttp { access_log off;\n'
+            'client_body_temp_path client_body; proxy_temp_path proxy;\n'
+            'fastcgi_temp_path fastcgi; uwsgi_temp_path uwsgi; scgi_temp_path scgi;\n'
+            'include sites/*.conf;\n'
+            f'server {{ listen {port}; server_name app.example; '
+            f'location / {{ {app_route} }} location = / {{ return 404; }} }}\n'
+            '}\n')
+        with running_nginx(nginx, root, main, listener) as master:
+            asyncio.run(exercise_live_gate(site, run, master, port, root / 'deployment'))
+
+
+async def exercise_live_gate(site, run, master, port, deployment):
+    from contrib.deepsignal.security.cds_gateway import ReadOnlyGateway
+    import websockets
+
+    origin = f'http://ship.example:{port}'
+    alias = f'http://alias.example:{port}'
+    options = {'origins': (origin, alias), 'TEST_MASTER': str(master)}
+    flags = ('--openrvdas-root', str(deployment))
+    cache = {'temperature': [[1, 19.1]]}
+    publishes = []
+
+    async def cached_data(websocket):
+        fields = {}
+        async for message in websocket:
+            request = json.loads(message)
+            kind = request['type']
+            response = {'type': kind, 'status': 200}
+            if kind == 'publish':
+                record = request['data']
+                publishes.append(record)
+                for field, value in record['fields'].items():
+                    cache.setdefault(field, []).append([record['timestamp'], value])
+            elif kind == 'subscribe':
+                fields = request['fields']
+            elif kind == 'ready':
+                response = {'type': 'data', 'data': {field: cache[field] for field in fields}}
+            await websocket.send(json.dumps(response))
+
+    async with websockets.serve(cached_data, '127.0.0.1', 8766):
+        gateway = ReadOnlyGateway()
+        async with websockets.serve(gateway.handler, '127.0.0.1', 8767):
+            for mode in ((), ('--check',)):
+                result = await asyncio.to_thread(run, *flags, *mode, **options)
+                assert result.returncode == 0, result.stdout + result.stderr
+                assert 'live publish through the gateway is refused' in result.stdout
+                assert 'live subscribe through the gateway returns data' in result.stdout
+                assert 'nginx refuses a WebSocket with a foreign Origin' in result.stdout
+                assert 'proxy_pass http://127.0.0.1:8767;' in site.read_text()
+            opener = build_opener(ProxyHandler({}))
+            request = Request(f'http://127.0.0.1:{port}/console/app.js',
+                              headers={'Host': f'alias.example:{port}'})
+            with opener.open(request, timeout=5) as response:
+                assert response.headers.get_content_type() == 'application/javascript'
+                assert response.read() == b'export const ready = true'
+            async with websockets.connect(f'ws://alias.example:{port}/cds-ws',
+                                          host='127.0.0.1', proxy=None, origin=alias) as ws:
+                await ws.send(json.dumps({'type': 'fields'}))
+                assert json.loads(await ws.recv())['status'] == 200
+            with pytest.raises(websockets.exceptions.InvalidStatus) as refused:
+                async with websockets.connect(f'ws://foreign.example:{port}/cds-ws',
+                                              host='127.0.0.1', proxy=None,
+                                              origin=f'http://foreign.example:{port}'):
+                    pass
+            assert refused.value.response.status_code == 403
+        assert cache['temperature'] == [[1, 19.1]]
+        assert [record['fields'] for record in publishes] == [
+            {'deepsignal_gateway_self_test': 1}] * 2
+        removed = await asyncio.to_thread(run, *flags, '--uninstall', **options)
+        assert removed.returncode == 0, removed.stdout + removed.stderr
+        async with websockets.serve(cached_data, '127.0.0.1', 8767):
+            result = await asyncio.to_thread(run, *flags, **options)
+            assert result.returncode != 0
+            assert 'FAIL: gateway accepted a live publish' in result.stdout
+            assert not site.exists()

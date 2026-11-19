@@ -1,143 +1,74 @@
 """Tests for the DeepSignal Console nginx installer."""
 
-import os
-from pathlib import Path
-import shlex
-import subprocess
-import sys
-
-import pytest
+from contrib.deepsignal.console.install import test_owned_site
 
 
-REPO = Path(__file__).resolve().parents[4]
-INSTALLER = REPO / "contrib/deepsignal/console/install/install.sh"
+nginx_install = test_owned_site.nginx_install
 
 
-@pytest.fixture
-def nginx_stub(tmp_path):
-    """Put controllable nginx and systemctl stubs first on PATH."""
-    tools = tmp_path / "bin"
-    tools.mkdir()
-    (tools / "nginx").write_text(
-        "#!/bin/sh\n"
-        'if [ "$1" = -T ]; then\n'
-        '    printf "# configuration file %s:\\n" "$TEST_NGINX_MAIN"\n'
-        '    exit 0\n'
-        'fi\n'
-        'exit "${NGINX_TEST_EXIT:-0}"\n',
-        encoding="utf-8",
-    )
-    (tools / "systemctl").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    (tools / "id").write_text(
-        "#!/bin/sh\n[ \"$1\" = -u ] && { echo \"${FAKE_UID:-0}\"; exit 0; }\n"
-        "exec /usr/bin/id \"$@\"\n",
-        encoding="utf-8",
-    )
-    # The checkout stands in for a trusted release when simulating root.
-    (tools / "stat").write_text("#!/bin/sh\necho '0 755'\n", encoding="utf-8")
-    (tools / "python3").write_text(
-        f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n', encoding="utf-8"
-    )
-    for command in ("nginx", "systemctl", "id", "stat", "python3"):
-        (tools / command).chmod(0o755)
-    return str(tools)
+def test_installs_once_in_dedicated_site_and_is_idempotent(nginx_install):
+    _, main, site, install = nginx_install
+    original = main.read_bytes()
+    assert install().returncode == 0
+    installed = site.read_bytes()
+    assert installed.count(b'server {') == 1
+    assert b'alias /srv/openrvdas/contrib/deepsignal/console/dist/;' in installed
+    assert install().returncode == 0
+    assert site.read_bytes() == installed
+    assert main.read_bytes() == original
 
 
-def run_install(conf, nginx_stub, *args, fail=False, env=None, uid=0):
-    command = [
-        "bash",
-        str(INSTALLER),
-        "--openrvdas-root",
-        "/srv/openrvdas",
-        "--nginx-conf",
-        str(conf),
-        "--no-reload",
-        *args,
-    ]
-    run_env = os.environ | {
-        "FAKE_UID": str(uid),
-        "PATH": nginx_stub + os.pathsep + os.environ["PATH"],
-        "TEST_NGINX_MAIN": str(conf),
-    }
-    run_env.update(env or {})
-    return subprocess.run(
-        command, text=True, capture_output=True, check=not fail, env=run_env
-    )
-
-
-@pytest.mark.parametrize(
-    "initial",
-    [
-        "server {\n    listen 80;\n}\n",
-        "# RHEL site\nserver {\n    server_name ship;\n}\n",
-    ],
-)
-def test_inserts_once_inside_server_and_is_idempotent(tmp_path, nginx_stub, initial):
-    conf = tmp_path / "openrvdas.conf"
-    conf.write_text(initial, encoding="utf-8")
-
-    run_install(conf, nginx_stub)
-    installed = conf.read_text(encoding="utf-8")
-    assert installed.count("# BEGIN deepsignal-console") == 1
-    assert installed.index("server {") < installed.index("# BEGIN deepsignal-console")
-    assert installed.index("# END deepsignal-console") < installed.rindex("}")
-    assert "alias /srv/openrvdas/contrib/deepsignal/console/dist/;" in installed
-    run_install(conf, nginx_stub)
-    assert conf.read_text(encoding="utf-8") == installed
-
-
-def test_failed_nginx_test_restores_backup(tmp_path, nginx_stub):
-    conf = tmp_path / "openrvdas.conf"
-    original = "server {\n}\n"
-    conf.write_text(original, encoding="utf-8")
-
-    result = run_install(
-        conf, nginx_stub, fail=True, env={"NGINX_TEST_EXIT": "1"}
-    )
-
-    assert conf.read_text(encoding="utf-8") == original
-    assert list(tmp_path.glob("openrvdas.conf.deepsignal-backup-*"))
-    assert "restored" in result.stdout.lower()
-
-
-def test_dry_run_writes_nothing(tmp_path, nginx_stub):
-    conf = tmp_path / "openrvdas.conf"
-    original = "server {\n}\n"
-    conf.write_text(original, encoding="utf-8")
-    result = run_install(conf, nginx_stub, "--dry-run")
-    assert conf.read_text(encoding="utf-8") == original
-    assert "BEGIN deepsignal-console" in result.stdout
-    assert not list(tmp_path.glob("*.deepsignal-backup-*"))
-
-
-def test_uninstall_removes_only_marked_block(tmp_path, nginx_stub):
-    conf = tmp_path / "openrvdas.conf"
-    original = "server {\n    listen 80;\n}\n"
-    conf.write_text(original, encoding="utf-8")
-    run_install(conf, nginx_stub)
-    run_install(conf, nginx_stub, "--uninstall")
-    assert conf.read_text(encoding="utf-8") == original
-
-
-def test_real_run_refuses_non_root(tmp_path, nginx_stub):
-    conf = tmp_path / "openrvdas.conf"
-    original = "server {\n}\n"
-    conf.write_text(original, encoding="utf-8")
-
-    result = run_install(conf, nginx_stub, fail=True, uid=1000)
-
-    assert conf.read_text(encoding="utf-8") == original
-    assert "Run this installer as root" in result.stderr
-
-
-def test_missing_auto_detected_conf_has_plain_message(tmp_path, nginx_stub):
-    result = subprocess.run(
-        ["bash", str(INSTALLER), "--dry-run"],
-        text=True,
-        capture_output=True,
-        env=os.environ | {"PATH": nginx_stub + os.pathsep + os.environ["PATH"]},
-    )
+def test_failed_nginx_test_restores_original(nginx_install):
+    root, main, site, install = nginx_install
+    before = main.read_bytes()
+    site.write_bytes(b'')
+    result = install(NGINX_TEST_EXIT='1')
     assert result.returncode != 0
-    assert "No nginx configuration found" in result.stderr
-    assert "/etc/nginx/sites-enabled/openrvdas.conf" in result.stderr
-    assert "/etc/nginx/conf.d/openrvdas.conf" in result.stderr
+    assert site.read_bytes() == b''
+    assert list(site.parent.iterdir()) == [site]
+    assert main.read_bytes() == before
+    assert (root / 'reloads').read_bytes() == b''
+    assert 'restored' in result.stderr
+
+
+def test_dry_run_writes_nothing(nginx_install):
+    root, main, site, install = nginx_install
+    before = main.read_bytes()
+    result = install('--dry-run', offline=True)
+    assert result.returncode == 0, result.stderr
+    assert b'location = /cds-ws' in result.stdout.encode()
+    assert main.read_bytes() == before
+    assert list(site.parent.iterdir()) == []
+    assert (root / 'reloads').read_bytes() == b''
+
+
+def test_uninstall_removes_only_owned_site(nginx_install):
+    root, _, site, install = nginx_install
+    other = site.with_name('other.conf')
+    original = b'server { listen 80; }\n'
+    other.write_bytes(original)
+    assert install().returncode == 0
+    assert install('--uninstall').returncode == 0
+    assert not site.exists()
+    assert other.read_bytes() == original
+    assert (root / 'reloads').read_text().splitlines() == ['reload', 'reload']
+
+
+def test_real_run_refuses_non_root(nginx_install):
+    _, main, site, install = nginx_install
+    before = main.read_bytes()
+    result = install(FAKE_UID='1000')
+    assert result.returncode != 0
+    assert 'Run this installer as root' in result.stderr
+    assert main.read_bytes() == before
+    assert not site.exists()
+
+
+def test_missing_auto_detected_conf_has_plain_message(nginx_install):
+    _, main, site, install = nginx_install
+    site.parent.rmdir()
+    result = install('--dry-run', default_site=True)
+    assert result.returncode != 0
+    assert 'No nginx configuration found' in result.stderr
+    assert str(main.parent / 'sites-enabled') in result.stderr
+    assert str(main.parent / 'conf.d') in result.stderr
