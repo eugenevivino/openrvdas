@@ -38,7 +38,7 @@ def nginx_install(tmp_path):
                      ' is-active) exit "${ACTIVE_STATUS:-0}";;\n'
                      ' *) exit 1;;\nesac',
         'ps': 'case "$3" in\n'
-              ' -p) echo "nginx: master process $TEST_ROOT/bin/nginx -c '
+              ' -p) echo "nginx: master process ${MASTER_BINARY:-$TEST_ROOT/bin/nginx} -c '
               '${MASTER_CONFIG:-$TEST_ROOT/nginx.conf}";;\n'
               ' *) wc -l < "$TEST_ROOT/reloads" | '
               'awk \'{print 124+$1, "nginx: worker process"}\';;\n'
@@ -51,12 +51,32 @@ def nginx_install(tmp_path):
         tool.write_text(f'#!/bin/sh\n{body}\n', encoding='utf-8')
         tool.chmod(0o755)
     (root / 'reloads').touch()
+    proc = root / 'proc/123'
+    proc.mkdir(parents=True)
+    (proc / 'exe').symlink_to(tools / 'nginx')
     release = root / 'release/contrib/deepsignal'
     installer = release / 'console/install/install.sh'
     installer.parent.mkdir(parents=True)
     for name in ('install.sh', 'install_site.py', 'nginx_inventory.py', 'nginx-site.awk'):
         if (INSTALL / name).is_file():
             shutil.copyfile(INSTALL / name, installer.with_name(name))
+    # Redirect executable locations only in the fixture's private release copy.
+    shell = installer.read_text()
+    for name in ('id', 'stat'):
+        shell = shell.replace(f'/usr/bin/{name}', shlex.quote(str(tools / name)))
+    installer.write_text(shell)
+    entrypoint = installer.with_name('install_site.py')
+    source = entrypoint.read_text()
+    guard = "if __name__ == '__main__':"
+    if guard not in source:
+        pytest.fail('cannot configure the installer fixture entry point')
+    entrypoint.write_text(source.replace(guard, '''
+SYSTEM_PATH = os.environ['TEST_SYSTEM_PATH']
+NGINX_PATH = os.environ['TEST_NGINX_PATH']
+LOCAL_NGINX_PATH = os.environ['TEST_LOCAL_NGINX_PATH']
+PROC = Path(os.environ['TEST_PROC'])
+
+''' + guard, 1))
     shutil.copytree(TEMPLATE.parent, release / 'security/nginx')
     checker = release / 'security/check_cds.py'
     checker.write_text(
@@ -119,6 +139,9 @@ def nginx_install(tmp_path):
              '--cds-supervisor-config', str(cds_config),
              *origin_args, *args],
             env=os.environ | {'PATH': path, 'TEST_ROOT': str(root),
+                              'TEST_SYSTEM_PATH': str(tools),
+                              'TEST_NGINX_PATH': str(tools), 'TEST_LOCAL_NGINX_PATH': str(root),
+                              'TEST_PROC': str(root / 'proc'),
                               'DEEPSIGNAL_PYTHON': sys.executable, **env},
             timeout=60,
             text=True, capture_output=True, check=False,

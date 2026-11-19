@@ -1,5 +1,7 @@
 """Tests for the DeepSignal Console nginx installer."""
 
+import pytest
+
 from contrib.deepsignal.console.install import test_owned_site
 
 
@@ -72,3 +74,48 @@ def test_missing_auto_detected_conf_has_plain_message(nginx_install):
     assert 'No nginx configuration found' in result.stderr
     assert str(main.parent / 'sites-enabled') in result.stderr
     assert str(main.parent / 'conf.d') in result.stderr
+
+
+@pytest.mark.parametrize('with_nginx', [True, False], ids=['packaged', 'offline'])
+def test_d_fix1_installer_preview_uses_system_nginx(nginx_install, with_nginx):
+    root, _, site, install = nginx_install
+    tools = root / 'bin'
+    system = root / 'system'
+    system.mkdir()
+    if with_nginx:
+        (tools / 'nginx').rename(system / 'nginx')
+    else:
+        (tools / 'nginx').unlink()
+    (tools / 'dirname').symlink_to('/usr/bin/dirname')
+    stub = root / 'nginx_stub.py'
+    stub.write_text(stub.read_text().replace(
+        'files = sorted', '(root / "dumped").touch()\nfiles = sorted'))
+    result = install('--dry-run', PATH=str(tools), TEST_NGINX_PATH=str(system))
+    assert result.returncode == 0, result.stderr
+    assert (root / 'dumped').exists() is with_nginx
+    assert not site.exists()
+
+
+@pytest.mark.parametrize('layout', ['custom', 'unverified', 'missing-systemctl'])
+def test_d_fix1_installer_uses_running_nginx(nginx_install, layout):
+    root, _, site, install = nginx_install
+    tools = root / 'bin'
+    binary = tools / 'nginx-custom'
+    (tools / 'nginx').rename(binary)
+    for name in ('dirname', 'wc', 'awk'):
+        (tools / name).symlink_to(f'/usr/bin/{name}')
+    if layout != 'unverified':
+        exe = root / 'proc/123/exe'
+        exe.unlink()
+        exe.symlink_to(binary)
+    result = install(PATH=str(tools), MASTER_BINARY=str(binary),
+                     TEST_SYSTEM_PATH=str(root if layout == 'missing-systemctl' else tools))
+    if layout == 'custom':
+        assert result.returncode == 0, result.stderr
+        assert site.exists()
+        assert (root / 'reloads').read_text() == 'reload\n'
+    else:
+        expected = 'nginx master executable' if layout == 'unverified' else 'systemctl'
+        assert result.returncode == 1 and expected in result.stderr
+        assert not site.exists()
+        assert (root / 'reloads').read_text() == ''

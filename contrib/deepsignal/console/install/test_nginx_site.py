@@ -5,7 +5,6 @@ from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
-import shlex
 import shutil
 import socket
 import subprocess
@@ -307,8 +306,7 @@ def test_real_197_runtime_probe_through_django_and_react_nginx(nginx_install, ap
     nginx = shutil.which('nginx')
     assert nginx is not None, 'nginx is required to run the #197 integration test'
     tools = root / 'bin'
-    (tools / 'nginx').write_text(
-        f'#!/bin/sh\nexec {shlex.quote(nginx)} -p {shlex.quote(str(root) + "/")} "$@"\n')
+    (tools / 'nginx').unlink()
     (tools / 'ps').unlink()
     (tools / 'systemctl').write_text(
         '#!/bin/sh\ncase "$1" in\n'
@@ -354,7 +352,8 @@ async def exercise_live_gate(site, run, master, port, deployment):
 
     origin = f'http://ship.example:{port}'
     alias = f'http://alias.example:{port}'
-    options = {'origins': (origin, alias), 'TEST_MASTER': str(master)}
+    options = {'origins': (origin, alias), 'TEST_MASTER': str(master), 'TEST_PROC': '/proc',
+               'TEST_SYSTEM_PATH': f'{deployment.parent / "bin"}:/usr/bin:/bin'}
     address = lan_address()
     flags = ('--openrvdas-root', str(deployment), '--probe-address', address)
     publishes = []
