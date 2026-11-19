@@ -1,0 +1,36 @@
+# Managed by the DeepSignal Console installer.
+server {
+    listen @@LISTEN@@;
+    server_name @@SERVER_NAMES@@;
+@@TLS@@
+    location /console/ {
+        alias @@CONSOLE_DIST@@;
+        types {
+            text/html html;
+            text/css css;
+            application/javascript js mjs;
+            application/json json;
+            image/svg+xml svg;
+            image/png png;
+            image/jpeg jpg jpeg;
+            image/x-icon ico;
+            font/woff2 woff2;
+        }
+        try_files $uri $uri/ /console/index.html;
+    }
+
+    location = /cds-ws {
+        if ($http_origin !~ "@@ORIGINS@@") {
+            return 403;
+        }
+
+        client_max_body_size 64k;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-DS-User "";
+        proxy_set_header X-DS-Role "";
+        proxy_pass http://127.0.0.1:8767;
+    }
+}

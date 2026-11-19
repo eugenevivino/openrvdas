@@ -1,40 +1,65 @@
-# Turn on the DeepSignal Console in 5 minutes
+# Install the DeepSignal Console
 
-The installer serves the already-built DeepSignal Console through the ship server's existing nginx service.
+Build the console into `contrib/deepsignal/console/dist/` in the OpenRVDAS deployment and
+start the CDS and its read-only gateway. The console installer serves those assets and
+`/cds-ws` from a dedicated nginx site.
 
-## Stage the installer and relay checker
+Stage the installer, its Python helpers, the nginx template, the checker and the CDS
+probe in a root-owned release such as `/opt/deepsignal-release`. Keep the files and
+their parent directories free of symlinks and group or other write permission.
+The installer and its CDS probe use `/opt/openrvdas/venv/bin/python`. To use another
+root-managed OpenRVDAS virtualenv, set `DEEPSIGNAL_PYTHON` to the absolute path of its
+Python executable in the installer's environment. The installer stops if this
+interpreter is unavailable or cannot import `websockets`.
 
-#197 must land before deploying the console with live data. Stage a trusted release at `/opt/deepsignal-release`. The release must include `contrib/deepsignal/console/install/install.sh`, its sibling `nginx-site.awk`, and `contrib/deepsignal/security/check_cds.py` from #197. These files and each directory on their paths must be root-owned and free of symlinks and group or other write permission. The stock installer assigns the `/opt/openrvdas` deployment to `rvdas`. That deployment supplies the console assets. The root-owned release supplies the installer and checker. Use a root-managed Python installation with the #197 checker's existing `websockets` dependency available.
+## Configure nginx and install
 
-Configure the selected nginx virtual host to serve `/cds-ws` through the #197 relay and load that configuration in nginx before running the console installer. Use a concrete `server_name` that matches the browser hostname. The check connects to the host's first `listen` address and port using that name and validates TLS for HTTPS. Use `--server-name NAME` to select one server if the file contains several. If the cache receives UDP, pass `--udp-port PORT --udp-interface ADDRESS`.
-
-## Turn it on and see it working
-
-These are the three setup actions:
-
-1. Run `sudo /opt/deepsignal-release/contrib/deepsignal/console/install/install.sh`.
-2. Open `http://<server>/console/`, replacing `<server>` with the ship server name or address.
-3. Read the **Self-test** page. Every healthy check says **Pass** and has a filled-circle shape; a failed check says **Down** and has a cross.
-
-The command auto-detects the normal Ubuntu or RHEL nginx configuration, makes a timestamped backup, checks the complete nginx configuration, and reloads nginx. To inspect its proposed edit without root or any file change, add `--dry-run`. Nonstandard installations can use:
+Remove old `/cds-ws` routes and other listeners or proxies that expose the CDS or gateway.
+The nginx `http` block must load the dedicated `deepsignal-console.conf` site once through
+an existing wildcard include. The installer looks for the site under `sites-enabled/`
+and `conf.d/` beside the main configuration, in that order. Use `--nginx-site PATH` to
+select another directory with an active include and keep the filename
+`deepsignal-console.conf`. Use `--nginx-main PATH` if the running nginx service uses a
+main configuration other than `/etc/nginx/nginx.conf`.
 
 ```sh
 sudo /opt/deepsignal-release/contrib/deepsignal/console/install/install.sh \
-    --openrvdas-root /srv/openrvdas --nginx-conf /etc/nginx/conf.d/ship.conf
+    --origin http://ship.example
 ```
 
-Use `--check` with the same server and UDP options to rerun the relay gate without editing nginx. For a host with `/cds-ws` configured, the gate must pass before the installer edits nginx.
+Open `http://ship.example/console/` and view **Self-test**. Use **Copy report** to share
+the result with the server technician.
 
-If a check is down, use **Copy report** and send the plain-text result to the technician responsible for the server. The report includes the cache URL, field and logger counts, cruise mode, newest-record age, and page-file result.
+Pass one `--origin` for each browser origin. Origins use concrete hostnames or IPv4
+addresses, share a scheme and port, and omit paths and default ports. For HTTPS, supply
+`--ssl-certificate` and `--ssl-certificate-key` with absolute paths. The probe uses
+the host's trusted certificate authorities. Use `--openrvdas-root` if the deployed
+console is outside `/opt/openrvdas`.
 
-## Turn it off
+The installer reads all UDP feed ports from
+`/etc/supervisor/conf.d/cached_data_server.conf`. Use `--cds-supervisor-config PATH`
+if that fragment is installed elsewhere. When the command uses the shipped Supervisor
+environment substitutions, the installer resolves them from the running CDS process.
+Run the Self-test command with permission to read that process's environment.
 
-```sh
-sudo /opt/deepsignal-release/contrib/deepsignal/console/install/install.sh --uninstall
-```
+The installer inventories the effective nginx configuration and lists conflicting or
+unclassifiable files before writing the site. It checks the running systemd nginx
+service and refuses an existing site with group or other write permission. It reloads
+nginx even when the site already has the expected bytes and confirms that a new
+worker generation is active. It then probes the reloaded site using the host's
+default-route IPv4 address. Use `--probe-address ADDRESS` to select a LAN address where
+CDS UDP feeds should be unreachable. Use `--probe-source ADDRESS` to bind a second
+local address. The default vhost on the console listener must return 403 on `/cds-ws`
+for matching unconfigured Host and Origin values.
 
-This removes only the nginx text between the `BEGIN deepsignal-console` and `END deepsignal-console` markers, tests nginx, and reloads it. Add `--no-reload` to either real command to print the reload command instead of running it.
+Use `--dry-run` with the same options to preview the change. On a host without nginx,
+the preview inventories the configuration files and their includes directly. Use
+`--render` to print the expected site.
 
-## What it does not do
+## Check or remove the site
 
-The installer does **not** change OpenRVDAS, logger configuration, running loggers, or supervisord. It does not build the console, install dependencies, open firewall ports, or change any nginx setting outside its marked location block.
+Repeat the install command with the same configuration options and add `--check` to
+verify the installed site, live gateway and served console bundle. Each failed probe
+check prints a reason and the command exits non-zero. Add `--uninstall` to remove the
+dedicated site and reload nginx. To change the site's parameters, uninstall with the
+previous parameters before installing with the new ones.
