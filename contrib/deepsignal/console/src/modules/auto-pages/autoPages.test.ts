@@ -84,6 +84,27 @@ describe('auto-pages', () => {
     expect(test.registered.map((page) => page.id)).toEqual(['bridge-auto', 'science-auto', 'all-fields'])
   })
 
+  it.each([0, 1000])('recognizes metadata-only headings with a %i ms delay after the field list', (delay) => {
+    vi.useFakeTimers()
+    const test = context({})
+    const stop = engine.start(test.ctx)
+    try {
+      test.catalogArrives({ PilotBearing: {} })
+      vi.advanceTimersByTime(delay)
+      expect(test.registered).toEqual([])
+
+      test.catalogArrives({ PilotBearing: { description: 'True heading from GPS', units: 'degrees' } })
+      vi.advanceTimersByTime(1000)
+
+      expect(test.registered.find((page) => page.id === 'bridge-auto')).toMatchObject({
+        title: 'Bridge (auto)',
+        tiles: [{ type: 'number', field: 'PilotBearing', label: 'True heading from GPS', unit: 'degrees' }],
+      })
+    } finally {
+      stop()
+    }
+  })
+
   it('uses the installed wind and chart tile setting names', () => {
     const test = context(feed.fields)
     engine.start(test.ctx)

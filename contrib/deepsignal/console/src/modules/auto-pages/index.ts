@@ -87,14 +87,18 @@ const engine = {
   start(ctx: ConsoleContext) {
     let unsubscribe = () => {}
     let catalog = ''
+    const catalogStamp = () => JSON.stringify(ctx.store.listFields().map((field) => {
+      const { description, units, logger } = ctx.store.describe(field) ?? {}
+      return [field, description, units, logger]
+    }))
     const refresh = () => {
       unsubscribe()
-      catalog = ctx.store.listFields().join('\0')
+      catalog = catalogStamp()
       const shownFields = generate(ctx)
       unsubscribe = ctx.store.subscribe(shownFields, refresh)
     }
     const checkCatalog = () => {
-      if (ctx.store.listFields().join('\0') !== catalog) refresh()
+      if (catalogStamp() !== catalog) refresh()
     }
     refresh()
     const catalogTimer = setInterval(checkCatalog, 1000)

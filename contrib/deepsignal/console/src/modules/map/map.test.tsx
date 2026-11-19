@@ -99,6 +99,73 @@ it('rebuilds the plotted track when the subscription delivers new positions', ()
   expect(screen.getByRole('status')).toHaveTextContent('2.00000°, 2.00000°')
 })
 
+it.each([
+  [cfg.lat, cfg.lon],
+  [cfg.lon, cfg.lat],
+])('T-CON-3 shows NO DATA for unpaired coordinates delivered %s then %s', (first, second) => {
+  const ctx = fakeContext()
+  let now = ctx.clock.now()
+  ctx.clock.now = () => now
+  const coordinates = new Map([
+    [cfg.lat, { time: now - 3, value: 44.5 }],
+    [cfg.lon, { time: now - 2, value: -124.2 }],
+  ])
+  const history = new Map<string, ReturnType<ConsoleContext['store']['history']>>()
+  ctx.store.history = (field) => history.get(field) ?? []
+  const get = ctx.store.get
+  ctx.store.get = (field) => {
+    const sample = history.get(field)?.at(-1)
+    const ageS = sample && now - sample.time
+    return { ...get(field), value: sample?.value, sourceTime: sample?.time, receiveTime: sample && now,
+      ageS, freshness: ageS === undefined ? 'NO_DATA' : ageS > 5 ? 'STALE' : ageS > 2 ? 'AGING' : 'LIVE' }
+  }
+  let notify = () => {}
+  ctx.store.subscribe = (_fields, cb) => { notify = cb; return () => {} }
+  render(<MapTile cfg={cfg} ctx={ctx} />)
+  for (const field of [first, second]) {
+    history.set(field, [coordinates.get(field)!])
+    act(notify)
+    expect.soft(screen.queryByText(/Position (?:aging|stale)/)).not.toBeInTheDocument()
+  }
+
+  expect(screen.getByText('× Position NO DATA · Coordinates aging 3 sec')).toBeVisible()
+  fireEvent.click(mapButton(), { clientX: 320, clientY: 180 })
+  expect(screen.queryByRole('status')).not.toBeInTheDocument()
+
+  now += 4
+  act(notify)
+  expect(screen.getByText('× Position NO DATA · Coordinates stale 7 sec')).toBeVisible()
+
+  const matched = { time: now, value: 0 }
+  history.get(cfg.lat)!.push(matched)
+  history.get(cfg.lon)!.push(matched)
+  act(notify)
+  expect(screen.queryByText(/NO DATA/)).not.toBeInTheDocument()
+  fireEvent.click(mapButton(), { clientX: 320, clientY: 180 })
+  expect(screen.getByRole('status')).toHaveTextContent('0.00000°, 0.00000°')
+
+  now += 1
+  history.get(first)!.push({ time: now, value: 1 })
+  act(notify)
+  expect(screen.getByText('□ Waiting for a matched position · 1 sec')).toBeVisible()
+  fireEvent.click(mapButton(), { clientX: 320, clientY: 180 })
+  expect(screen.getByRole('status')).toHaveTextContent('0.00000°, 0.00000°')
+})
+
+it.each([
+  { quality: 'FAIL', flag: 4, shape: '×' },
+  { quality: 'MISSING', flag: 9, shape: '□' },
+] as const)('reports $quality and stale coordinates when QC leaves no plotted position', ({ quality, flag, shape }) => {
+  const ctx = fakeContext({ stalePosition: true })
+  const get = ctx.store.get
+  const time = ctx.clock.now() - 120
+  ctx.store.history = (field) => field === cfg.lon + ctx.config.qcSuffix ? [{ time, value: flag }]
+    : field === cfg.lat || field === cfg.lon ? [{ time, value: get(field).value }] : []
+  ctx.store.get = (field) => field === cfg.lon ? { ...get(field), quality } : get(field)
+  render(<MapTile cfg={cfg} ctx={ctx} />)
+  expect(screen.getByText(`${shape} Position ${quality} · Coordinates stale 2 min`)).toBeVisible()
+})
+
 it('marks position stale when longitude alone stops updating', () => {
   const ctx = fakeContext()
   const get = ctx.store.get

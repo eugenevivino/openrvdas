@@ -97,19 +97,30 @@ function coordinateHistory(ctx: ConsoleContext, field: string, seconds: number):
 }
 
 function positionNotice(states: FieldState[], latest: TrackPoint | undefined, now: number) {
-  const positionAge = latest && Math.max(0, now - latest.time)
-  const age = Math.max(positionAge ?? 0, ...states.map((state) => state.ageS ?? 0))
-  const words = ageWords(positionAge !== undefined || states.some((state) => state.ageS !== undefined) ? age : undefined)
   const quality = states.some((state) => state.quality === 'FAIL') ? 'FAIL'
     : states.some((state) => state.quality === 'MISSING') ? 'MISSING'
       : states.some((state) => state.quality === 'SUSPECT') ? 'SUSPECT' : undefined
   const qualitySuffix = quality ? ` · ${quality}` : ''
+  if (!latest) {
+    const staleAges = states.flatMap(({ freshness, ageS }) =>
+      ageS !== undefined && (freshness === 'STALE' || freshness === 'NO_DATA') ? [ageS] : [])
+    const agingAges = states.flatMap(({ freshness, ageS }) =>
+      ageS !== undefined && freshness === 'AGING' ? [ageS] : [])
+    const coordinates = staleAges.length ? ` · Coordinates stale ${ageWords(Math.max(...staleAges))}`
+      : agingAges.length ? ` · Coordinates aging ${ageWords(Math.max(...agingAges))}` : ''
+    if (quality === 'FAIL') return `× Position FAIL${coordinates}`
+    if (quality === 'MISSING') return `□ Position MISSING${coordinates}`
+    if (states.some(({ sourceTime, value }) => sourceTime !== undefined && numeric(value) === undefined)) {
+      return `□ Position MISSING${qualitySuffix}${coordinates}`
+    }
+    return `× Position NO DATA${qualitySuffix}${coordinates}`
+  }
+  const words = ageWords(Math.max(0, now - latest.time, ...states.map((state) => state.ageS ?? 0)))
   if (states.some((state) => state.freshness === 'NO_DATA')) return `× Position stale ${words} · NO DATA${qualitySuffix}`
   if (states.some((state) => state.freshness === 'STALE')) return `□ Position stale ${words}${qualitySuffix}`
   if (states.some((state) => state.freshness === 'AGING')) return `▲ Position aging ${words}${qualitySuffix}`
   if (quality === 'FAIL') return '× Position FAIL'
   if (quality === 'MISSING' || states.some((state) => numeric(state.value) === undefined)) return '□ Position MISSING'
-  if (!latest) return `× Position stale ${words} · NO DATA${qualitySuffix}`
   if (states.some((state) => state.sourceTime !== latest.time)) return `□ Waiting for a matched position · ${words}${qualitySuffix}`
   if (quality === 'SUSPECT') return '▲ Position SUSPECT'
   return undefined
