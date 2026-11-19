@@ -1,7 +1,9 @@
 """Exercise the shipped console against a real local cache."""
 
 from base64 import b64encode
+import json
 from pathlib import Path
+import re
 from time import time
 from urllib.parse import urlsplit
 
@@ -14,6 +16,76 @@ from contrib.deepsignal.test.console.browser_server import serve_console
 
 CONSOLE = Path(__file__).resolve().parents[2] / 'console'
 DIST = CONSOLE / 'dist'
+
+
+def serve_dist_asset(route, configuration):
+    name = urlsplit(route.request.url).path.removeprefix('/console/')
+    if name == 'console.yaml':
+        route.fulfill(body=configuration, content_type='application/yaml')
+    else:
+        path = DIST / (name or 'index.html')
+        if path.is_file():
+            route.fulfill(path=path)
+        else:
+            route.fulfill(status=404)
+
+
+@pytest.mark.lead_run
+@pytest.mark.parametrize(('origin', 'socket_scheme'), [
+    pytest.param('http://demo-console.test:8080', 'ws', id='http'),
+    pytest.param('https://pilot-console.test', 'wss', id='https'),
+])
+@pytest.mark.parametrize('source', ['readme', 'sample'])
+def test_d_fix1_documented_relay(origin, socket_scheme, source):
+    from playwright.sync_api import expect, sync_playwright
+
+    sample = (DIST / 'console.yaml').read_text(encoding='utf-8')
+    if source == 'readme':
+        readme = (CONSOLE / 'README.md').read_text(encoding='utf-8')
+        demo = readme.split('### Try it without a ship\n', 1)[1].split('\n### ', 1)[0]
+        # Apply any inline YAML setting the workstation instructions give the operator.
+        overrides = re.findall(r'`(websocket:[^`]+)`', demo)
+        configuration = '\n'.join([sample, *overrides])
+    else:
+        assert sample == (CONSOLE / 'public' / 'console.yaml').read_text(encoding='utf-8')
+        # Enable any commented websocket example in the shipped configuration.
+        configuration = re.sub(r'^# (websocket: .+)$', r'\1', sample, flags=re.MULTILINE)
+
+    host = urlsplit(origin).netloc
+    expected = f'{socket_scheme}://{host}/cds-ws'
+    socket_urls = []
+
+    def capture_socket(socket):
+        socket_urls.append(socket.url)
+
+        def reply(message):
+            request = json.loads(message)['type']
+            catalog = {'fields': [], 'describe': {}}
+            if request in catalog:
+                socket.send(json.dumps({'type': request, 'status': 200, 'data': catalog[request]}))
+
+        socket.on_message(reply)
+
+    with sync_playwright() as driver:
+        browser = driver.chromium.launch()
+        try:
+            page = browser.new_page()
+            # Fulfill both origins entirely in Playwright, including any unexpected socket.
+            page.route('**/*', lambda route: route.abort())
+            page.route(f'{origin}/console/**', lambda route: serve_dist_asset(route, configuration))
+            page.route_web_socket('**/*', capture_socket)
+            page.goto(f'{origin}/console/')
+            connected = page.get_by_text('Waiting for current data', exact=True)
+            alert = page.get_by_role('alert')
+            expect(connected.or_(alert).first).to_be_visible(timeout=5_000)
+            assert socket_urls[:1] == [expected], alert.all_text_contents()
+        finally:
+            browser.close()
+
+    if source == 'sample':
+        comments = '\n'.join(line for line in sample.splitlines() if line.startswith('#'))
+        documented = re.findall(r'wss?://\S+', comments)
+        assert expected in {url.replace('<browser-host>', host) for url in documented}
 
 
 @pytest.mark.lead_run
@@ -143,23 +215,14 @@ def test_night_red_constrains_browser_painted_color_and_preserves_neutral():
     ship = 'R/V Pilot \N{LARGE GREEN CIRCLE}'
     configuration = yaml.safe_load((DIST / 'console.yaml').read_text(encoding='utf-8'))
     configuration.update(ship=ship, websocket='ws://console.test/cds-ws')
-
-    def serve_asset(route):
-        name = urlsplit(route.request.url).path.removeprefix('/console/')
-        if name == 'console.yaml':
-            route.fulfill(body=yaml.safe_dump(configuration), content_type='application/yaml')
-        else:
-            path = DIST / (name or 'index.html')
-            if path.is_file():
-                route.fulfill(path=path)
-            else:
-                route.fulfill(status=404)
+    config_text = yaml.safe_dump(configuration)
 
     with sync_playwright() as driver:
         browser = driver.chromium.launch()
         try:
             page = browser.new_page(color_scheme='light')
-            page.route('http://console.test/console/**', serve_asset)
+            page.route('http://console.test/console/**', lambda route: serve_dist_asset(
+                route, config_text))
             page.route_web_socket('ws://console.test/cds-ws', lambda _socket: None)
             page.goto('http://console.test/console/')
             ship_label = page.get_by_text(ship, exact=True)

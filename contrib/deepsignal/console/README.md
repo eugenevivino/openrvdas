@@ -22,13 +22,23 @@ To turn the console off, run the installer with `--uninstall` and the same nginx
 
 ### Try it without a ship
 
-On a workstation with OpenRVDAS installed, run this from the OpenRVDAS folder.
+Use only a dedicated demo workstation with OpenRVDAS installed. Its nginx site must already serve a copy of `dist/` at `/console/` and route `/cds-ws` on the same origin to the read-only gateway at `127.0.0.1:8767`. Use free loopback ports `18766` and `8767` for the demo. Keep ship systems and existing services out of this setup.
+
+From the OpenRVDAS folder, start the demo cache.
 
 ```sh
 python3 -B -m contrib.deepsignal.console.demo_cache contrib/deepsignal/configs/console_demo_logger.yaml
 ```
 
-The demo replays air temperature and humidity from the NBP1406 recording into a separate in-memory cache. Serve a copy of `dist/` under `/console/` on the workstation and add `websocket: ws://127.0.0.1:18766` to that copy's `console.yaml`. Open `http://127.0.0.1/console/` on the same workstation. The Weather tiles should update about once a second. Press **Ctrl+C** in the demo terminal to stop it. The top bar shows **Reconnecting** and how long ago the cache last replied. The tiles progress from **LIVE** to **AGING**, **STALE**, and **NO DATA** as their readings age.
+The demo replays air temperature and humidity from the NBP1406 recording into a separate in-memory cache on `127.0.0.1:18766`. From the same folder in a second terminal, start the read-only gateway with the demo cache as its upstream.
+
+```sh
+python3 -B -m contrib.deepsignal.security.cds_gateway --upstream ws://127.0.0.1:18766
+```
+
+Leave `websocket` unset in the copy's `console.yaml`. Open `/console/` on the preconfigured nginx origin from the demo workstation. The browser uses the same host and port for `/cds-ws`, with `ws://` over HTTP and `wss://` over HTTPS.
+
+The Weather tiles should update about once a second. Press **Ctrl+C** in the demo cache terminal to stop it. The top bar shows **Reconnecting** and how long ago the cache last replied. The tiles progress from **LIVE** to **AGING**, **STALE**, and **NO DATA** as their readings age. When finished, press **Ctrl+C** in the gateway terminal.
 
 ### Settings
 
