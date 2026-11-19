@@ -1,0 +1,188 @@
+@import "tailwindcss" source(none);
+@source "./";
+
+@layer base {
+  :root {
+    --bg: #e9eef0;
+    --panel: #ffffff;
+    --panel2: #f3f6f7;
+    --line: #c9d3d7;
+    --fg: #0a151a;
+    --muted: #4c5f68;
+    --accent: #006a7c;
+    --ok: #1d7f50;
+    --check: #a86a00;
+    --stale: #6b5bb5;
+    --down: #b3261e;
+    --missing: var(--muted);
+    --chart: #006a7c;
+    --grid: #d8e0e3;
+    --scroll-thumb: var(--muted);
+    color-scheme: light;
+    --f-number: "Barlow Semi Condensed", "Arial Narrow", system-ui, sans-serif;
+    --f-body: "Barlow", system-ui, sans-serif;
+    --f-mono: "IBM Plex Mono", ui-monospace, monospace;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--f-body);
+    font-variant-numeric: tabular-nums;
+    scrollbar-color: var(--scroll-thumb) var(--bg);
+  }
+
+  :root[data-mode="dusk"] {
+    --bg: #081014;
+    --panel: #0e191f;
+    --panel2: #132229;
+    --line: #1f323b;
+    --fg: #dde8ec;
+    --muted: #8aa2ad;
+    --accent: #56c3d3;
+    --ok: #4cc38a;
+    --check: #e5b440;
+    --stale: #a99cf0;
+    --down: #ff6b5e;
+    --chart: #56c3d3;
+    --grid: #18282f;
+    color-scheme: dark;
+  }
+
+  :root[data-mode="night"] { color-scheme: dark; }
+
+  html, body { min-height: 100%; }
+  body {
+    padding-inline: max(16px, env(safe-area-inset-left)) max(16px, env(safe-area-inset-right));
+    padding-bottom: max(24px, env(safe-area-inset-bottom));
+    background: var(--bg);
+    font-size: 16px;
+  }
+
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0 0 auto;
+    height: env(safe-area-inset-top);
+    background: var(--bg);
+    z-index: 2;
+  }
+
+  ::selection { background: var(--accent); color: var(--bg); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button, a, input { -webkit-tap-highlight-color: transparent; }
+  button, a { min-width: 44px; min-height: 44px; }
+  button { cursor: pointer; }
+}
+
+@layer components {
+  .bar {
+    @apply sticky flex flex-wrap items-center gap-x-4 gap-y-2;
+    top: env(safe-area-inset-top);
+    z-index: 1;
+    padding-block: 10px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bg);
+  }
+
+  .brand { @apply flex items-center gap-2; font: 600 21px/1.2 var(--f-number); }
+  .brand svg { flex: none; color: var(--accent); }
+  .ship { color: var(--muted); font: 400 16px/1.2 var(--f-body); overflow-wrap: anywhere; }
+  .monitoring-label { color: var(--muted); }
+  .tabs {
+    @apply flex items-center gap-1;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-x: auto;
+    padding: 4px;
+  }
+
+  .tabs a, .lighting button {
+    @apply inline-flex items-center justify-center;
+    padding: 6px 12px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    font: 600 18px/1.2 var(--f-number);
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  .tabs a:hover, .lighting button:hover { color: var(--fg); border-color: var(--accent); }
+  .tabs a[aria-current="page"], .lighting button[aria-pressed="true"] {
+    color: var(--fg);
+    background: var(--panel);
+    border-color: var(--line);
+    box-shadow: inset 0 -3px var(--accent);
+  }
+
+  .lighting { @apply flex flex-wrap items-center gap-2; }
+  .night-settings { @apply flex flex-wrap items-center gap-2; }
+  .modes { @apply flex items-center gap-1; }
+  .lighting .night-button { gap: 6px; border-color: var(--line); color: var(--fg); }
+  .dim { @apply flex items-center gap-2; color: var(--muted); }
+  .dim input {
+    appearance: none;
+    background: transparent;
+    width: 110px;
+    height: 44px;
+    cursor: pointer;
+  }
+  .dim input::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--muted); }
+  .dim input::-moz-range-track { height: 4px; border-radius: 2px; background: var(--muted); }
+  .dim input::-webkit-slider-thumb {
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    margin-top: -7px;
+    border-radius: 50%;
+    background: var(--fg);
+  }
+  .dim input::-moz-range-thumb { width: 18px; height: 18px; border: 0; border-radius: 50%; background: var(--fg); }
+
+  .live, .clock { font: 400 16px/1.4 var(--f-mono); color: var(--muted); }
+  .live .status { border: 1px solid var(--line); border-radius: 999px; padding: 5px 8px; }
+  .live .status-down { color: var(--fg); border-color: var(--muted); }
+  .clock { white-space: nowrap; }
+  .clock time { color: var(--fg); }
+
+  h1 { margin: 0 0 12px; font: 600 26px/1.2 var(--f-number); overflow-wrap: anywhere; }
+  .banners:not(:empty) { display: grid; gap: 8px; margin-bottom: 12px; }
+  main > .message { margin-bottom: 12px; }
+  .tiles { @apply grid gap-3; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+  .tile, .message {
+    min-width: 0;
+    padding: 14px 16px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+    overflow-wrap: anywhere;
+  }
+  :root[data-mode="night"] .tile { background: var(--bg); }
+  .tile-frame { display: grid; min-width: 0; }
+  .tile-frame.wide { grid-column: span 2; }
+  .status { @apply inline-flex items-center gap-1; }
+  .status svg { flex: none; }
+  .status-ok svg { color: var(--ok); }
+  .status-check svg { color: var(--check); }
+  .status-stale svg { color: var(--stale); }
+  .status-down svg { color: var(--down); }
+  .status-missing svg { color: var(--missing); }
+
+  @media (min-width: 1280px) {
+    /* Bridge puts the two large instruments above the six number tiles. */
+    .tiles:has(> .wide > .bridge-wind-dial):has(> .wide > .bridge-nav) {
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      --bridge-dial-height: clamp(144px, 23vh, 260px);
+    }
+    .tiles:has(> .wide > .bridge-wind-dial):has(> .wide > .bridge-nav) > .wide:has(> .bridge-wind-dial, > .bridge-nav) {
+      grid-column: span 3;
+    }
+  }
+
+  @media (max-width: 850px) {
+    .tabs { order: 1; flex-basis: 100%; }
+  }
+
+  @media (max-width: 520px) {
+    .tiles { grid-template-columns: minmax(0, 1fr); }
+    .tile-frame.wide { grid-column: auto; }
+  }
+}

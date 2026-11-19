@@ -1,0 +1,11 @@
+ship: R/V Example
+ship_timezone: UTC
+# Defaults to ws://<browser host>:8766. Set a URL to specify a different cache.
+# websocket: ws://localhost:8766
+pages: [example]
+history: 300
+night_palette: red
+qc_suffix: _QC
+modules: {}
+# Optional expected update periods in seconds, by field name.
+period: {}
