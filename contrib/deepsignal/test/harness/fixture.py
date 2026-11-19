@@ -2,7 +2,6 @@
 
 import argparse
 import asyncio
-import datetime
 import json
 import multiprocessing
 import os
@@ -96,30 +95,23 @@ class Fixture:
     def ws_url(self):
         return f"ws://127.0.0.1:{self.port}"
 
-    def _scaled_replay(self, name, source, started_at):
+    def _prepare_replay(self, name, source):
         destination = self.temp_dir / f"{name.lower()}.log"
-        first = None
-        output = []
-        for line in source.read_text(errors="surrogateescape").splitlines(True):
-            stamp, separator, record = line.partition(" ")
-            try:
-                parsed = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-            except ValueError:
-                output.append(line)
-                continue
-            first = first or parsed
-            scaled = started_at + (parsed - first) / self.speed
-            rendered = scaled.isoformat(timespec="microseconds").replace("+00:00", "Z")
-            output.append(f"{name.lower()} {rendered}{separator}{record}")
-        destination.write_text("".join(output), errors="surrogateescape")
+        with (source.open(errors="surrogateescape") as records,
+              destination.open("w", errors="surrogateescape") as replay):
+            replay.writelines(f"{name.lower()} {record}" for record in records)
         return destination
 
     def _write_config(self):
         config = TEMPLATE.read_text()
-        started_at = datetime.datetime.now(datetime.timezone.utc)
+        # Each manager launch has its own clock, shared by its replay workers.
+        with tempfile.NamedTemporaryFile(dir=self.temp_dir, prefix="replay-epoch-",
+                                         delete=False) as epoch:
+            config = config.replace("__REPLAY_EPOCH__", epoch.name)
+        config = config.replace("__REPLAY_SPEED__", str(self.speed))
         for name, source in REPLAYS.items():
             config = config.replace(f"__{name}_FILE__",
-                                    str(self._scaled_replay(name, source, started_at)))
+                                    str(self._prepare_replay(name, source)))
         config = config.replace("__DEVICE_DEFINITIONS__", str(
             ROOT / "test/NBP1406/devices/nbp_devices.yaml"))
         config = config.replace("__DATA_SERVER__", f"127.0.0.1:{self.port}")
