@@ -3,6 +3,7 @@
 from base64 import b64encode
 from pathlib import Path
 from time import time
+from urllib.parse import urlsplit
 
 import pytest
 import yaml
@@ -86,23 +87,7 @@ def check_night(playwright, page):
     page.get_by_role('button', name='Night', exact=True).click()
     red = page.get_by_role('button', name='Red', exact=True)
     playwright.expect(red).to_have_attribute('aria-pressed', 'true')
-    screenshot = b64encode(page.screenshot()).decode('ascii')
-    offending_pixel = page.evaluate('''async (png) => {
-        const image = await createImageBitmap(new Blob(
-            [Uint8Array.from(atob(png), (byte) => byte.charCodeAt(0))], {type: 'image/png'}));
-        const canvas = new OffscreenCanvas(image.width, image.height);
-        const context = canvas.getContext('2d');
-        context.drawImage(image, 0, 0);
-        const {data} = context.getImageData(0, 0, image.width, image.height);
-        for (let i = 0; i < data.length; i += 4) {
-            const r = data[i], g = data[i + 1], b = data[i + 2];
-            if (100 * g > 15 * r || 100 * b > 15 * r) {
-                const pixel = i / 4;
-                return {x: pixel % image.width, y: Math.floor(pixel / image.width), r, g, b};
-            }
-        }
-        return null;
-    }''', screenshot)
+    offending_pixel = first_pixel_outside_night_red(page, page.screenshot())
     assert offending_pixel is None, f'Night red pixel exceeds channel limits: {offending_pixel}'
 
     page.add_init_script('''
@@ -130,3 +115,65 @@ def check_night(playwright, page):
         .getPropertyValue('--muted').match(/\\d+/g).map(Number)""")
     assert muted[0] >= 150
     assert 100 * max(muted[1:]) <= 15 * muted[0]
+
+
+def first_pixel_outside_night_red(page, screenshot):
+    return page.evaluate('''async (png) => {
+        const image = await createImageBitmap(new Blob(
+            [Uint8Array.from(atob(png), (byte) => byte.charCodeAt(0))], {type: 'image/png'}));
+        const canvas = new OffscreenCanvas(image.width, image.height);
+        const context = canvas.getContext('2d');
+        context.drawImage(image, 0, 0);
+        const {data} = context.getImageData(0, 0, image.width, image.height);
+        for (let i = 0; i < data.length; i += 4) {
+            const r = data[i], g = data[i + 1], b = data[i + 2];
+            if (100 * g > 15 * r || 100 * b > 15 * r) {
+                const pixel = i / 4;
+                return {x: pixel % image.width, y: Math.floor(pixel / image.width), r, g, b};
+            }
+        }
+        return null;
+    }''', b64encode(screenshot).decode('ascii'))
+
+
+@pytest.mark.lead_run
+def test_night_red_constrains_browser_painted_color_and_preserves_neutral():
+    from playwright.sync_api import sync_playwright, expect
+
+    ship = 'R/V Pilot \N{LARGE GREEN CIRCLE}'
+    configuration = yaml.safe_load((DIST / 'console.yaml').read_text(encoding='utf-8'))
+    configuration.update(ship=ship, websocket='ws://console.test/cds-ws')
+
+    def serve_asset(route):
+        name = urlsplit(route.request.url).path.removeprefix('/console/')
+        if name == 'console.yaml':
+            route.fulfill(body=yaml.safe_dump(configuration), content_type='application/yaml')
+        else:
+            path = DIST / (name or 'index.html')
+            if path.is_file():
+                route.fulfill(path=path)
+            else:
+                route.fulfill(status=404)
+
+    with sync_playwright() as driver:
+        browser = driver.chromium.launch()
+        try:
+            page = browser.new_page(color_scheme='light')
+            page.route('http://console.test/console/**', serve_asset)
+            page.route_web_socket('ws://console.test/cds-ws', lambda _socket: None)
+            page.goto('http://console.test/console/')
+            ship_label = page.get_by_text(ship, exact=True)
+            expect(ship_label).to_be_visible()
+            page.get_by_role('button', name='Night', exact=True).click()
+            neutral = page.get_by_role('button', name='Neutral', exact=True)
+            neutral.click()
+            expect(neutral).to_have_attribute('aria-pressed', 'true')
+            assert first_pixel_outside_night_red(page, ship_label.screenshot()) is not None
+
+            red = page.get_by_role('button', name='Red', exact=True)
+            red.click()
+            expect(red).to_have_attribute('aria-pressed', 'true')
+            offending_pixel = first_pixel_outside_night_red(page, page.screenshot())
+            assert offending_pixel is None, offending_pixel
+        finally:
+            browser.close()

@@ -4,8 +4,10 @@ import argparse
 import asyncio
 import datetime
 import json
+import multiprocessing
 import os
 from pathlib import Path
+import runpy
 import shutil
 import signal
 import socket
@@ -145,7 +147,8 @@ class Fixture:
     def _start_manager(self):
         config = self._write_config()
         return self._spawn([
-            sys.executable, "server/logger_manager.py", "--database", "memory",
+            sys.executable, "-m", "contrib.deepsignal.test.harness.fixture", "_manager",
+            "--database", "memory",
             "--config", str(config), "--mode", "replay", "--no-console",
             "--interval", "0.1", "--data_server_websocket",
             f"127.0.0.1:{self.port}", "--stderr_file_pattern",
@@ -165,12 +168,14 @@ class Fixture:
 
     def _wait_for_ready(self, manager):
         deadline = time.monotonic() + 30
+        missing = READY_FIELDS
         while time.monotonic() < deadline:
             if manager.poll() is not None:
                 raise RuntimeError("LoggerManager exited; see manager.log")
             try:
                 fields = asyncio.run(_request(self.ws_url, {"type": "fields"}))["data"]
-                if READY_FIELDS.issubset(fields):
+                missing = READY_FIELDS.difference(fields)
+                if not missing:
                     self.ready = True
                     print(f"READY {self.ws_url} loggers={len(LOGGER_FIELDS)} "
                           f"fields={len(fields)}", flush=True)
@@ -178,7 +183,8 @@ class Fixture:
             except (OSError, KeyError, TimeoutError):
                 pass
             time.sleep(0.1)
-        raise TimeoutError("fixture did not publish records within 30 seconds")
+        raise TimeoutError("fixture did not publish records within 30 seconds; "
+                           f"missing fields: {', '.join(sorted(missing))}")
 
     def _processes_by_pid(self):
         roots = [process.pid for process, _ in self.processes
@@ -313,4 +319,10 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    if sys.argv[1:2] == ["_manager"]:
+        # The stock manager starts threads before it launches logger workers.
+        multiprocessing.set_start_method("spawn")
+        del sys.argv[1]
+        runpy.run_module("server.logger_manager", run_name="__main__", alter_sys=True)
+    else:
+        raise SystemExit(main())

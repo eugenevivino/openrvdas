@@ -175,10 +175,20 @@
 	root.style.backgroundColor = background[mode];
 })(document.documentElement, mode, dim, palette ?? defaultPalette);
             })();</script>
-    <script type="module" crossorigin src="/console/assets/index-CmEPoW6o.js"></script>
-    <link rel="stylesheet" crossorigin href="/console/assets/index-pdiFHIpq.css">
+    <script type="module" crossorigin src="/console/assets/index-DBONNFoG.js"></script>
+    <link rel="stylesheet" crossorigin href="/console/assets/index-Cnp3pj_E.css">
   </head>
   <body>
+    <svg width="0" height="0" aria-hidden="true" style="position: absolute">
+      <filter id="night-red-output" color-interpolation-filters="sRGB">
+        <feColorMatrix result="channelLimit" values="
+          1     0 0 0 0
+          0.075 0 0 0 0
+          0.075 0 0 0 0
+          0     0 0 1 0" />
+        <feBlend in="SourceGraphic" in2="channelLimit" mode="darken" />
+      </filter>
+    </svg>
     <div id="root"></div>
   </body>
 </html>

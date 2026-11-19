@@ -48,6 +48,9 @@
 
   :root[data-mode="night"] { color-scheme: dark; }
 
+  /* Bound pixels painted by the browser itself, including glyphs and controls. */
+  :root[data-mode="night"][data-night-palette="red"] { filter: url("#night-red-output"); }
+
   html, body { min-height: 100%; }
   body {
     padding-inline: max(16px, env(safe-area-inset-left)) max(16px, env(safe-area-inset-right));
