@@ -3,7 +3,7 @@ tiles:
   - type: number
     label: Air temperature
     field: MwxAirTemp
-    unit: °C
+    unit: \u00B0C
     decimals: 1
     # Optional. Set to the sensor's expected interval in seconds, e.g. period: 1.
     sparkline: 5
