@@ -91,20 +91,25 @@ def test_replay_timestamps_match_wall_clock_and_keep_scaled_intervals(tmp_path):
     assert second - first == pytest.approx(0.487 / 2, abs=1e-6)
 
 
-def test_cache_worker_binds_only_loopback(monkeypatch):
+@pytest.mark.parametrize("stock_host", [
+    pytest.param(None, id="stock-default"),
+    pytest.param("::1", id="ipv6-loopback"),
+])
+def test_cache_worker_binds_only_loopback(monkeypatch, stock_host):
     from server import cached_data_server
 
     stock_server = cached_data_server.CachedDataServer
+    bind_addresses = []
 
     def serve(*, ws_handler, host, port, loop):
-        assert host == "127.0.0.1"
-        assert port == 43210
+        bind_addresses.append((host, port))
 
     def cache_server(*, port, interval):
         loop = SimpleNamespace(is_running=lambda: False,
                                run_until_complete=lambda _server: None,
                                run_forever=lambda: None)
-        server = SimpleNamespace(port=port, event_loop=loop,
+        host = cached_data_server.DEFAULT_HOST if stock_host is None else stock_host
+        server = SimpleNamespace(host=host, port=port, event_loop=loop,
                                  _serve_websocket_data=None, quit=lambda: None)
         stock_server._run_websocket_server(server)
         return server
@@ -112,6 +117,11 @@ def test_cache_worker_binds_only_loopback(monkeypatch):
     # Keep the stock listener method in the test without opening a socket.
     monkeypatch.setattr(cached_data_server, "CachedDataServer", cache_server)
     monkeypatch.setattr(websockets, "serve", serve)
+    if stock_host is None:
+        monkeypatch.setattr(cached_data_server.websockets, "serve", serve)
+    else:
+        # The stock fallback imports the same top-level module as the fixture.
+        monkeypatch.setattr(cached_data_server, "websockets", websockets)
     monkeypatch.setattr(ws_compat, "apply", lambda: None)
 
     def stop(_seconds):
@@ -119,6 +129,8 @@ def test_cache_worker_binds_only_loopback(monkeypatch):
 
     monkeypatch.setattr(harness, "time", SimpleNamespace(sleep=stop))
     harness._run_cache(43210)
+
+    assert bind_addresses == [("127.0.0.1", 43210)]
 
 
 def test_ready_waits_for_each_logger_to_publish(tmp_path, monkeypatch, capsys):
