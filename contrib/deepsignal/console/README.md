@@ -4,21 +4,11 @@
 
 DeepSignal shows live ship measurements from the OpenRVDAS data cache in a browser.
 
-Live readings require the #197 read-only relay. Configure `/cds-ws` to use that relay in both Django and React nginx configurations. Bind the cache to loopback and any CDS UDP feed (`--udp`) to a named interface.
-
-1. Place the console build in `/opt/openrvdas/contrib/deepsignal/console/dist/` on the ship server. Set the ship name and time zone in `dist/console.yaml`. Stage a trusted, root-owned release that includes #197 at `/opt/deepsignal-release`, then run its installer. See the [installation guide](docs/install.md) for the required permissions and nginx setup.
-
-   ```sh
-   sudo /opt/deepsignal-release/contrib/deepsignal/console/install/install.sh
-   ```
-
-   Use `--server-name NAME` if the nginx configuration has multiple server blocks. Use `--nginx-conf PATH` for a nonstandard configuration path. For a cache with UDP enabled, add `--udp-port PORT --udp-interface ADDRESS` to the installer command.
+1. Follow [Install the DeepSignal Console](docs/install.md#configure-nginx-and-install), including the prerequisites at the top of the guide. Set the ship name and time zone in `dist/console.yaml`.
 2. Open `/console/` on the ship server. The Weather tiles show readings from `MwxAirTemp` and `MwxAirRelHumid`. For different fields, use the page example below. Press **Night** or **N** to enter or leave Night mode. In Night mode, use **Red** or **Neutral** to select the palette and **Dim** to change brightness. Use keys **1–9** to switch pages.
-3. Open **Self-test**. It shows the cache connection and the relay and UDP checks to verify on the ship server. To rerun the installer’s relay check, use `sudo /opt/deepsignal-release/contrib/deepsignal/console/install/install.sh --check` with the same server and UDP options.
+3. Open **Self-test** to view the cache connection and the relay and UDP checks.
 
 If the top bar keeps saying **Reconnecting**, check that the data cache and relay are running and that the console's nginx server routes `/cds-ws` to the relay. If a tile keeps waiting for data, compare its **Source** field name with the fields the ship logs. After editing either YAML file, reload the browser tab to pick up the changes.
-
-To turn the console off, run the installer with `--uninstall` and the same nginx server selection. The ship's data cache and loggers keep running.
 
 ### Try it without a ship
 
