@@ -1,5 +1,5 @@
 # Return byte offsets for the managed block (or its insertion point), and the
-# selected server's bounds and local /cds-ws endpoint. The installer copies all
+# selected server's opening brace and local /cds-ws endpoint. The installer copies all
 # other bytes verbatim. Run with LC_ALL=C so offsets are bytes even in UTF-8 files.
 
 function word() {
@@ -38,7 +38,8 @@ function cds_target(target,    port) {
     return port == 8766 || (udp_port && port == udp_port)
 }
 
-function directive(end, position, line_prefix,    i, path, exact) {
+function directive(end, position, line_prefix,    i, path) {
+    if (end != "}" && !count) invalid = 1
     if (end == "{") {
         if (words[1] == "server" && count == 1 && depth == http_depth) {
             server = ++servers
@@ -50,16 +51,6 @@ function directive(end, position, line_prefix,    i, path, exact) {
             stream_depth = 1
         } else if (words[1] == "upstream" && depth == http_depth) {
             upstream_depth = depth + 1
-        } else if (server && depth == server_depth && !in_marker && words[1] == "location") {
-            path = words[count]
-            exact = words[2] == "="
-            if (path == "/cds-ws" && (count == 2 || exact || words[2] == "^~")) {
-                routes[server]++
-                route_depth = depth + 1
-                if (exact || words[2] == "^~") protected_route[server] = 1
-            } else if (words[2] == "~" || words[2] == "~*") {
-                regex_or_include[server] = 1
-            }
         }
         depth++
     } else if (end == ";") {
@@ -78,26 +69,13 @@ function directive(end, position, line_prefix,    i, path, exact) {
             for (i = 2; i <= count; i++) if (words[i] == ENVIRON["CONSOLE_SERVER_NAME"]) named[server] = 1
         } else if (server && depth == server_depth && words[1] == "listen") {
             if (!(server in endpoints)) listener()
-        } else if (server && depth == server_depth && words[1] == "include") {
-            regex_or_include[server] = 1
-        } else if (route_depth && words[1] == "proxy_pass") {
-            if (depth == route_depth && count == 2 &&
-                (words[2] == "http://127.0.0.1:8767" || words[2] == "http://unix:/run/deepsignal/cds-gateway.sock:")) {
-                gateway[server]++
-            } else {
-                other_proxy[server] = 1
-            }
-        } else if (route_depth && words[1] == "include") {
-            other_proxy[server] = 1
         }
     } else {
-        if (count) invalid = 1
-        if (depth == route_depth) route_depth = 0
+        if (count || depth <= 0) invalid = 1
         if (server && depth == server_depth) {
             if (in_marker) bad_markers[server] = 1
             in_marker = 0
             insert_at[server] = (line_prefix ~ /^[ \t]*$/) ? offset : position
-            server_end[server] = position
             server = 0
         }
         if (depth <= http_depth) http_depth = 0
@@ -173,13 +151,10 @@ END {
     if (begin_at[selected] != "") printf "%d %d", begin_at[selected], end_at[selected]
     else printf "%d %d", insert_at[selected], insert_at[selected]
     if (direct_cds[selected] || direct_stream) status = "unsafe"
-    else if (!routes[selected]) status = "missing"
-    else if (routes[selected] == 1 && gateway[selected] == 1 && !other_proxy[selected] &&
-        (protected_route[selected] || !regex_or_include[selected])) status = "gateway"
-    else status = "unsafe"
+    else status = "check"
     name = ENVIRON["CONSOLE_SERVER_NAME"]
     if (name == "") name = primary_name[selected]
     if (name == "") name = "_"
     endpoint = selected in endpoints ? endpoints[selected] : "80 ws 127.0.0.1"
-    print " " status, server_start[selected], server_end[selected] - server_start[selected] + 1, name, endpoint
+    print " " status, server_start[selected], name, endpoint
 }

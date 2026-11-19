@@ -2,7 +2,9 @@
 
 import os
 from pathlib import Path
+import shlex
 import subprocess
+import sys
 
 import pytest
 
@@ -17,7 +19,13 @@ def nginx_stub(tmp_path):
     tools = tmp_path / "bin"
     tools.mkdir()
     (tools / "nginx").write_text(
-        "#!/bin/sh\nexit \"${NGINX_TEST_EXIT:-0}\"\n", encoding="utf-8"
+        "#!/bin/sh\n"
+        'if [ "$1" = -T ]; then\n'
+        '    printf "# configuration file %s:\\n" "$TEST_NGINX_MAIN"\n'
+        '    exit 0\n'
+        'fi\n'
+        'exit "${NGINX_TEST_EXIT:-0}"\n',
+        encoding="utf-8",
     )
     (tools / "systemctl").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     (tools / "id").write_text(
@@ -27,7 +35,10 @@ def nginx_stub(tmp_path):
     )
     # The checkout stands in for a trusted release when simulating root.
     (tools / "stat").write_text("#!/bin/sh\necho '0 755'\n", encoding="utf-8")
-    for command in ("nginx", "systemctl", "id", "stat"):
+    (tools / "python3").write_text(
+        f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n', encoding="utf-8"
+    )
+    for command in ("nginx", "systemctl", "id", "stat", "python3"):
         (tools / command).chmod(0o755)
     return str(tools)
 
@@ -46,6 +57,7 @@ def run_install(conf, nginx_stub, *args, fail=False, env=None, uid=0):
     run_env = os.environ | {
         "FAKE_UID": str(uid),
         "PATH": nginx_stub + os.pathsep + os.environ["PATH"],
+        "TEST_NGINX_MAIN": str(conf),
     }
     run_env.update(env or {})
     return subprocess.run(

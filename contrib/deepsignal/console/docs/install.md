@@ -16,14 +16,14 @@ These are the three setup actions:
 2. Open `http://<server>/console/`, replacing `<server>` with the ship server name or address.
 3. Read the **Self-test** page. Every healthy check says **Pass** and has a filled-circle shape; a failed check says **Down** and has a cross.
 
-The command auto-detects the normal Ubuntu or RHEL nginx configuration, makes a timestamped backup, checks the complete nginx configuration, and reloads nginx. To inspect its proposed edit without root or any file change, add `--dry-run`. Nonstandard installations can use:
+The command auto-detects the normal Ubuntu or RHEL nginx site, makes a timestamped backup, checks the configuration, and reloads nginx. It uses `nginx -T` to find the main configuration and verifies the proposed site within that configuration. The nginx service must use the same main configuration as the installer’s `nginx -T` and `nginx -t` commands. Use `--dry-run` to preview the proposed edit and run the static nginx check without writing the site. Nginx needs permission to read its configuration and certificates during the preview. Use `--nginx-conf` to select a different site file that the main configuration loads.
 
 ```sh
 sudo /opt/deepsignal-release/contrib/deepsignal/console/install/install.sh \
     --openrvdas-root /srv/openrvdas --nginx-conf /etc/nginx/conf.d/ship.conf
 ```
 
-Use `--check` with the same server and UDP options to rerun the relay gate without editing nginx. For a host with `/cds-ws` configured, the gate must pass before the installer edits nginx. The checker reads `src/pages.ts` under the console checkout supplied by `--openrvdas-root` to verify the same-origin relay URL and the override guard.
+Use `--check` with the same server and UDP options to rerun the relay gate without editing nginx. Every install checks the effective configuration, including included files, sibling HTTP hosts, and stream proxies. It rejects direct CDS destinations and proxy targets it cannot resolve statically. When the selected host has no relay, the installer adds a 503 fallback after that check passes. When the relay exists, the installer verifies the same-origin guard and requires nginx to refuse a foreign-Origin WebSocket handshake with HTTP 403. It also checks the same-origin URL from its construction through the return from `loadConsole` in `src/pages.ts` under the checkout supplied by `--openrvdas-root`.
 
 If a check is down, use **Copy report** and send the plain-text result to the technician responsible for the server. The report includes the cache URL, field and logger counts, cruise mode, newest-record age, and page-file result.
 

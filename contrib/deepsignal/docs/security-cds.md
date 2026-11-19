@@ -34,15 +34,19 @@ python -m contrib.deepsignal.security.check_cds
 ```
 
 The command prints one sentence for each check and returns a nonzero status if any check fails.
-Use `--nginx-config PATH` to select the installed snippet or virtual host and
-`--nginx-react-config PATH` to apply the same checks to a second React configuration. Use
-`--console-source PATH` to inspect `src/pages.ts` under the deployed console checkout. That
-read-only inspection checks the URL builder, rejection of a different `websocket` URL, and
-assignment of the same-origin relay to the active console configuration. It checks TypeScript
-source. The live check connects to the configured nginx WebSocket URL when supplied and uses a
-trusted loopback publish to seed the subscription probe. Use `--udp-port` and `--udp-interface`
-when the CDS has a UDP feed. After applying a reported fix, rerun the command. No restart of local
-loggers is needed when only the gateway or nginx configuration changes.
+The nginx check starts at `/etc/nginx/nginx.conf` by default. Use `--nginx-config PATH` for a
+different main configuration and `--nginx-react-config PATH` to check a second configuration.
+Includes are resolved relative to the main configuration directory. The checker examines all HTTP
+and stream proxy destinations and upstream members, rejects unresolved destinations, and requires
+the relay’s same-origin guard. Use `--console-source PATH` to verify the URL builder and the
+complete `loadConsole` function in the deployed checkout’s `src/pages.ts`. The checker requires
+the supported source form through the return of the console configuration.
+
+Supply `--gateway-url ws://ship.example/cds-ws` to probe nginx. The live check requires an HTTP 403
+handshake response for a foreign Origin and tests publish refusal and subscription with the
+console’s own Origin. It uses a trusted loopback publish to seed the subscription probe. Use
+`--udp-port` and `--udp-interface` when the CDS has a UDP feed. Rerun the command after applying a
+reported fix.
 
 Rejected browser messages receive `{"type":<type>,"status":403,"error":"read-only connection"}`.
 Connections exceeding the message rate, field count, or connection count close with WebSocket
