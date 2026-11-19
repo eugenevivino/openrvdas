@@ -2,9 +2,38 @@
 
 import asyncio
 
+import pytest
 import websockets
 
 from contrib.deepsignal.test.harness import ws_compat
+
+
+@pytest.fixture
+def original_serve():
+    modules = [websockets]
+    try:
+        import websockets.asyncio.server as server
+    except ModuleNotFoundError as exc:
+        if exc.name not in ("websockets.asyncio", "websockets.asyncio.server"):
+            raise
+    else:
+        modules.append(server)
+
+    originals = {module: module.serve for module in modules}
+    yield originals
+
+    # The dependent restoration fixture tears down before this check.
+    leaked = [f"{module.__name__}.serve" for module, serve in originals.items()
+              if module.serve is not serve]
+    assert not leaked, f"serve leaked after test: {', '.join(leaked)}"
+
+
+@pytest.fixture(autouse=True)
+def restore_serve(original_serve):
+    with pytest.MonkeyPatch.context() as patch:
+        for module, serve in original_serve.items():
+            patch.setattr(module, "serve", serve)
+        yield
 
 
 async def _exchange(handler, path="/fixture?source=test", positional=False,
@@ -30,7 +59,9 @@ def test_one_argument_handler_receives_message():
 
     async def handler(connection):
         message = await connection.recv()
-        await connection.send(f"{connection.request.path} {message}")
+        request = getattr(connection, "request", None)
+        path = connection.path if request is None else request.path
+        await connection.send(f"{path} {message}")
 
     assert asyncio.run(_exchange(handler, compression=None)) == (
         "/fixture?source=test hello")
@@ -47,11 +78,13 @@ def test_legacy_two_argument_handler_receives_path():
         "/fixture?source=test hello")
 
 
-def test_apply_is_idempotent():
+@pytest.mark.parametrize("import_path", ["websockets", "websockets.asyncio.server"])
+def test_apply_is_idempotent(import_path):
+    module = pytest.importorskip(import_path)
     ws_compat.apply()
-    first = websockets.serve
+    first = module.serve
     ws_compat.apply()
-    assert websockets.serve is first
+    assert module.serve is first
 
 
 def test_apply_is_no_op_before_websockets_14(monkeypatch):
