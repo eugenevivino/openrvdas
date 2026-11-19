@@ -163,6 +163,46 @@ def test_true_winds_subscribes_to_course(tmp_path):
     assert transform["course_field"] in fields
 
 
+@pytest.mark.parametrize("start_method", [
+    pytest.param("fork", id="linux-fork-default"),
+    pytest.param("spawn", id="spawn-default"),
+])
+def test_replay_worker_starts_with_either_platform_default(tmp_path, monkeypatch, start_method):
+    # Model the platform default before the manager selects its own context.
+    # A forked worker cannot continue if an inherited native lock is held.
+    (tmp_path / "sitecustomize.py").write_text(
+        "import multiprocessing.context as context\n"
+        "import os\n"
+        "context._default_context._default_context = "
+        f"context._concrete_contexts[{start_method!r}]\n"
+        "os.register_at_fork(after_in_child=lambda: os._exit(70))\n",
+    )
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path), prepend=os.pathsep)
+    fixture = Fixture(port=43210, temp_dir=tmp_path)
+    config_file = fixture._write_config()
+    config = yaml.safe_load(config_file.read_text())
+    output = tmp_path / "replayed.log"
+    replay = config["configs"]["mwx1-replay"]
+    del replay["transforms"]
+    replay["writers"] = [{"class": "TextFileWriter", "kwargs": {"filename": str(output)}}]
+    config["configs"] = {"mwx1-replay": replay}
+    config["loggers"] = {"mwx1": config["loggers"]["mwx1"]}
+    config["modes"]["replay"] = {"mwx1": "mwx1-replay"}
+    config_file.write_text(yaml.safe_dump(config))
+    monkeypatch.setattr(fixture, "_write_config", lambda: config_file)
+
+    manager = fixture._start_manager()
+    try:
+        deadline = time.monotonic() + 5
+        while not output.exists() or not output.stat().st_size:
+            assert manager.poll() is None
+            assert time.monotonic() < deadline, "stock logger worker did not replay into the file"
+            time.sleep(0.05)
+        assert "MET," in output.read_text()
+    finally:
+        fixture.stop()
+
+
 @pytest.mark.slow
 def test_up_reaches_ready_within_30_seconds(capsys):
     with Fixture(seconds=2) as fixture:

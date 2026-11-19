@@ -183,7 +183,7 @@ def test_number_distinguishes_live_fail_from_missing_quality(pilot):
     expect(tile.locator(".value")).to_have_text("12.7 m")
     publish({"PilotDepth": 12.8, "PilotDepth_QC": 9})
     expect(quality).to_have_text("MISSING")
-    expect(tile.locator(".value")).to_have_text("—")
+    expect(tile.locator(".value")).to_have_text("\N{EM DASH}")
     expect(freshness).to_have_text("LIVE")
 
 
