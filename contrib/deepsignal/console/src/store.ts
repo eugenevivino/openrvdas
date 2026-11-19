@@ -31,6 +31,7 @@ export class ConsoleStore implements FieldStore {
   private readonly config: StoreConfig
   private selected: ReadonlyMap<string, FieldRequest> = new Map()
   private readonly preferences = new Map<string, FieldRequest>()
+  private readonly learnedPeriods = new Map<string, number>()
   private readonly windows = new Map<string, number>()
   private readonly health = new Map<string, HealthState>()
   private readonly listeners = new Set<() => void>()
@@ -49,7 +50,10 @@ export class ConsoleStore implements FieldStore {
   start() {
     if (this.unlisten) return
     this.unlisten = this.source.subscribe(() => {
-      const batch = this.source.getSnapshot().batch
+      const { batch, fields } = this.source.getSnapshot()
+      for (const [field, { learnedPeriod }] of fields) {
+        if (learnedPeriod !== undefined) this.learnedPeriods.set(field, learnedPeriod)
+      }
       for (const [field, readings] of batch ?? []) {
         for (const reading of readings) this.valueListeners.forEach((listener) => notifySubscriber(listener, field, reading))
       }
@@ -113,8 +117,9 @@ export class ConsoleStore implements FieldStore {
   get(field: string): FieldState {
     const data = this.source.getSnapshot()
     const samples = data.fields.get(field)
+    const period = this.preferences.get(field)?.period ?? samples?.learnedPeriod ?? this.learnedPeriods.get(field)
     const { value, timestamp, receivedAt, expectedPeriod, freshness, quality, age, lastGood } =
-      fieldData(samples, this.preferences.get(field)?.period, this.clock.now())
+      fieldData(samples, period, this.clock.now())
     const { qualityTests, qualityReason } = this.qualityDetails(data, field, timestamp)
     const logger = this.describe(field)?.logger
     return {
