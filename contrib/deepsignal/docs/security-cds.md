@@ -6,14 +6,18 @@ The Cached Data Server accepts unauthenticated publish messages. It must never b
 the ship network. This overlay keeps local loggers connected directly to the CDS and gives browser
 displays a separate read-only WebSocket gateway.
 
-The gateway passes `fields`, `describe`, `subscribe`, and `ready` requests only. It rejects every
-other request with a plain JSON 403 response. It never changes messages flowing from the CDS to a
-display. A stopped gateway interrupts displays but does not interrupt the CDS or local loggers.
+The gateway passes `fields`, `describe`, `subscribe`, and `ready` requests only. Subscriptions use
+explicit field names. The gateway relays CDS replies unchanged. A stopped gateway interrupts
+displays while the CDS and local loggers continue running.
 
 ## Install and configure
 
-1. Start the CDS with `--host 127.0.0.1`. If UDP input is enabled, also set `--udp_interface` to
-   the address of the intended feed interface. Do not use `0.0.0.0`.
+1. Use `security/supervisor/cached_data_server.conf` as the `cached_data_server` program entry.
+   Set `CDS_UDP_PORTS` in the supervisord environment to the comma-separated list of feed ports
+   and set `CDS_UDP_INTERFACE` to the instrument interface's IPv4 address. A multicast feed uses
+   `GROUP:PORT` and joins that group on the same interface. Remove both UDP arguments for a
+   WebSocket-only CDS. The CDS defaults to `127.0.0.1:8766` and rejects a non-loopback TCP address
+   unless `--allow-non-loopback` is explicitly supplied. Leave that override off in this deployment.
 2. Install `security/supervisor/cds-gateway.conf`, adjusting its working directory if needed.
 3. Replace the existing nginx `/cds-ws` location with `security/nginx/cds-ws.conf` for Django
    or `security/nginx/cds-ws-react.conf` for React. Both serve the exact same-origin `/cds-ws`
@@ -21,9 +25,9 @@ display. A stopped gateway interrupts displays but does not interrupt the CDS or
    HTTPS server block.
 4. Reload supervisor and nginx, then run the check below.
 
-The `X-DS-User` and `X-DS-Role` headers are only logged in this version. They are trusted because
-the gateway listens on loopback and nginx removes client-supplied copies. Do not bind the gateway
-to a ship-facing address.
+The gateway accepts connections on `127.0.0.1:8767` only. Remote clients use nginx. Nginx strips
+client-supplied `X-DS-User` and `X-DS-Role` headers, and the gateway uses these headers only for
+logging. Local processes can reach the loopback listener directly.
 
 ## Check and diagnose
 
@@ -48,7 +52,8 @@ console’s own Origin. It uses a trusted loopback publish to seed the subscript
 `--udp-port` and `--udp-interface` when the CDS has a UDP feed. Rerun the command after applying a
 reported fix.
 
-Rejected browser messages receive `{"type":<type>,"status":403,"error":"read-only connection"}`.
-Connections exceeding the message rate, field count, or connection count close with WebSocket
-code 1008 and a plain reason. The gateway logs one connect line and one disconnect line with the
-nginx identity headers, but it does not log field values.
+Malformed and disallowed requests receive `{"type":<type>,"status":403,"error":"read-only connection"}`.
+The WebSocket server closes with code 1009 for browser messages larger than 65,536 bytes. Wildcard
+subscriptions and connections exceeding the message rate, 200-field limit, or connection count
+close with code 1008. The gateway logs connection and disconnection with the nginx identity headers
+and omits field values.

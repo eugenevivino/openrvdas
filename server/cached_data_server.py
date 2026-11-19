@@ -12,6 +12,7 @@ The following direct invocation of this script
 ```
     logger/utils/cached_data_server.py \
       --udp 6225 \
+      --udp_interface 192.0.2.42 \
       --port 8766 \
       --disk_cache /var/tmp/openrvdas/disk_cache \
       --back_seconds 3600 \
@@ -66,6 +67,7 @@ says to
 ```
 """
 import asyncio
+from ipaddress import IPv4Address, ip_address
 import json
 import logging
 import os
@@ -76,7 +78,11 @@ import threading
 import time
 
 try:
-    import websockets
+    # The CDS uses the (websocket, path) handler and the explicit event loop API.
+    try:
+        from websockets.legacy import server as websockets
+    except ImportError:
+        import websockets
     try:
         from websockets.exceptions import ConnectionClosed
     except ImportError:
@@ -89,6 +95,22 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 from logger.utils.stderr_logging import StdErrLoggingHandler  # noqa: E402
 from logger.utils.das_record import DASRecord                 # noqa: E402
 from logger.writers.text_file_writer import TextFileWriter    # noqa: E402
+
+
+DEFAULT_HOST = '127.0.0.1'
+DEFAULT_PORT = 8766
+
+
+def _websocket_host(host, allow_non_loopback):
+    try:
+        if not isinstance(host, str):
+            raise ValueError
+        address = ip_address(host)
+    except ValueError:
+        raise ValueError('--host must be a literal IP address') from None
+    if not address.is_loopback and allow_non_loopback is not True:
+        raise ValueError('--host must be loopback unless --allow-non-loopback is given')
+    return str(address)
 
 
 ############################
@@ -861,15 +883,17 @@ class CachedDataServer:
     ############################
     def __init__(
             self,
-            port,
-            host='',
+            port=DEFAULT_PORT,
             interval=1,
             back_seconds=60 * 60,
             max_records=60 * 24,
             min_back_records=100,
             cleanup_interval=60,
             disk_cache=None,
-            event_loop=None):
+            event_loop=None,
+            *,
+            host=DEFAULT_HOST,
+            allow_non_loopback=False):
         """
         port         Port on which to serve websocket connections
         interval     How frequently to serve updates
@@ -885,15 +909,18 @@ class CachedDataServer:
         disk_cache   If not None, name of directory in which to backup values
                      from in-memory cache
         event_loop   If not None, the event loop to use for websocket events
+        host         Literal IP address on which to serve websocket connections
+        allow_non_loopback
+                     Whether to allow a non-loopback host, including wildcard addresses
         """
+        self.event_loop = None
         self.port = port
-        self.host = host
+        self.host = _websocket_host(host, allow_non_loopback)
         self.interval = interval
         self.back_seconds = back_seconds
         self.max_records = max_records
         self.min_back_records = min_back_records
         self.cleanup_interval = cleanup_interval
-        self.event_loop = event_loop
 
         self.cache = RecordCache()
 
@@ -1055,13 +1082,16 @@ if __name__ == '__main__':
     from logger.readers.udp_reader import UDPReader
     from logger.transforms.from_json_transform import FromJSONTransform
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--port', dest='port', required=True,
+    parser = argparse.ArgumentParser(allow_abbrev=False)
+    parser.add_argument('--port', dest='port', default=DEFAULT_PORT,
                         action='store', type=int,
                         help='Websocket port on which to serve data')
 
-    parser.add_argument('--host', dest='host', default='',
-                        help='Address on which to serve websocket data')
+    parser.add_argument('--host', dest='host', default=DEFAULT_HOST,
+                        help='Literal IP address on which to serve websocket data')
+
+    parser.add_argument('--allow-non-loopback', action='store_true',
+                        help='Allow the publish-capable websocket to bind a non-loopback address')
 
     parser.add_argument('--udp', dest='udp', default=None, action='store',
                         help='Comma-separated list of network ports to listen '
@@ -1069,7 +1099,7 @@ if __name__ == '__main__':
                         'to specify multicast.')
 
     parser.add_argument('--udp_interface', dest='udp_interface', default=None,
-                        help='Interface address on which to receive UDP data')
+                        help='Instrument interface IPv4 address, required with --udp')
 
     parser.add_argument('--disk_cache', dest='disk_cache', default=None,
                         action='store', help='If specified, periodically '
@@ -1106,6 +1136,31 @@ if __name__ == '__main__':
                         action='count', help='Increase output verbosity')
     args = parser.parse_args()
 
+    try:
+        host = _websocket_host(args.host, args.allow_non_loopback)
+    except ValueError as error:
+        parser.error(str(error))
+
+    udp_endpoints = []
+    if args.udp is not None:
+        try:
+            interface = IPv4Address(args.udp_interface)
+        except ValueError:
+            parser.error('--udp requires --udp_interface with a specific IPv4 address')
+        if interface.is_unspecified or interface.is_multicast or str(interface) == '255.255.255.255':
+            parser.error('--udp requires --udp_interface with a specific unicast IPv4 address')
+
+        for spec in args.udp.split(','):
+            group, separator, port_text = spec.rpartition(':')
+            try:
+                if not port_text.isdecimal() or not 1 <= int(port_text) <= 65535:
+                    raise ValueError
+                if separator and not IPv4Address(group).is_multicast:
+                    raise ValueError
+            except ValueError:
+                parser.error(f'invalid --udp entry {spec!r}. Expected PORT or MULTICAST_GROUP:PORT')
+            udp_endpoints.append((group, int(port_text)))
+
     # Set logging verbosity
     LOGGING_FORMAT = '%(asctime)-15s %(filename)s:%(lineno)d %(message)s'
     LOG_LEVELS = {0: logging.WARNING, 1: logging.INFO, 2: logging.DEBUG}
@@ -1118,9 +1173,27 @@ if __name__ == '__main__':
                                         split_by_date=True)]
         logging.getLogger().addHandler(StdErrLoggingHandler(stderr_writer))
 
+    # Open every configured UDP socket before starting the TCP service. A bind
+    # failure must surface here, not in a background ComposedReader thread.
+    reader = None
+    if udp_endpoints:
+        readers = []
+        for multicast_group, port in udp_endpoints:
+            try:
+                udp_reader = UDPReader(port=port, mc_group=multicast_group, interface=str(interface))
+                udp_reader.socket = udp_reader._open_socket()
+            except OSError as error:
+                for opened_reader in readers:
+                    opened_reader.socket.close()
+                    opened_reader.socket = None
+                parser.error(f'cannot bind --udp port {port} on {interface}: {error}')
+            readers.append(udp_reader)
+        reader = ComposedReader(readers=readers, transforms=[FromJSONTransform()])
+
     logging.info('Starting CachedDataServer')
     server = CachedDataServer(port=args.port,
-                              host=args.host,
+                              host=host,
+                              allow_non_loopback=args.allow_non_loopback,
                               interval=args.interval,
                               back_seconds=args.back_seconds,
                               max_records=args.max_records,
@@ -1128,26 +1201,10 @@ if __name__ == '__main__':
                               cleanup_interval=args.cleanup_interval,
                               disk_cache=args.disk_cache)
 
-    # Only create reader(s) if they've given us a network to read from;
-    # otherwise, count on data coming from websocket publish
-    # connections.
-    if args.udp:
-        readers = []
-        # Readers may either be just a port (to listen for broadcast) or
-        # a multicast_group:port to listen for multicast.
-        for udp_spec in args.udp.split(','):
-            group_port = udp_spec.split(':')
-            port = int(group_port[-1])
-            multicast_group = group_port[-2] if len(group_port) == 2 else ''
-            readers.append(UDPReader(port=port, mc_group=multicast_group,
-                                     interface=args.udp_interface))
-        transform = FromJSONTransform()
-        reader = ComposedReader(readers=readers, transforms=[transform])
-
     # Loop, reading data and writing it to the cache
     try:
         while True:
-            if args.udp:
+            if reader is not None:
                 record = reader.read()
                 server.cache_record(record)
             else:

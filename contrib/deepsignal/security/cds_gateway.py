@@ -11,6 +11,8 @@ import websockets
 
 
 ALLOWED_TYPES = frozenset(('fields', 'describe', 'subscribe', 'ready'))
+LISTEN_HOST = '127.0.0.1'
+LISTEN_PORT = 8767
 MAX_FRAME_BYTES = 64 * 1024
 MAX_FIELDS = 200
 MAX_CONNECTIONS = 50
@@ -21,8 +23,8 @@ BURST = 20.0
 class ReadOnlyGateway:
     """Relay safe CDS requests without exposing its publish operation."""
 
-    def __init__(self, upstream='ws://127.0.0.1:8766', host='127.0.0.1',
-                 port=8767, allowed_types=ALLOWED_TYPES):
+    def __init__(self, upstream='ws://127.0.0.1:8766', host=LISTEN_HOST,
+                 port=LISTEN_PORT, allowed_types=ALLOWED_TYPES):
         self.upstream = upstream
         self.host = host
         self.port = port
@@ -84,10 +86,13 @@ class ReadOnlyGateway:
                     continue
                 try:
                     request = json.loads(message)
-                except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
+                except (ValueError, TypeError, RecursionError):
                     await self._refuse(client, None)
                     continue
                 request_type = request.get('type') if isinstance(request, dict) else None
+                if not isinstance(request_type, str):
+                    await self._refuse(client, None)
+                    continue
                 if request_type not in self.allowed_types:
                     await self._refuse(client, request_type)
                     continue
@@ -96,6 +101,9 @@ class ReadOnlyGateway:
                     if not isinstance(fields, dict):
                         await self._refuse(client, request_type)
                         continue
+                    if any('*' in field for field in fields):
+                        await client.close(1008, 'wildcard subscriptions are disabled')
+                        return
                     proposed = subscriptions | set(fields)
                     if len(proposed) > MAX_FIELDS:
                         await client.close(1008, 'subscribed field limit exceeded')
@@ -123,14 +131,17 @@ class ReadOnlyGateway:
 
     async def serve(self):
         """Run until cancelled."""
-        async with websockets.serve(self.handler, self.host, self.port, max_size=None):
+        if self.host != LISTEN_HOST or self.port != LISTEN_PORT:
+            raise ValueError(f'gateway must listen on {LISTEN_HOST}:{LISTEN_PORT}')
+        async with websockets.serve(self.handler, LISTEN_HOST, LISTEN_PORT,
+                                    max_size=MAX_FRAME_BYTES):
             await asyncio.Future()
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--host', default='127.0.0.1')
-    parser.add_argument('--port', type=int, default=8767)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument('--host', default=LISTEN_HOST, choices=(LISTEN_HOST,))
+    parser.add_argument('--port', type=int, default=LISTEN_PORT, choices=(LISTEN_PORT,))
     parser.add_argument('--upstream', default='ws://127.0.0.1:8766')
     parser.add_argument('-v', '--verbose', action='store_true')
     args = parser.parse_args()
