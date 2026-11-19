@@ -107,7 +107,7 @@ original=$temp_dir/original
 tmp=$temp_dir/proposed
 cp "$NGINX_CONF" "$original"
 
-if region=$(LC_ALL=C CONSOLE_SERVER_NAME="$SERVER_NAME" awk -f "$nginx_helper" "$original"); then
+if region=$(LC_ALL=C CONSOLE_SERVER_NAME="$SERVER_NAME" awk -v udp_port="$UDP_PORT" -f "$nginx_helper" "$original"); then
     read -r start end relay server_start server_size probe_name probe_port probe_scheme probe_address <<EOF
 $region
 EOF
@@ -149,7 +149,7 @@ check_relay() (
     gateway_url=$probe_scheme://$probe_name:$probe_port/cds-ws
     set -- --gateway-url "$gateway_url" --nginx-config "$selected_site" \
         --nginx-react-config "$selected_site" \
-        --console-source "$release_root/contrib/deepsignal/console/src/pages.ts"
+        --console-source "${OPENRVDAS_ROOT%/}/contrib/deepsignal/console"
     if [ -n "$UDP_PORT" ]; then
         set -- "$@" --udp-port "$UDP_PORT" --udp-interface "$UDP_INTERFACE"
     else
@@ -157,8 +157,7 @@ check_relay() (
     fi
     cd / || return 1
     export NO_PROXY='*' no_proxy='*'
-    # The eadb0a2 checker doesn't send the Origin required by its nginx snippets.
-    # Give only the nginx handshake a browser Origin and pin it to the listen address.
+    # Give the nginx handshake the required browser Origin and pin it to the listen address.
     python3 -I -B - "$checker" "$gateway_url" "$probe_address" "$@" <<'PY'
 import ipaddress
 import runpy
@@ -175,8 +174,10 @@ program = runpy.run_path(checker)
 websockets = program.get('websockets')
 if websockets is not None:
     connect = websockets.connect
-    scheme = 'https' if gateway_url.startswith('wss:') else 'http'
-    origin = f'{scheme}://{urlsplit(gateway_url).netloc}'
+    endpoint = urlsplit(gateway_url)
+    scheme, default_port = ('https', 443) if endpoint.scheme == 'wss' else ('http', 80)
+    origin_host = endpoint.hostname if endpoint.port == default_port else endpoint.netloc
+    origin = f'{scheme}://{origin_host}'
 
     def connect_with_origin(uri, **kwargs):
         if uri == gateway_url:

@@ -28,6 +28,16 @@ function listener(    address, port, scheme, i) {
     endpoints[server] = port " " scheme " " address
 }
 
+function cds_target(target,    port) {
+    if (target ~ /^(https?:\/\/)?unix:/) return 0
+    sub(/^[A-Za-z]+:\/\//, "", target)
+    sub(/[\/?#].*$/, "", target)
+    if (target !~ /:[0-9]+$/) return 0
+    sub(/^.*:/, "", target)
+    port = target + 0
+    return port == 8766 || (udp_port && port == udp_port)
+}
+
 function directive(end, position, line_prefix,    i, path, exact) {
     if (end == "{") {
         if (words[1] == "server" && count == 1 && depth == http_depth) {
@@ -36,6 +46,10 @@ function directive(end, position, line_prefix,    i, path, exact) {
             server_start[server] = position
         } else if (words[1] == "http" && depth == 0) {
             http_depth = 1
+        } else if (words[1] == "stream" && depth == 0) {
+            stream_depth = 1
+        } else if (words[1] == "upstream" && depth == http_depth) {
+            upstream_depth = depth + 1
         } else if (server && depth == server_depth && !in_marker && words[1] == "location") {
             path = words[count]
             exact = words[2] == "="
@@ -49,6 +63,16 @@ function directive(end, position, line_prefix,    i, path, exact) {
         }
         depth++
     } else if (end == ";") {
+        if (words[1] ~ /_pass$/ && cds_target(words[2])) {
+            if (server) direct_cds[server] = 1
+            if (stream_depth) direct_stream = 1
+        }
+        if (words[1] == "server" && depth == upstream_depth && cds_target(words[2])) direct_stream = 1
+        if (stream_depth && words[1] == "listen" && udp_port) {
+            path = words[2]
+            sub(/^.*:/, "", path)
+            for (i = 3; i <= count; i++) if (words[i] == "udp" && path + 0 == udp_port) direct_stream = 1
+        }
         if (server && depth == server_depth && words[1] == "server_name") {
             if (!(server in primary_name)) primary_name[server] = words[2]
             for (i = 2; i <= count; i++) if (words[i] == ENVIRON["CONSOLE_SERVER_NAME"]) named[server] = 1
@@ -57,7 +81,8 @@ function directive(end, position, line_prefix,    i, path, exact) {
         } else if (server && depth == server_depth && words[1] == "include") {
             regex_or_include[server] = 1
         } else if (route_depth && words[1] == "proxy_pass") {
-            if (depth == route_depth && count == 2 && words[2] == "http://unix:/run/deepsignal/cds-gateway.sock:") {
+            if (depth == route_depth && count == 2 &&
+                (words[2] == "http://127.0.0.1:8767" || words[2] == "http://unix:/run/deepsignal/cds-gateway.sock:")) {
                 gateway[server]++
             } else {
                 other_proxy[server] = 1
@@ -76,6 +101,8 @@ function directive(end, position, line_prefix,    i, path, exact) {
             server = 0
         }
         if (depth <= http_depth) http_depth = 0
+        if (depth == stream_depth) stream_depth = 0
+        if (depth == upstream_depth) upstream_depth = 0
         depth--
     }
     for (i = 1; i <= count; i++) delete words[i]
@@ -134,7 +161,7 @@ function marker(comment, position, line_prefix) {
 }
 
 END {
-    if (depth || quote != "" || invalid || count) exit 3
+    if (depth || quote != "" || variable || invalid || count) exit 3
     for (i = 1; i <= servers; i++) {
         if (ENVIRON["CONSOLE_SERVER_NAME"] == "" || named[i]) {
             selected = i
@@ -145,7 +172,8 @@ END {
     if (bad_markers[selected]) exit 5
     if (begin_at[selected] != "") printf "%d %d", begin_at[selected], end_at[selected]
     else printf "%d %d", insert_at[selected], insert_at[selected]
-    if (!routes[selected]) status = "missing"
+    if (direct_cds[selected] || direct_stream) status = "unsafe"
+    else if (!routes[selected]) status = "missing"
     else if (routes[selected] == 1 && gateway[selected] == 1 && !other_proxy[selected] &&
         (protected_route[selected] || !regex_or_include[selected])) status = "gateway"
     else status = "unsafe"

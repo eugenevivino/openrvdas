@@ -6,7 +6,7 @@ The installer serves the already-built DeepSignal Console through the ship serve
 
 #197 must land before deploying the console with live data. Stage a trusted release at `/opt/deepsignal-release`. The release must include `contrib/deepsignal/console/install/install.sh`, its sibling `nginx-site.awk`, and `contrib/deepsignal/security/check_cds.py` from #197. These files and each directory on their paths must be root-owned and free of symlinks and group or other write permission. The stock installer assigns the `/opt/openrvdas` deployment to `rvdas`. That deployment supplies the console assets. The root-owned release supplies the installer and checker. Use a root-managed Python installation with the #197 checker's existing `websockets` dependency available.
 
-Configure the selected nginx virtual host to serve `/cds-ws` through the #197 relay and load that configuration in nginx before running the console installer. Use a concrete `server_name` that matches the browser hostname. The check connects to the host's first `listen` address and port using that name and validates TLS for HTTPS. Use `--server-name NAME` to select one server if the file contains several. If the cache receives UDP, pass `--udp-port PORT --udp-interface ADDRESS`.
+Configure the selected nginx virtual host with `security/nginx/cds-ws.conf` for Django or `security/nginx/cds-ws-react.conf` for React, then load that configuration before running the installer. Both snippets serve `/cds-ws` through the #197 relay on `127.0.0.1:8767`. Use a concrete `server_name` that matches the browser hostname. The check connects to the host's first `listen` address and port using that name and validates TLS for HTTPS. Use `--server-name NAME` to select one server if the file contains several. If the cache receives UDP, pass `--udp-port PORT --udp-interface ADDRESS`.
 
 ## Turn it on and see it working
 
@@ -23,7 +23,7 @@ sudo /opt/deepsignal-release/contrib/deepsignal/console/install/install.sh \
     --openrvdas-root /srv/openrvdas --nginx-conf /etc/nginx/conf.d/ship.conf
 ```
 
-Use `--check` with the same server and UDP options to rerun the relay gate without editing nginx. For a host with `/cds-ws` configured, the gate must pass before the installer edits nginx.
+Use `--check` with the same server and UDP options to rerun the relay gate without editing nginx. For a host with `/cds-ws` configured, the gate must pass before the installer edits nginx. The checker reads `src/pages.ts` under the console checkout supplied by `--openrvdas-root` to verify the same-origin relay URL and the override guard.
 
 If a check is down, use **Copy report** and send the plain-text result to the technician responsible for the server. The report includes the cache URL, field and logger counts, cruise mode, newest-record age, and page-file result.
 

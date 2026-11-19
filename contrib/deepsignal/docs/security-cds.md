@@ -15,8 +15,10 @@ display. A stopped gateway interrupts displays but does not interrupt the CDS or
 1. Start the CDS with `--host 127.0.0.1`. If UDP input is enabled, also set `--udp_interface` to
    the address of the intended feed interface. Do not use `0.0.0.0`.
 2. Install `security/supervisor/cds-gateway.conf`, adjusting its working directory if needed.
-3. Replace the existing nginx `/cds-ws` location with `security/nginx/cds-ws.conf` and include
-   `security/nginx/security-headers.conf` in the HTTPS server block.
+3. Replace the existing nginx `/cds-ws` location with `security/nginx/cds-ws.conf` for Django
+   or `security/nginx/cds-ws-react.conf` for React. Both serve the exact same-origin `/cds-ws`
+   path through the read-only relay on `127.0.0.1:8767`. Include `security-headers.conf` in the
+   HTTPS server block.
 4. Reload supervisor and nginx, then run the check below.
 
 The `X-DS-User` and `X-DS-Role` headers are only logged in this version. They are trusted because
@@ -32,10 +34,15 @@ python -m contrib.deepsignal.security.check_cds
 ```
 
 The command prints one sentence for each check and returns a nonzero status if any check fails.
-Use `--nginx-config` if nginx installs the snippet at another path. Use `--udp-port` and
-`--udp-interface` when the CDS has a UDP feed. A failure line states the exposure, its effect, and
-the setting to fix. After applying that fix, rerun the command. No restart of local loggers is
-needed when only the gateway or nginx configuration changes.
+Use `--nginx-config PATH` to select the installed snippet or virtual host and
+`--nginx-react-config PATH` to apply the same checks to a second React configuration. Use
+`--console-source PATH` to inspect `src/pages.ts` under the deployed console checkout. That
+read-only inspection checks the URL builder, rejection of a different `websocket` URL, and
+assignment of the same-origin relay to the active console configuration. It checks TypeScript
+source. The live check connects to the configured nginx WebSocket URL when supplied and uses a
+trusted loopback publish to seed the subscription probe. Use `--udp-port` and `--udp-interface`
+when the CDS has a UDP feed. After applying a reported fix, rerun the command. No restart of local
+loggers is needed when only the gateway or nginx configuration changes.
 
 Rejected browser messages receive `{"type":<type>,"status":403,"error":"read-only connection"}`.
 Connections exceeding the message rate, field count, or connection count close with WebSocket
