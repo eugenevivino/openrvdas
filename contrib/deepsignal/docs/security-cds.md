@@ -18,18 +18,33 @@ gateway interrupts displays while the CDS and local loggers continue running.
 2. Install `security/supervisor/cds-gateway.conf` and reload supervisor. The gateway
    listens on `127.0.0.1:8767`.
 3. Follow the console installer guide to deploy `deepsignal-console.conf`. Supply the
-   browser's allowed origins and every configured UDP port. The managed site routes its
-   exact `/cds-ws` path to the gateway and strips client-supplied `X-DS-User` and
+   browser's allowed origins. The managed site routes its exact `/cds-ws` path to
+   the gateway and strips client-supplied `X-DS-User` and
    `X-DS-Role` headers. The gateway uses these headers only for logging.
    [Console installer guide](../console/docs/install.md)
 
 ## Check and diagnose
 
 Run the console installer with `--check` and the deployment's original options. The
-installer verifies the effective nginx configuration and the checker compares the
-dedicated site's bytes against the template rendered with those options. The checker
-then checks the CDS binds and probes the gateway for foreign-Origin rejection,
-publish refusal and subscription through nginx.
+installer verifies the effective nginx configuration and the dedicated site's bytes.
+Install runs the same runtime probe after nginx reloads.
+
+The probe uses a non-loopback IPv4 address to require explicit refusals on TCP 8766
+and 8767 and every configured CDS UDP port. A UDP timeout fails the check because
+the probe cannot distinguish filtering from a listening feed. For multicast feeds it
+probes the UDP port at the LAN address. The group and instrument interface continue
+to carry the configured feed.
+
+The probe requires HTTP 403 for foreign origins, including a request with a matching
+unconfigured Host and Origin. It tries alternate WebSocket paths while the installer
+checks adjacent nginx configuration for other routes or listeners. Through nginx the
+probe checks the served console entrypoint for the same-origin `/cds-ws` configuration.
+
+Each run publishes one timestamped nonce to the reserved
+`deepsignal_gateway_self_test` field through the loopback CDS. It checks the value and
+timestamp through nginx and reads the field back directly after the denied publish.
+The probe leaves the reserved sample in the cache for normal expiry. Standalone runs
+should be serialized with installer and Self-test runs on the same CDS.
 
 To compare the site bytes directly, use the same rendering options with:
 
@@ -41,6 +56,9 @@ python -m contrib.deepsignal.security.check_cds --site-only \
 
 Malformed or disallowed gateway requests receive
 `{"type":<type>,"status":403,"error":"read-only connection"}`.
-The gateway closes with code 1009 for messages larger than 65,536 bytes. Wildcard
-subscriptions and connections exceeding the rate, 200-field limit, or connection limit
-close with code 1008. Connection logs omit field values.
+The gateway caps browser requests at 65,536 bytes and upstream CDS messages at
+1,048,576 bytes (1 MiB, `MAX_UPSTREAM_FRAME_BYTES`). It closes only the affected
+browser connection with code 1009, using the reason `live-data server reply exceeds
+size limit` for an oversize CDS reply. Wildcard subscriptions and connections
+exceeding the rate, 200-field limit, or connection limit close with code 1008.
+Connection logs omit field values.

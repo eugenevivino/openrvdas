@@ -15,7 +15,7 @@ from logger.writers.cached_data_writer import CachedDataWriter
 from server.cached_data_server import RecordCache, WebSocketConnection
 
 
-async def run_gateway_test(test):
+async def run_gateway_test(test, send_data=None):
     received = []
 
     async def upstream(websocket):
@@ -25,7 +25,10 @@ async def run_gateway_test(test):
             if request['type'] == 'subscribe':
                 await websocket.send('{"type":"subscribe","status":200}')
             elif request['type'] == 'ready':
-                await websocket.send('{"type":"data","data":{"temperature":[[1,2]]}}')
+                if send_data is None:
+                    await websocket.send('{"type":"data","data":{"temperature":[[1,2]]}}')
+                else:
+                    await send_data(websocket)
 
     # Run the real WebSocket handshakes and framing over local socket pairs.
     loop = asyncio.get_running_loop()
@@ -102,6 +105,41 @@ def test_subscribe_passes_through():
             assert await websocket.recv() == expected
         assert received[0] == subscribe
     asyncio.run(run_gateway_test(test))
+
+
+def test_oversize_upstream_frame_refused_and_same_subscription_still_passes():
+    limit = 1024 * 1024
+    subscribe = '{"type":"subscribe","fields":{"temperature":{"seconds":1}}}'
+    data = '{"type":"data","data":{"temperature":[[1,2]]}}'.ljust(limit)
+    oversized = True
+
+    async def send_data(upstream):
+        if oversized:
+            # An unmasked frame header is enough to reject the advertised size.
+            upstream.transport.write(struct.pack('!BBQ', 0x81, 127, limit + 1))
+            await upstream.wait_closed()
+        else:
+            await upstream.send(data)
+
+    async def test(url, received):
+        nonlocal oversized
+        async with websockets.connect(url) as websocket:
+            await websocket.send(subscribe)
+            assert json.loads(await websocket.recv())['status'] == 200
+            await websocket.send('{"type":"ready"}')
+            with pytest.raises(websockets.exceptions.ConnectionClosedError) as closed:
+                await asyncio.wait_for(websocket.recv(), 2)
+            assert closed.value.rcvd.code == 1009
+            assert closed.value.rcvd.reason == 'live-data server reply exceeds size limit'
+        oversized = False
+        async with websockets.connect(url) as websocket:
+            await websocket.send(subscribe)
+            assert json.loads(await websocket.recv())['status'] == 200
+            await websocket.send('{"type":"ready"}')
+            assert await asyncio.wait_for(websocket.recv(), 2) == data
+        assert received == [subscribe, '{"type":"ready"}'] * 2
+
+    asyncio.run(run_gateway_test(test, send_data))
 
 
 def test_unknown_type_and_non_json_refused():

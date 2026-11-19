@@ -32,6 +32,7 @@ done
 if $require_trusted; then
     for file in "$installer_dir/${0##*/}" "$installer_dir/install_site.py" \
                 "$installer_dir/nginx_inventory.py" "$security_dir/check_cds.py" \
+                "$security_dir/probe_cds.py" \
                 "$security_dir/nginx/render_site.py" \
                 "$security_dir/nginx/deepsignal-console.conf.template"; do
         if ! trusted_path "$file"; then
@@ -41,4 +42,14 @@ if $require_trusted; then
     done
 fi
 
-exec python3 -I -B "$installer_dir/install_site.py" "$uid" "$@"
+python=${DEEPSIGNAL_PYTHON-/opt/openrvdas/venv/bin/python}
+if [ "${python#/}" = "$python" ] || [ ! -f "$python" ] || [ ! -x "$python" ]; then
+    echo "OpenRVDAS Python missing or not executable at '$python'. Set DEEPSIGNAL_PYTHON to its absolute path." >&2
+    exit 1
+fi
+if ! "$python" -I -B -c 'import websockets' >/dev/null 2>&1; then
+    echo "OpenRVDAS Python at '$python' cannot import websockets." >&2
+    exit 1
+fi
+
+exec "$python" -I -B "$installer_dir/install_site.py" "$uid" "$@"

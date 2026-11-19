@@ -9,12 +9,14 @@ import shlex
 import shutil
 import socket
 import subprocess
+import sys
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
 import pytest
 
 from contrib.deepsignal.console.install import test_owned_site
+from contrib.deepsignal.test.security.test_probe_cds import BUNDLE
 
 
 nginx_install = test_owned_site.nginx_install
@@ -257,7 +259,7 @@ def test_relay_self_check_uses_owned_site_and_configured_origins(nginx_install):
     result = run('--check', '--openrvdas-root', str(deployment))
     assert result.returncode == 0, result.stderr
     assert json.loads((root / 'checker-args').read_text()) == [
-        '--nginx-site', str(site), '--openrvdas-root', str(deployment), '--local-nginx',
+        '--nginx-site', str(site), '--openrvdas-root', str(deployment), '--site-only',
         '--origin', 'http://ship.example:8080', '--origin', 'http://alias.example:8080',
     ]
 
@@ -300,7 +302,7 @@ def running_nginx(nginx, root, main, listener):
 
 @pytest.mark.parametrize('app_route', ('uwsgi_pass unix:/tmp/django.sock;',
                                        'try_files $uri /index.html;'), ids=['django', 'react'])
-def test_real_197_gate_through_django_and_react_nginx(nginx_install, app_route):
+def test_real_197_runtime_probe_through_django_and_react_nginx(nginx_install, app_route):
     root, main, site, run = nginx_install
     nginx = shutil.which('nginx')
     assert nginx is not None, 'nginx is required to run the #197 integration test'
@@ -314,11 +316,20 @@ def test_real_197_gate_through_django_and_react_nginx(nginx_install, app_route):
         ' reload) kill -HUP "$TEST_MASTER";;\n'
         ' is-active) kill -0 "$TEST_MASTER";;\nesac\n')
     shutil.copyfile(SECURITY / 'check_cds.py', release_file(root, 'security/check_cds.py'))
+    shutil.copyfile(SECURITY / 'probe_cds.py', release_file(root, 'security/probe_cds.py'))
     dist = root / 'deployment/contrib/deepsignal/console/dist'
     dist.mkdir(parents=True)
     (dist / 'index.html').write_text('<script type="module" src="/console/app.js"></script>')
-    (dist / 'app.js').write_text('export const ready = true')
-    with socket.socket() as listener:
+    (dist / 'app.js').write_text(BUNDLE)
+    (root / 'cached_data_server.conf').write_text(
+        '[program:cached_data_server]\n'
+        'command=python3 server/cached_data_server.py '
+        '--udp 6225,6226 --udp_interface 127.0.0.1\n')
+    with (socket.socket() as listener,
+          socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_one,
+          socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_two):
+        udp_one.bind(('127.0.0.1', 6225))
+        udp_two.bind(('127.0.0.1', 6226))
         listener.bind(('0.0.0.0', 0))
         listener.listen()
         port = listener.getsockname()[1]
@@ -337,31 +348,28 @@ def test_real_197_gate_through_django_and_react_nginx(nginx_install, app_route):
 
 async def exercise_live_gate(site, run, master, port, deployment):
     from contrib.deepsignal.security.cds_gateway import ReadOnlyGateway
+    from contrib.deepsignal.security.probe_cds import PROBE_FIELD, lan_address
+    from server.cached_data_server import RecordCache, WebSocketConnection
     import websockets
 
     origin = f'http://ship.example:{port}'
     alias = f'http://alias.example:{port}'
     options = {'origins': (origin, alias), 'TEST_MASTER': str(master)}
-    flags = ('--openrvdas-root', str(deployment))
-    cache = {'temperature': [[1, 19.1]]}
+    address = lan_address()
+    flags = ('--openrvdas-root', str(deployment), '--probe-address', address)
     publishes = []
 
+    class ObservedCache(RecordCache):
+        def cache_record(self, record):
+            publishes.append(record)
+            super().cache_record(record)
+
+    cache = ObservedCache()
+    cache.cache_record({'timestamp': 1, 'fields': {'temperature': 19.1}})
+    publishes.clear()
+
     async def cached_data(websocket):
-        fields = {}
-        async for message in websocket:
-            request = json.loads(message)
-            kind = request['type']
-            response = {'type': kind, 'status': 200}
-            if kind == 'publish':
-                record = request['data']
-                publishes.append(record)
-                for field, value in record['fields'].items():
-                    cache.setdefault(field, []).append([record['timestamp'], value])
-            elif kind == 'subscribe':
-                fields = request['fields']
-            elif kind == 'ready':
-                response = {'type': 'data', 'data': {field: cache[field] for field in fields}}
-            await websocket.send(json.dumps(response))
+        await WebSocketConnection(websocket, cache, 0).serve_requests()
 
     async with websockets.serve(cached_data, '127.0.0.1', 8766):
         gateway = ReadOnlyGateway()
@@ -372,13 +380,16 @@ async def exercise_live_gate(site, run, master, port, deployment):
                 assert 'live publish through the gateway is refused' in result.stdout
                 assert 'live subscribe through the gateway returns data' in result.stdout
                 assert 'nginx refuses a WebSocket with a foreign Origin' in result.stdout
+                for label in ('TCP 8766', 'TCP 8767', 'UDP 6225', 'UDP 6226',
+                              'alternate WebSocket routes', 'served bundle'):
+                    assert f'PASS: {label}' in result.stdout
                 assert 'proxy_pass http://127.0.0.1:8767;' in site.read_text()
             opener = build_opener(ProxyHandler({}))
             request = Request(f'http://127.0.0.1:{port}/console/app.js',
                               headers={'Host': f'alias.example:{port}'})
             with opener.open(request, timeout=5) as response:
                 assert response.headers.get_content_type() == 'application/javascript'
-                assert response.read() == b'export const ready = true'
+                assert response.read() == BUNDLE.encode()
             async with websockets.connect(f'ws://alias.example:{port}/cds-ws',
                                           host='127.0.0.1', proxy=None, origin=alias) as ws:
                 await ws.send(json.dumps({'type': 'fields'}))
@@ -389,13 +400,74 @@ async def exercise_live_gate(site, run, master, port, deployment):
                                               origin=f'http://foreign.example:{port}'):
                     pass
             assert refused.value.response.status_code == 403
-        assert cache['temperature'] == [[1, 19.1]]
-        assert [record['fields'] for record in publishes] == [
-            {'deepsignal_gateway_self_test': 1}] * 2
+            bundle = deployment / 'contrib/deepsignal/console/dist/app.js'
+            bundle.write_text(BUNDLE.replace('/cds-ws', '/old-ws'))
+            stale = await asyncio.to_thread(run, *flags, '--check', **options)
+            assert stale.returncode != 0 and 'FAIL: served bundle' in stale.stdout
+            bundle.write_text(BUNDLE)
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as exposed:
+                exposed.bind((address, 6225))
+                result = await asyncio.to_thread(run, *flags, '--check', **options)
+            assert result.returncode != 0
+            assert 'FAIL: UDP 6225' in result.stdout and 'PASS: UDP 6226' in result.stdout
+        assert cache.data['temperature'] == [(1, 19.1)]
+        assert len(publishes) == 4
+        assert all(record['fields'].keys() == {PROBE_FIELD} for record in publishes)
+        assert len({record['fields'][PROBE_FIELD] for record in publishes}) == 4
         removed = await asyncio.to_thread(run, *flags, '--uninstall', **options)
         assert removed.returncode == 0, removed.stdout + removed.stderr
         async with websockets.serve(cached_data, '127.0.0.1', 8767):
             result = await asyncio.to_thread(run, *flags, **options)
             assert result.returncode != 0
-            assert 'FAIL: gateway accepted a live publish' in result.stdout
+            assert 'FAIL: publish: cache changed after the gateway publish attempt' in result.stdout
             assert not site.exists()
+
+
+def test_runtime_probe_runs_after_reload_and_during_self_check(nginx_install):
+    root, _, site, run = nginx_install
+    (root / 'bin/python3').write_text('#!/bin/sh\nexit 99\n')
+    settings = ('--probe-address', '192.0.2.10', '--probe-source', '192.0.2.11')
+    config = root / 'cached_data_server.conf'
+    expected = ['--cds-supervisor-config', str(config), *settings,
+                '--origin', 'http://ship.example:8080', '--origin', 'http://alias.example:8080']
+    installed = run(*settings)
+    assert installed.returncode == 0, installed.stdout + installed.stderr
+    assert json.loads((root / 'probe-args').read_text()) == expected
+    assert (root / 'probe-python').read_text() == sys.executable
+    assert (root / 'probe-reloads').read_text().splitlines() == ['1']
+    original = site.read_bytes()
+    checked = run('--check', *settings, PROBE_STATUS='1')
+    assert checked.returncode == 1
+    assert 'runtime CDS probe called' in checked.stdout
+    assert site.read_bytes() == original
+    assert (root / 'probe-reloads').read_text().splitlines() == ['1', '1']
+    site.unlink()
+    failed_install = run(*settings, PROBE_STATUS='1')
+    assert failed_install.returncode == 1
+    assert 'runtime CDS probe called' in failed_install.stdout
+    assert 'restored' in failed_install.stderr and not site.exists()
+    assert (root / 'probe-reloads').read_text().splitlines() == ['1', '1', '2']
+    assert (root / 'reloads').read_text().splitlines() == ['reload'] * 3
+
+
+def test_probe_supervisor_udp_ports_protect_inventory_without_flags(nginx_install):
+    root, _, site, run = nginx_install
+    (root / 'cached_data_server.conf').write_text(
+        '[program:cached_data_server]\n'
+        'command=python3 server/cached_data_server.py '
+        '--udp 6225,6226 --udp_interface 192.0.2.50\n')
+    extra = site.with_name('other.conf')
+    extra.write_text('server { location /feed { proxy_pass http://192.0.2.50:6225; } }')
+    result = run()
+    assert result.returncode != 0
+    assert 'targets CDS port 6225' in result.stderr
+    assert not site.exists() and not (root / 'probe-args').exists()
+
+
+def test_refuses_service_writable_runtime_probe_before_execution(nginx_install):
+    root, _, site, run = nginx_install
+    probe = release_file(root, 'security/probe_cds.py')
+    result = run(SERVICE_WRITABLE=str(probe))
+    assert result.returncode == 1
+    assert str(probe) in result.stderr and 'root-owned' in result.stderr
+    assert not site.exists() and not (root / 'probe-args').exists()

@@ -21,6 +21,7 @@ RENDERER = runpy.run_path(str(SECURITY / 'nginx/render_site.py'))
 INVENTORY = runpy.run_path(str(INSTALL / 'nginx_inventory.py'))
 Inventory = INVENTORY['Inventory']
 SITE_NAME = RENDERER['SITE_NAME']
+PROBE_PATH = SECURITY / 'probe_cds.py'
 
 
 def command(*args, capture=False):
@@ -104,7 +105,7 @@ def confirm_reload(master, previous):
 
 def run_checker(args, path):
     cmd = [sys.executable, '-I', '-B', str(SECURITY / 'check_cds.py'),
-           '--nginx-site', str(path), '--openrvdas-root', args.openrvdas_root, '--local-nginx']
+           '--nginx-site', str(path), '--openrvdas-root', args.openrvdas_root, '--site-only']
     for origin in args.origin:
         cmd.extend(('--origin', origin))
     if args.ssl_certificate:
@@ -116,6 +117,26 @@ def run_checker(args, path):
         cmd.extend(('--udp-interface', args.udp_interface))
     environment = os.environ | {'NO_PROXY': '*', 'no_proxy': '*'}
     subprocess.run(cmd, env=environment, cwd='/', check=True, timeout=45)
+
+
+def run_probe(args, configured_ports):
+    cmd = [sys.executable, '-I', '-B', str(PROBE_PATH),
+           '--cds-supervisor-config', args.cds_supervisor_config]
+    if args.probe_address:
+        cmd.extend(('--probe-address', args.probe_address))
+    if args.probe_source:
+        cmd.extend(('--probe-source', args.probe_source))
+    for origin in args.origin:
+        cmd.extend(('--origin', origin))
+    subprocess.run(cmd, cwd='/', check=True,
+                   timeout=65 + 3 * len(configured_ports) + 25 * len(args.origin))
+
+
+def verify(args, path, configured_ports, read_ports):
+    run_checker(args, path)
+    run_probe(args, configured_ports)
+    if configured_ports != read_ports(args.cds_supervisor_config):
+        raise ValueError('The configured CDS UDP ports changed during the runtime probe.')
 
 
 def set_site(path, contents, previous_mode=None):
@@ -130,7 +151,7 @@ def set_site(path, contents, previous_mode=None):
         os.replace(proposed, path)
 
 
-def apply(args, main, path, files, desired, rendered, ports, nginx, master):
+def apply(args, main, path, files, desired, rendered, ports, nginx, master, runtime_check):
     if not nginx:
         raise ValueError('nginx is required to test and reload the site.')
     original = files.get(path)
@@ -161,7 +182,7 @@ def apply(args, main, path, files, desired, rendered, ports, nginx, master):
         if updated != snapshot(main, path, rendered, ports, nginx):
             raise ValueError('The effective nginx configuration changed during reload.')
         if not args.uninstall:
-            run_checker(args, path)
+            runtime_check()
     except (OSError, ValueError, subprocess.SubprocessError):
         if changed and not path.is_symlink() and (
                 path.read_bytes() if path.exists() else None) == desired:
@@ -196,7 +217,7 @@ def site_path(args, main):
                      f'{main.parent / "conf.d"}. Use --nginx-site.')
 
 
-def install(args, site, uid):
+def install(args, site, uid, read_ports):
     rendered = site.contents
     if args.render:
         sys.stdout.buffer.write(rendered)
@@ -214,16 +235,19 @@ def install(args, site, uid):
     master = None
     if binary and not args.dry_run:
         master, nginx = service_configuration(main)
-    ports = {*RENDERER['CDS_PORTS'], *args.udp_port}
-    if any(abs(site.port - port) <= 1 for port in args.udp_port):
-        raise ValueError('The console listener is too close to a CDS UDP port.')
     # Serialize installs, including idempotent reloads, without adding a lock file.
     fd = os.open(main.parent, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        fcntl.flock(fd, fcntl.LOCK_SH if args.dry_run or args.check else fcntl.LOCK_EX)
+        # The runtime probe writes a reserved field shared by install and --check.
+        fcntl.flock(fd, fcntl.LOCK_SH if args.dry_run else fcntl.LOCK_EX)
+        configured_ports = () if args.uninstall else read_ports(args.cds_supervisor_config)
+        udp_ports = {*configured_ports, *args.udp_port}
+        ports = {*RENDERER['CDS_PORTS'], *udp_ports}
+        if any(abs(site.port - port) <= 1 for port in udp_ports):
+            raise ValueError('The console listener is too close to a CDS UDP port.')
         files = snapshot(main, path, rendered, ports, nginx)
         if args.check:
-            run_checker(args, path)
+            verify(args, path, configured_ports, read_ports)
         else:
             desired = None if args.uninstall else rendered
             if args.dry_run:
@@ -233,13 +257,18 @@ def install(args, site, uid):
                                           str(path).encode(), str(path).encode() + b' (proposed)')
                 sys.stdout.buffer.writelines(diff)
             else:
-                apply(args, main, path, files, desired, rendered, ports, nginx, master)
+                def runtime_check():
+                    verify(args, path, configured_ports, read_ports)
+
+                apply(args, main, path, files, desired, rendered, ports, nginx, master,
+                      runtime_check)
     finally:
         os.close(fd)
 
 
 def main():
     uid = int(sys.argv[1])
+    probe = runpy.run_path(str(PROBE_PATH))
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     RENDERER['add_site_arguments'](parser)
     parser.add_argument('--nginx-conf', dest='nginx_site', type=Path,
@@ -247,6 +276,10 @@ def main():
     parser.add_argument('--nginx-main', default='/etc/nginx/nginx.conf')
     parser.add_argument('--udp-port', type=int, action='append', default=[])
     parser.add_argument('--udp-interface')
+    parser.add_argument('--cds-supervisor-config', default=probe['SUPERVISOR_CONFIG'],
+                        type=lambda path: str(Path(path).absolute()))
+    parser.add_argument('--probe-address')
+    parser.add_argument('--probe-source')
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--render', action='store_true')
     mode.add_argument('--dry-run', action='store_true')
@@ -259,7 +292,7 @@ def main():
         parser.error('--udp-port must be between 1 and 65535')
     try:
         site = RENDERER['render_site'](args)
-        install(args, site, uid)
+        install(args, site, uid, probe['configured_udp_ports'])
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         print(f'Console nginx installer: {exc}', file=sys.stderr)
         return 1

@@ -68,6 +68,21 @@ def nginx_install(tmp_path):
         'sys.exit(int(os.environ.get("CHECKER_STATUS", 0)))\n',
         encoding='utf-8',
     )
+    probe = release / 'security/probe_cds.py'
+    source = TEMPLATE.parents[1] / probe.name
+    probe.write_text(source.read_text().split("if __name__ == '__main__':")[0] +
+                     'if __name__ == "__main__":\n'
+                     '    import os, sys\n'
+                     '    root = Path(os.environ["TEST_ROOT"])\n'
+                     '    (root / "probe-args").write_text(json.dumps(sys.argv[1:]))\n'
+                     '    (root / "probe-python").write_text(sys.executable)\n'
+                     '    with (root / "probe-reloads").open("a") as log:\n'
+                     '        print(len((root / "reloads").read_text().splitlines()), file=log)\n'
+                     '    print("runtime CDS probe called")\n'
+                     '    sys.exit(int(os.environ.get("PROBE_STATUS", 0)))\n')
+    cds_config = root / 'cached_data_server.conf'
+    cds_config.write_text('[program:cached_data_server]\n'
+                          'command=python3 server/cached_data_server.py\n')
     (root / 'nginx_stub.py').write_text(
         'import os, sys\n'
         'from pathlib import Path\n'
@@ -101,8 +116,10 @@ def nginx_install(tmp_path):
         return subprocess.run(
             ['/bin/sh', str(installer), *site_args,
              '--nginx-main', str(main), '--openrvdas-root', '/srv/openrvdas',
+             '--cds-supervisor-config', str(cds_config),
              *origin_args, *args],
-            env=os.environ | {'PATH': path, 'TEST_ROOT': str(root), **env},
+            env=os.environ | {'PATH': path, 'TEST_ROOT': str(root),
+                              'DEEPSIGNAL_PYTHON': sys.executable, **env},
             timeout=60,
             text=True, capture_output=True, check=False,
         )
@@ -128,6 +145,26 @@ def test_rendered_site_is_exact_template_with_literal_origins(nginx_install):
     assert b'proxy_pass http://127.0.0.1:8767;' in expected
     assert b'$http_host' not in expected
     assert b'$scheme' not in expected
+
+
+@pytest.mark.parametrize('writable_mode', [0o664, 0o646], ids=['group', 'world'])
+def test_installer_refuses_writable_existing_site(nginx_install, writable_mode):
+    root, _, site, run = nginx_install
+    assert run().returncode == 0
+    original = site.read_bytes()
+    site.chmod(writable_mode)
+    rejected = run()
+    assert rejected.returncode == 1
+    assert str(site) in rejected.stderr
+    assert site.read_bytes() == original
+    assert site.stat().st_mode & 0o777 == writable_mode
+    assert (root / 'reloads').read_text().splitlines() == ['reload']
+
+    site.chmod(0o644)
+    accepted = run()
+    assert accepted.returncode == 0, accepted.stderr
+    assert site.read_bytes() == original
+    assert (root / 'reloads').read_text().splitlines() == ['reload', 'reload']
 
 
 @pytest.mark.parametrize('offline', [False, True])

@@ -4,10 +4,13 @@ Build the console into `contrib/deepsignal/console/dist/` in the OpenRVDAS deplo
 start the CDS and its read-only gateway. The console installer serves those assets and
 `/cds-ws` from a dedicated nginx site.
 
-Stage the installer, its Python helpers, the nginx template and the CDS checker in a
-root-owned release such as `/opt/deepsignal-release`. Keep the files and their parent
-directories free of symlinks and group or other write permission. Use a root-managed Python
-with the existing `websockets` dependency.
+Stage the installer, its Python helpers, the nginx template, the checker and the CDS
+probe in a root-owned release such as `/opt/deepsignal-release`. Keep the files and
+their parent directories free of symlinks and group or other write permission.
+The installer and its CDS probe use `/opt/openrvdas/venv/bin/python`. To use another
+root-managed OpenRVDAS virtualenv, set `DEEPSIGNAL_PYTHON` to the absolute path of its
+Python executable in the installer's environment. The installer stops if this
+interpreter is unavailable or cannot import `websockets`.
 
 ## Configure nginx and install
 
@@ -29,20 +32,34 @@ the result with the server technician.
 
 Pass one `--origin` for each browser origin. Origins use concrete hostnames or IPv4
 addresses, share a scheme and port, and omit paths and default ports. For HTTPS, supply
-`--ssl-certificate` and `--ssl-certificate-key` with absolute paths. For a CDS UDP feed,
-pass every feed port with a separate `--udp-port` and supply `--udp-interface ADDRESS`.
-Use `--openrvdas-root` if the deployed console is outside `/opt/openrvdas`.
+`--ssl-certificate` and `--ssl-certificate-key` with absolute paths. The probe uses
+the host's trusted certificate authorities. Use `--openrvdas-root` if the deployed
+console is outside `/opt/openrvdas`.
+
+The installer reads all UDP feed ports from
+`/etc/supervisor/conf.d/cached_data_server.conf`. Use `--cds-supervisor-config PATH`
+if that fragment is installed elsewhere. When the command uses the shipped Supervisor
+environment substitutions, the installer resolves them from the running CDS process.
+Run the Self-test command with permission to read that process's environment.
 
 The installer inventories the effective nginx configuration and lists conflicting or
 unclassifiable files before writing the site. It checks the running systemd nginx
-service, reloads it even when the site already has the expected bytes, and confirms that
-a new worker generation is active. Use `--dry-run` with the same options to preview the
-change. On a host without nginx, the preview inventories the configuration files and
-their includes directly. Use `--render` to print the expected site.
+service and refuses an existing site with group or other write permission. It reloads
+nginx even when the site already has the expected bytes and confirms that a new
+worker generation is active. It then probes the reloaded site using the host's
+default-route IPv4 address. Use `--probe-address ADDRESS` to select a LAN address where
+CDS UDP feeds should be unreachable. Use `--probe-source ADDRESS` to bind a second
+local address. The default vhost on the console listener must return 403 on `/cds-ws`
+for matching unconfigured Host and Origin values.
+
+Use `--dry-run` with the same options to preview the change. On a host without nginx,
+the preview inventories the configuration files and their includes directly. Use
+`--render` to print the expected site.
 
 ## Check or remove the site
 
 Repeat the install command with the same configuration options and add `--check` to
-verify the installed site and gateway. Add `--uninstall` to remove the dedicated site and
-reload nginx. To change the site's parameters, uninstall with the previous parameters
-before installing with the new ones.
+verify the installed site, live gateway and served console bundle. Each failed probe
+check prints a reason and the command exits non-zero. Add `--uninstall` to remove the
+dedicated site and reload nginx. To change the site's parameters, uninstall with the
+previous parameters before installing with the new ones.

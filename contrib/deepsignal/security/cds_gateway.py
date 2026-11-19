@@ -14,6 +14,7 @@ ALLOWED_TYPES = frozenset(('fields', 'describe', 'subscribe', 'ready'))
 LISTEN_HOST = '127.0.0.1'
 LISTEN_PORT = 8767
 MAX_FRAME_BYTES = 64 * 1024
+MAX_UPSTREAM_FRAME_BYTES = 1024 * 1024
 MAX_FIELDS = 200
 MAX_CONNECTIONS = 50
 RATE = 4.0
@@ -53,7 +54,8 @@ class ReadOnlyGateway:
         peer = getattr(websocket, 'remote_address', None)
         logging.info('CDS gateway connect peer=%s user=%s role=%s', peer, user, role)
         try:
-            async with websockets.connect(self.upstream, max_size=None) as upstream:
+            async with websockets.connect(self.upstream,
+                                          max_size=MAX_UPSTREAM_FRAME_BYTES) as upstream:
                 await self._relay(websocket, upstream)
         except (OSError, websockets.exceptions.ConnectionClosed):
             if not getattr(websocket, 'closed', False):
@@ -121,7 +123,12 @@ class ReadOnlyGateway:
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
             task.cancel()
-        await asyncio.gather(*done, *pending, return_exceptions=True)
+        results = await asyncio.gather(*done, *pending, return_exceptions=True)
+        # Either relay task can observe the locally initiated upstream close first.
+        if any(isinstance(exc, websockets.exceptions.ConnectionClosed)
+               and exc.sent is not None and exc.sent.code == 1009 and not exc.rcvd_then_sent
+               for exc in results):
+            await client.close(1009, 'live-data server reply exceeds size limit')
 
     @staticmethod
     async def _refuse(websocket, request_type):

@@ -199,7 +199,7 @@ class Inventory:
                 raise ValueError('configuration changed during inventory')
             self.files[path] = data
             if path == self.site:
-                if path.is_symlink() or data not in (b'', self.owned):
+                if path.is_symlink() or path.stat().st_mode & 0o22 or data not in (b'', self.owned):
                     raise ValueError('site differs from the rendered template')
                 return
             directives = _directives(data)
