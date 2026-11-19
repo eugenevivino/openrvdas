@@ -1,10 +1,12 @@
 """Integration tests for the DeepSignal stock-stack fixture."""
 
 import asyncio
+from contextlib import ExitStack
 from datetime import datetime
 import json
 import os
 from pathlib import Path
+import select
 import signal
 import subprocess
 import sys
@@ -181,7 +183,7 @@ def test_replay_worker_starts_with_either_platform_default(tmp_path, monkeypatch
     fixture = Fixture(port=43210, temp_dir=tmp_path)
     config_file = fixture._write_config()
     config = yaml.safe_load(config_file.read_text())
-    output = tmp_path / "replayed.log"
+    output = tmp_path / "replayed.fifo"
     replay = config["configs"]["mwx1-replay"]
     del replay["transforms"]
     replay["writers"] = [{"class": "TextFileWriter", "kwargs": {"filename": str(output)}}]
@@ -191,16 +193,28 @@ def test_replay_worker_starts_with_either_platform_default(tmp_path, monkeypatch
     config_file.write_text(yaml.safe_dump(config))
     monkeypatch.setattr(fixture, "_write_config", lambda: config_file)
 
-    manager = fixture._start_manager()
-    try:
+    with ExitStack() as cleanup:
+        os.mkfifo(output, 0o600)
+        cleanup.callback(output.unlink)
+        reader = os.open(output, os.O_RDONLY | os.O_NONBLOCK)
+        cleanup.callback(os.close, reader)
+        # Keep the FIFO from reporting EOF before the worker opens its writer.
+        writer = os.open(output, os.O_WRONLY | os.O_NONBLOCK)
+        cleanup.callback(os.close, writer)
+        cleanup.callback(fixture.stop)
+        manager = fixture._start_manager()
+
         deadline = time.monotonic() + 5
-        while not output.exists() or not output.stat().st_size:
-            assert manager.poll() is None
-            assert time.monotonic() < deadline, "stock logger worker did not replay into the file"
-            time.sleep(0.05)
-        assert "MET," in output.read_text()
-    finally:
-        fixture.stop()
+        pending = b""
+        while (remaining := deadline - time.monotonic()) > 0:
+            readable, _, _ = select.select([reader], [], [], remaining)
+            assert manager.poll() is None, f"Stock manager exited. See {tmp_path / 'manager.log'}"
+            if not readable:
+                break
+            *records, pending = (pending + os.read(reader, 4096)).split(b"\n")
+            if any(b"MET," in record for record in records):
+                return
+        pytest.fail("Stock logger worker did not replay a complete MET record within five seconds")
 
 
 @pytest.mark.slow
