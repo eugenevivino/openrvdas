@@ -19,12 +19,12 @@ modes:
 configs:
   mwx1-replay:
     readers:
-    - class: LogfileReader
+    - class: ReplayReader
+      module: contrib.deepsignal.test.harness.replay_reader
       kwargs:
         filebase: __MWX1_FILE__
-        record_format: '{data_id:w} {timestamp:ti} {record}'
-        tail: true
-        use_timestamps: true
+        epoch_file: __REPLAY_EPOCH__
+        speed: '__REPLAY_SPEED__'
     transforms: &parse
     - class: ParseTransform
       kwargs:
@@ -35,24 +35,24 @@ configs:
       kwargs: {data_server: '__DATA_SERVER__'}
   s330-replay:
     readers:
-    - class: LogfileReader
+    - class: ReplayReader
+      module: contrib.deepsignal.test.harness.replay_reader
       kwargs:
         filebase: __S330_FILE__
-        record_format: '{data_id:w} {timestamp:ti} {record}'
-        tail: true
-        use_timestamps: true
+        epoch_file: __REPLAY_EPOCH__
+        speed: '__REPLAY_SPEED__'
     transforms: *parse
     writers:
     - class: CachedDataWriter
       kwargs: {data_server: '__DATA_SERVER__'}
   knud1-replay:
     readers:
-    - class: LogfileReader
+    - class: ReplayReader
+      module: contrib.deepsignal.test.harness.replay_reader
       kwargs:
         filebase: __KNUD_FILE__
-        record_format: '{data_id:w} {timestamp:ti} {record}'
-        tail: true
-        use_timestamps: true
+        epoch_file: __REPLAY_EPOCH__
+        speed: '__REPLAY_SPEED__'
     transforms: *parse
     writers:
     - class: CachedDataWriter

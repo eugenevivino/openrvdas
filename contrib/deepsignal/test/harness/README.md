@@ -15,10 +15,11 @@ depth, derived true wind, and logger status data reach the cache. Programmatic u
 `with Fixture() as fx`, `fx.ws_url`, `fx.kill_logger(name)`,
 `fx.logger_pids()`, and `fx.stop()`.
 
-All generated configuration, scaled replay inputs, state, and logs live in a
-temporary directory. The fixture starts each copied replay at the current time.
-`--speed` scales the intervals between records for the stock
-`LogfileReader(use_timestamps=True)`.
+All generated configuration, replay inputs, state, and logs live in a temporary
+directory. The first record emitted by a fixture reader establishes a shared
+clock for that manager launch. `--speed` scales the archived time offsets within
+and across streams. Records that run late keep their scheduled source timestamps,
+so the cache and console can observe receive lag.
 
 See [Source-loss harness](SOURCE-LOSS.md) for the manager's behavior after a
 logger dies and the operator recovery check.

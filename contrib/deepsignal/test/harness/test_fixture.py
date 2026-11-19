@@ -19,6 +19,7 @@ import yaml
 
 from contrib.deepsignal.test.harness import fixture as harness, ws_compat
 from contrib.deepsignal.test.harness.fixture import Fixture
+from logger.listener.listen import ListenerFromLoggerConfig
 from logger.transforms.parse_transform import ParseTransform
 
 
@@ -64,7 +65,7 @@ def test_generated_config_points_all_cache_writers_at_fixture_port(tmp_path):
     }
 
 
-def test_scaled_replay_record_parses_into_fields(tmp_path):
+def test_prepared_replay_record_parses_into_fields(tmp_path):
     fixture = Fixture(port=43210, temp_dir=tmp_path)
     config = yaml.safe_load(fixture._write_config().read_text())
     replay = config["configs"]["mwx1-replay"]["readers"][0]["kwargs"][
@@ -81,16 +82,82 @@ def test_scaled_replay_record_parses_into_fields(tmp_path):
     assert parsed["fields"]["MwxAirTemp"] == 19.07
 
 
-def test_replay_timestamps_match_wall_clock_and_keep_scaled_intervals(tmp_path):
-    fixture = Fixture(port=43210, speed=2, temp_dir=tmp_path)
-    before = time.time()
-    fixture._write_config()
-    replay = (tmp_path / "mwx1.log").read_text().splitlines()
-    first, second = (datetime.fromisoformat(line.split()[1]).timestamp()
-                     for line in replay[:2])
+@pytest.fixture
+def replay_clock(monkeypatch):
+    clock = SimpleNamespace(elapsed=0.0)
 
-    assert before <= first <= time.time()
-    assert second - first == pytest.approx(0.487 / 2, abs=1e-6)
+    def advance(seconds):
+        clock.elapsed += seconds
+
+    def wall():
+        return 1_700_000_000 + clock.elapsed
+
+    monkeypatch.setattr(time, "time", wall)
+    monkeypatch.setattr(time, "monotonic", lambda: 100 + clock.elapsed)
+    monkeypatch.setattr(time, "sleep", advance)
+    return SimpleNamespace(advance=advance, wall=wall)
+
+
+def _replay_reader(config, name):
+    readers = config["configs"][f"{name}-replay"]["readers"]
+    return ListenerFromLoggerConfig({"readers": readers}).reader
+
+
+@pytest.mark.parametrize("startup_delay", [
+    pytest.param(0.25, id="normal-start"),
+    pytest.param(3.25, id="delayed-start"),
+])
+@pytest.mark.parametrize("speed", [1, 2])
+def test_replay_clock_anchors_at_first_emission(tmp_path, replay_clock, startup_delay, speed):
+    fixture = Fixture(port=43210, speed=speed, temp_dir=tmp_path)
+    config = yaml.safe_load(fixture._write_config().read_text())
+    replay_clock.advance(startup_delay / 2)
+    reader = _replay_reader(config, "mwx1")
+    replay_clock.advance(startup_delay / 2)
+
+    first = _record_time(reader.read())
+    first_age = replay_clock.wall() - first
+    assert _record_time(reader.read()) - first == pytest.approx(0.487 / speed, abs=1e-6)
+    assert _record_time(reader.read()) - first == pytest.approx(0.544 / speed, abs=1e-6)
+    second = _record_time(reader.read())
+    assert second - first == pytest.approx(0.995 / speed, abs=1e-6)
+    assert [first_age, replay_clock.wall() - second] == pytest.approx([0, 0], abs=1e-6)
+
+    # Model a blocked downstream consumer before the next read and again after it.
+    replay_clock.advance(1.5)
+    assert _record_time(reader.read()) - first == pytest.approx(1.488 / speed, abs=1e-6)
+    assert _record_time(reader.read()) - first == pytest.approx(1.544 / speed, abs=1e-6)
+    record = reader.read()
+    assert _record_time(record) - first == pytest.approx(2 / speed, abs=1e-6)
+    replay_clock.advance(0.25)
+    parse = ParseTransform(**config["configs"]["mwx1-replay"]["transforms"][0]["kwargs"])
+    parsed = parse.transform(record)
+    assert parsed["fields"]["MwxAirTemp"] == 19.11
+    assert replay_clock.wall() - parsed["timestamp"] == pytest.approx(
+        1.75 + (0.995 - 2) / speed, abs=1e-6)
+
+
+def _record_time(record):
+    return datetime.fromisoformat(record.split()[1]).timestamp()
+
+
+def test_replay_clock_aligns_staggered_sources_and_resets_for_new_manager(tmp_path, replay_clock):
+    fixture = Fixture(port=43210, speed=2, temp_dir=tmp_path)
+    config = yaml.safe_load(fixture._write_config().read_text())
+    first = _record_time(_replay_reader(config, "s330").read())
+
+    replay_clock.advance(0.4)
+    mwx = _record_time(_replay_reader(config, "mwx1").read())
+    assert mwx - first == pytest.approx(-0.011 / 2, abs=1e-6)
+    assert replay_clock.wall() - mwx == pytest.approx(0.4 + 0.011 / 2, abs=1e-6)
+    knud = _record_time(_replay_reader(config, "knud1").read())
+    assert knud - first == pytest.approx(1.549 / 2, abs=1e-6)
+    assert replay_clock.wall() - knud == pytest.approx(0, abs=1e-6)
+
+    config = yaml.safe_load(fixture._write_config().read_text())
+    replay_clock.advance(3.25)
+    first = _record_time(_replay_reader(config, "mwx1").read())
+    assert first - replay_clock.wall() == pytest.approx(0, abs=1e-6)
 
 
 @pytest.mark.parametrize("stock_host", [
