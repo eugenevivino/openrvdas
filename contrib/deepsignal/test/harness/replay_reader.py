@@ -2,6 +2,7 @@
 
 import fcntl
 import logging
+from threading import Event
 import time
 
 from logger.readers.reader import Reader
@@ -13,10 +14,15 @@ from logger.utils.formats import Text
 class ReplayReader(Reader):
     def __init__(self, filebase, epoch_file, speed):
         super().__init__(output_format=Text)
-        self.reader = TextFileReader(file_spec=filebase, tail=True)
+        self.reader = TextFileReader(file_spec=filebase)
         self.epoch_file = epoch_file
         self.speed = float(speed)
         self.epoch = None
+        self._stopped = Event()
+
+    def quit(self):
+        """Cancel the pending read and end replay."""
+        self._stopped.set()
 
     def _read_epoch(self, source_time):
         with open(self.epoch_file, "r+", encoding="ascii") as clock:
@@ -30,7 +36,13 @@ class ReplayReader(Reader):
             return source_time, wall, monotonic
 
     def read(self):
-        while (record := self.reader.read()) is not None:
+        while not self._stopped.is_set():
+            record = self.reader.read()
+            if record is None:
+                # Prepared archives are immutable. Keep the worker idle at EOF
+                # until shutdown, so the manager does not restart the stream.
+                self._stopped.wait()
+                return None
             try:
                 data_id, stamp, payload = record.split(" ", 2)
                 source_time = timestamp.timestamp(stamp)
@@ -42,9 +54,12 @@ class ReplayReader(Reader):
                 self.epoch = self._read_epoch(source_time)
             origin, wall, monotonic = self.epoch
             offset = (source_time - origin) / self.speed
-            wait = monotonic + offset - time.monotonic()
-            if wait > 0:
-                time.sleep(wait)
+            deadline = monotonic + offset
+            while (remaining := deadline - time.monotonic()) > 0:
+                if self._stopped.wait(remaining):
+                    return None
+            if self._stopped.is_set():
+                return None
             # Late reads keep their scheduled source timestamp so lag remains visible.
             return f"{data_id} {timestamp.time_str(wall + offset)} {payload}"
         return None

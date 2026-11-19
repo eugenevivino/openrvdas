@@ -10,6 +10,7 @@ import select
 import signal
 import subprocess
 import sys
+from threading import Event, Thread
 import time
 from types import SimpleNamespace
 
@@ -17,7 +18,7 @@ import pytest
 import websockets
 import yaml
 
-from contrib.deepsignal.test.harness import fixture as harness, ws_compat
+from contrib.deepsignal.test.harness import fixture as harness, replay_reader, ws_compat
 from contrib.deepsignal.test.harness.fixture import Fixture
 from logger.listener.listen import ListenerFromLoggerConfig
 from logger.transforms.parse_transform import ParseTransform
@@ -92,9 +93,15 @@ def replay_clock(monkeypatch):
     def wall():
         return 1_700_000_000 + clock.elapsed
 
+    class ClockEvent(Event):
+        def wait(self, timeout):
+            if not self.is_set():
+                advance(timeout)
+            return self.is_set()
+
     monkeypatch.setattr(time, "time", wall)
     monkeypatch.setattr(time, "monotonic", lambda: 100 + clock.elapsed)
-    monkeypatch.setattr(time, "sleep", advance)
+    monkeypatch.setattr(replay_reader, "Event", ClockEvent)
     return SimpleNamespace(advance=advance, wall=wall)
 
 
@@ -158,6 +165,46 @@ def test_replay_clock_aligns_staggered_sources_and_resets_for_new_manager(tmp_pa
     replay_clock.advance(3.25)
     first = _record_time(_replay_reader(config, "mwx1").read())
     assert first - replay_clock.wall() == pytest.approx(0, abs=1e-6)
+
+
+@pytest.mark.parametrize("remaining", [
+    pytest.param("mwx1 2014-08-01T01:00:00.000Z second\n", id="future-record"),
+    pytest.param("", id="finished-archive"),
+])
+def test_replay_reader_cancels_pending_read_on_quit(tmp_path, monkeypatch, remaining):
+    fixture = Fixture(port=43210, temp_dir=tmp_path)
+    config = yaml.safe_load(fixture._write_config().read_text())
+    path = Path(config["configs"]["mwx1-replay"]["readers"][0]["kwargs"]["filebase"])
+    path.write_text("mwx1 2014-08-01T00:00:00.000Z first\n" + remaining, encoding="ascii")
+    reader = _replay_reader(config, "mwx1")
+    replay = reader.readers[0]
+    assert reader.read().endswith(" first")
+
+    waiting = Event()
+    timeouts = []
+    observed = []
+    with ExitStack() as cleanup:
+        cleanup.callback(replay.quit)
+        wait = replay._stopped.wait
+
+        def observe_wait(timeout=None):
+            timeouts.append(timeout)
+            waiting.set()
+            return wait(timeout)
+
+        monkeypatch.setattr(replay._stopped, "wait", observe_wait)
+        worker = Thread(target=lambda: observed.append(reader.read()), daemon=True)
+        worker.start()
+        assert waiting.wait(2), "Replay reader did not wait for its deadline or shutdown"
+        if remaining:
+            assert 0 < timeouts[0] <= 3600
+        else:
+            assert timeouts == [None]
+        replay.quit()
+        worker.join(2)
+        assert not worker.is_alive()
+        assert observed == [None]
+        assert reader.read() is None
 
 
 @pytest.mark.parametrize("stock_host", [
