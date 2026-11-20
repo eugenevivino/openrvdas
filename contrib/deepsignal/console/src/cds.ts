@@ -254,7 +254,7 @@ export class CdsClient {
       set(field, seconds)
       if (this.catalog && (field.startsWith('status:') || field.startsWith('stderr:logger:') ||
         field.endsWith(this.qcSuffix) ||
-        field.includes(this.qcSuffix + '_'))) continue
+        this.snapshot.available.some((base) => field.startsWith(base + this.qcSuffix + '_')))) continue
       const flag = field + this.qcSuffix
       set(flag, seconds)
       for (const name of this.snapshot.available) {
