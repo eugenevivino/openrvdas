@@ -553,3 +553,35 @@ it.each(['sensor', 'store'])('preserves accepted %s history while Self-test read
       lastReported: { value: 'OK', time: 1_002 }, lastAccepted: { value: 'DEGRADED', time: 1_001 } })
   } finally { store.stop() }
 })
+
+
+it.each([[3, 4], [4, 3]])('preserves known QC provenance when %s is corrected to %s after navigation', (before, corrected) => {
+  vi.stubGlobal('WebSocket', MockSocket)
+  vi.useFakeTimers()
+  let now = 1_001
+  const field = 'ds_chain:science:sensor'
+  const flag = field + '_QC'
+  const store = new ConsoleStore({ websocket: 'ws://ship:8766', historyS: 0, qcSuffix: '_QC' }, { now: () => now })
+  store.select(new Map([[field, {}]])); store.start()
+  const socket = MockSocket.sockets[0]
+  const data = (values: Record<string, unknown>) => socket.receive({ type: 'data', status: 200, data: values })
+  try {
+    socket.open()
+    socket.receive({ type: 'fields', status: 200, data: [field, flag, 'Wind'] })
+    socket.receive({ type: 'describe', status: 200, data: {} })
+    socket.receive({ type: 'subscribe', status: 200 })
+    data({ [field]: [[999, 'OFF'], [1_000, 'OK']] })
+    data({ [flag]: [[1_000.5, before]] })
+    expect(store.get(field).lastAccepted).toEqual({ value: 'OFF', time: 999 })
+    store.select(new Map([['Wind', {}]]))
+    data({}); socket.receive({ type: 'subscribe', status: 200 })
+    data({ Wind: [[now, 5]] })
+    now = 1_003
+    store.select(new Map([[field, {}]]))
+    data({ Wind: [[now, 5]] }); socket.receive({ type: 'subscribe', status: 200 })
+    data({ [field]: [[1_002, 'DEGRADED']], [flag]: [[1_000.5, corrected], [1_002, 4]] })
+    now = 1_008
+    expect(store.get(field)).toMatchObject({ freshness: 'STALE', quality: 'FAIL',
+      lastReported: { value: 'DEGRADED', time: 1_002 }, lastAccepted: { value: 'OFF', time: 999 } })
+  } finally { store.stop() }
+})
