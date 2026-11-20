@@ -102,7 +102,7 @@ describe('stream health registered view', () => {
     expect(stage('parser')).toHaveTextContent('UNKNOWNFAIL')
     expect(stage('time')).toHaveTextContent('UNKNOWNUnusable value')
     expect(stage('calibration')).toHaveTextContent('UNKNOWNMissing')
-    expect(stage('derived')).toHaveTextContent('UNKNOWNStale · Last reported: DEGRADED')
+    expect(stage('derived')).toHaveTextContent('UNKNOWNStale · FAIL · Last reported: OK · Last usable: DEGRADED')
     expect(document.querySelector('.stream-root')).toHaveTextContent('UnknownStale')
     expect(document.querySelector('.stream-root')).toHaveTextContent('Last reported: parser')
   })
@@ -141,9 +141,8 @@ class CatalogSocket extends EventTarget {
   }
 }
 
-it('keeps historical producer reports and recovers both roots on the real console route', async () => {
+async function openStreamHealth(now: number, firstBatch: Record<string, unknown>) {
   vi.useFakeTimers({ toFake: ['Date'] })
-  const now = 1_000
   vi.setSystemTime(now * 1_000)
   vi.stubGlobal('WebSocket', CatalogSocket)
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
@@ -157,14 +156,6 @@ it('keeps historical producer reports and recovers both roots on the real consol
   expect(screen.getByRole('link', { name: /^Health$/ })).toBeInTheDocument()
   expect(screen.getByText('No stream health data is available.')).toBeInTheDocument()
   const socket = CatalogSocket.current
-  const firstBatch = {
-    'ds_chain:weather:root': [[now, 'endpoint']],
-    'ds_chain:science:store': [[now, 'OK']],
-    'ds_chain:science:time': [[now - 400, 'OK']],
-    'ds_chain:weather:endpoint': [[now, 'DEGRADED']],
-    'ds_chain:science:root': [[now, 'parser']],
-    'ds_chain:science:parser': [[now, 'FAILED']],
-  }
   act(() => {
     socket.dispatchEvent(new Event('open'))
     socket.receive('fields', Object.keys(firstBatch))
@@ -186,6 +177,20 @@ it('keeps historical producer reports and recovers both roots on the real consol
   expect(socket.sent.at(-1)).toMatchObject({ type: 'subscribe' })
   acknowledge()
 
+  return batch
+}
+
+it('keeps historical producer reports and recovers both roots on the real console route', async () => {
+  const now = 1_000
+  const firstBatch = {
+    'ds_chain:weather:root': [[now, 'endpoint']],
+    'ds_chain:science:store': [[now, 'OK']],
+    'ds_chain:science:time': [[now - 400, 'OK']],
+    'ds_chain:weather:endpoint': [[now, 'DEGRADED']],
+    'ds_chain:science:root': [[now, 'parser']],
+    'ds_chain:science:parser': [[now, 'FAILED']],
+  }
+  const batch = await openStreamHealth(now, firstBatch)
   const [science, weather] = screen.getAllByTestId('stream-health-row')
   const root = (row: HTMLElement) => row.querySelector('.stream-root')
   const stage = (row: HTMLElement, name: string) => row.querySelector(`[data-stage="${name}"]`)
@@ -220,4 +225,33 @@ it('keeps historical producer reports and recovers both roots on the real consol
   batch({ 'ds_chain:weather:root_QC': [[later, 4]], 'ds_chain:weather:endpoint_QC': [[later, 3]] })
   expect(root(weather)).toHaveTextContent('UnknownFAIL')
   expect(stage(weather, 'endpoint')).toHaveTextContent('UNKNOWNSUSPECT')
+})
+
+it.each([
+  { member: 'derived', earlier: 'OK', latest: 'FAILED', separateFlag: false },
+  { member: 'root', earlier: 'parser', latest: 'store', separateFlag: true },
+])('shows stale QC and the latest report for $member on the real Console route', async ({
+  member, earlier, latest, separateFlag,
+}) => {
+  const now = 100
+  const field = `ds_chain:science:${member}`
+  const qc = field + '_QC'
+  const batch = await openStreamHealth(now, { [field]: [[now, earlier]], [qc]: [[now, 1]] })
+  const row = screen.getByTestId('stream-health-row')
+  const report = member === 'root' ? row.querySelector('.stream-root') : row.querySelector(`[data-stage="${member}"]`)
+  expect(report?.querySelector('strong')).toHaveTextContent(earlier)
+
+  vi.setSystemTime((now + 1) * 1_000)
+  const failure = { [qc]: [[now + 1, 4]] }
+  batch({ [field]: [[now + 1, latest]], ...(separateFlag ? {} : failure) })
+  if (separateFlag) batch(failure)
+  expect(report?.querySelector('strong')).toHaveTextContent(/^unknown$/i)
+  expect(report?.querySelector('small')).toHaveTextContent('FAIL')
+
+  vi.setSystemTime((now + 7) * 1_000)
+  batch({})
+  expect(report?.querySelector('strong')).toHaveTextContent(/^unknown$/i)
+  expect(report?.querySelector('small')).toHaveTextContent(
+    `Stale · FAIL · Last reported: ${latest} · Last usable: ${earlier}`,
+  )
 })
