@@ -34,12 +34,14 @@ class MockSocket extends EventTarget {
   }
 }
 
-it.each<{ period: number; samples: number; replay: boolean; correction?: string }>([{ period: 1, samples: 21, replay: true }, { period: 2, samples: 21, replay: true },
+it.each<{ period: number; samples: number; replay: boolean; correction?: string; unseen?: boolean }>([{ period: 1, samples: 21, replay: true }, { period: 2, samples: 21, replay: true },
   { period: 1, samples: 2, replay: false }, { period: 2, samples: 2, replay: false },
   { period: 1, samples: 2, replay: true, correction: 'FAILED' },
-  { period: 2, samples: 2, replay: true, correction: 'OFF' }])(
+  { period: 2, samples: 2, replay: true, correction: 'OFF' },
+  { period: 1, samples: 2, replay: false, unseen: true },
+  { period: 2, samples: 2, replay: false, unseen: true }])(
   'retains a learned $period-second cadence after a delayed report on page return with $samples samples',
-  ({ period, samples, replay, correction }) => {
+  ({ period, samples, replay, correction, unseen }) => {
   vi.stubGlobal('WebSocket', MockSocket)
   vi.useFakeTimers()
   let now = 1_000
@@ -71,6 +73,7 @@ it.each<{ period: number; samples: number; replay: boolean; correction?: string 
     socket.receive({ type: 'describe', status: 200, data: {} })
     expect(socket.sent.at(-1)).toMatchObject({ type: 'ready' })
     if (replay) socket.receive({ type: 'data', status: 200, data: { [field]: [[1_000, correction ?? 'OK']] } })
+    if (unseen) socket.receive({ type: 'data', status: 200, data: { [field]: [[1_000 + period, 'OK']] } })
     now = 1_000 + 30 * period
     socket.receive({ type: 'data', status: 200, data: { [field]: [[now, 'OK']] } })
     now += 10 * period
@@ -309,3 +312,37 @@ it.each([
     store.stop()
   }
 })
+
+
+it.each([['timeout', 'port closed'], ['sync lost', 'reader stopped']])(
+  'keeps latest logger error %s then %s across history replay', (first, last) => {
+    vi.stubGlobal('WebSocket', MockSocket)
+    vi.useFakeTimers()
+    const field = 'stderr:logger:CTD'
+    const store = new ConsoleStore({ websocket: 'ws://ship:8766', historyS: 300, qcSuffix: '_QC' }, { now: () => 1_001 })
+    const values: unknown[] = []
+    store.observeValues((name, reading) => { if (name === field) values.push(reading.value) })
+    store.select(new Map([[field, {}]]))
+    store.start()
+    const socket = MockSocket.sockets[0]
+    const batch = { [field]: [[1_000, first], [1_000, last]] }
+    try {
+      socket.open()
+      socket.receive({ type: 'fields', status: 200, data: [field, 'Wind'] })
+      socket.receive({ type: 'describe', status: 200, data: {} })
+      socket.receive({ type: 'subscribe', status: 200 })
+      socket.receive({ type: 'data', status: 200, data: batch })
+      expect(values).toEqual([first, last])
+      store.select(new Map([[field, {}], ['Wind', {}]]))
+      socket.receive({ type: 'data', status: 200, data: {} })
+      socket.receive({ type: 'subscribe', status: 200 })
+      socket.receive({ type: 'data', status: 200, data: { ...batch, Wind: [[1_000, 5]] } })
+      expect(store.get(field).value).toBe(last)
+      expect(values).toEqual([first, last])
+      socket.receive({ type: 'data', status: 200, data: batch })
+      expect(values).toEqual([first, last, first, last])
+    } finally {
+      store.stop()
+    }
+  },
+)

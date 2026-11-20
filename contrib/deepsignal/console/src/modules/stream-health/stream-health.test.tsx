@@ -177,12 +177,12 @@ class CatalogSocket extends EventTarget {
   }
 }
 
-async function openStreamHealth(now: number, firstBatch: Record<string, unknown>, extraFields: string[] = []) {
+async function openStreamHealth(now: number, firstBatch: Record<string, unknown>, extraFields: string[] = [], qcSuffix = '_QC') {
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(now * 1_000)
   vi.stubGlobal('WebSocket', CatalogSocket)
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-    if (url.endsWith('console.yaml')) return new Response('ship: Test\npages: [health]\nhistory: 300\n')
+    if (url.endsWith('console.yaml')) return new Response(`ship: Test\npages: [health]\nhistory: 300\nqc_suffix: ${qcSuffix}\n`)
     return new Response(null, { status: 404 })
   }))
 
@@ -324,10 +324,15 @@ it.each([
 })
 
 
-it.each(['sensor', 'store'])('retains a rejected %s report after a QC-only subscription response', async (member) => {
+it.each([{ member: 'sensor', earlierFail: false }, { member: 'store', earlierFail: false },
+  { member: 'sensor', earlierFail: true }, { member: 'store', earlierFail: true }])(
+  'retains correctly qualified $member history after a QC-only response (older FAIL: $earlierFail)', async ({ member, earlierFail }) => {
   const field = `ds_chain:science:${member}`
   const qc = field + '_QC'
-  const batch = await openStreamHealth(1_000, { [field]: [[1_000, 'FAILED']], [qc]: [[1_000, 4]] })
+  const flagTime = earlierFail ? 999 : 1_000
+  const batch = await openStreamHealth(1_000, {
+    [field]: earlierFail ? [[999, 'FAILED'], [1_000, 'OK']] : [[1_000, 'FAILED']], [qc]: [[flagTime, 4]],
+  })
   const socket = CatalogSocket.current
   fireEvent.click(screen.getByRole('link', { name: /^Health$/ }))
   await screen.findByText(/Waiting for the logger manager/)
@@ -346,9 +351,20 @@ it.each(['sensor', 'store'])('retains a rejected %s report after a QC-only subsc
     socket.receive('describe', {})
   })
   expect(socket.sent.at(-1)?.type).toBe('ready')
-  batch({ [qc]: [[1_000, 4]] })
+  batch({ [qc]: [[flagTime, 4]] })
   const report = screen.getByTestId('stream-health-row').querySelector(`[data-stage="${member}"]`)!
   expect(report.querySelector('strong')).toHaveTextContent('UNKNOWN')
-  expect(report.querySelector('small')).toHaveTextContent('No data · FAIL · Last reported: FAILED')
+  expect(report.querySelector('small')).toHaveTextContent(earlierFail
+    ? 'No data · Last reported: OK' : 'No data · FAIL · Last reported: FAILED')
+  if (earlierFail) expect(report.querySelector('small')).not.toHaveTextContent('FAIL')
   expect(report).not.toHaveTextContent('Current')
+})
+
+
+it.each(['time', 'store'])('requests stage QC when configured suffix is %s', async (suffix) => {
+  const field = `ds_chain:CTD:${suffix}`
+  await openStreamHealth(1_000, { [field]: [[1_000, 'OK']], [field + suffix]: [[1_000, 4]] }, [], suffix)
+  const report = screen.getByTestId('stream-health-row').querySelector(`[data-stage="${suffix}"]`)!
+  expect(report.querySelector('strong')).toHaveTextContent('UNKNOWN')
+  expect(report.querySelector('small')).toHaveTextContent('FAIL')
 })
