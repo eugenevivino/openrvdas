@@ -61,8 +61,11 @@ it('shows the relay and UDP warning on Self-test even when the cache connects', 
   vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('console.yaml')
     ? new Response('ship: Test\npages: [self-test]\n')
     : new Response(null, { status: 404 })))
+  const previousSocket = new Socket()
   render(<App />)
   await screen.findByText('Disconnected')
+  // The page can render before its effect starts the new cache client.
+  await waitFor(() => expect(Socket.current).not.toBe(previousSocket))
   const socket = Socket.current
   act(() => {
     socket.dispatchEvent(new Event('open'))
