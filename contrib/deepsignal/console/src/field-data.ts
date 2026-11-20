@@ -33,6 +33,7 @@ export interface FieldEvidence {
 
 export interface FieldSamples {
   recent: readonly Reading[]
+  cadence?: readonly Reading[]
   evidence: FieldEvidence
   lastGood?: Reading
   quality: Quality
@@ -133,10 +134,14 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
   const newlyUnplaced: FlagRange[] = []
 
   // Only measurements delivered to the active subscription can set freshness.
-  const previousRecent = previous?.recent ?? []
+  // A QC-only first response must not impersonate a measurement in the new
+  // subscription. Retain its independent cadence evidence across that boundary.
+  const previousRecent = resumed && !readings.length ? [] : previous?.recent ?? []
   const earliest = latestOnly && !previousRecent.length ? lastObserved ?? -Infinity : -Infinity
   const current = earliest === -Infinity ? readings : readings.filter(({ timestamp }) => timestamp >= earliest)
   const recent = current.length ? mergeReadings(previousRecent, current).slice(-intervalCount - 1) : previousRecent
+  const previousCadence = previous?.cadence ?? previous?.recent ?? []
+  const cadence = current.length ? mergeReadings(previousCadence, current).slice(-intervalCount - 1) : previousCadence
   const latest = recent.at(-1)
   let flagIndex = 0
   let gapIndex = 0
@@ -210,14 +215,14 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
     if (!possibleUnplacedRejection || possibleUnplacedRejection.first >= sample.timestamp) lastGood = sample
   }
 
-  const intervals = recent.slice(1).map(({ timestamp }, index) => timestamp - recent[index].timestamp)
+  const intervals = cadence.slice(1).map(({ timestamp }, index) => timestamp - cadence[index].timestamp)
     .sort((a, b) => a - b)
   const middle = Math.floor(intervals.length / 2)
   const learnedPeriod = !intervals.length ? undefined
     : intervals.length % 2 ? intervals[middle] : (intervals[middle - 1] + intervals[middle]) / 2
   const oldest = points[0]?.timestamp ?? Infinity
   return {
-    recent, lastGood, quality, learnedPeriod,
+    recent, cadence, lastGood, quality, learnedPeriod,
     evidence: {
       points, gaps, epoch,
       flags: rawTail ? qualitySamples.filter((flag) => rawTail.has(flag)) : qualitySamples,
