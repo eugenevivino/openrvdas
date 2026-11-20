@@ -61,6 +61,10 @@ it.each([1, 2])('retains a learned %s-second cadence after a delayed report on p
     store.select(page)
     socket.receive({ type: 'data', status: 200, data: { Wind: [[now, 5]] } })
     socket.receive({ type: 'subscribe', status: 200 })
+    expect(socket.sent.at(-1)).toMatchObject({ type: 'fields' })
+    socket.receive({ type: 'fields', status: 200, data: [field, field + '_QC', 'Wind', 'Wind_QC'] })
+    socket.receive({ type: 'describe', status: 200, data: {} })
+    expect(socket.sent.at(-1)).toMatchObject({ type: 'ready' })
     socket.receive({ type: 'data', status: 200, data: { [field]: [[1_000, 'OK']] } })
     now = 1_000 + 30 * period
     socket.receive({ type: 'data', status: 200, data: { [field]: [[now, 'OK']] } })
