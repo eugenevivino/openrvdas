@@ -272,6 +272,15 @@ it.each([
   expect(target?.querySelector('strong')).toHaveTextContent(member === 'root' ? 'Unknown' : 'UNKNOWN')
   expect(target?.querySelector('small')).toHaveTextContent(`No data · Last reported: ${reported === null ? 'None reported' : reported}`)
   expect(row.querySelector('[data-stage="endpoint"] small')).toHaveTextContent('Missing')
+  // Expiry crosses the real client's catalog-refresh interval. Complete that
+  // protocol exchange before sending the next data response.
+  const socket = CatalogSocket.current
+  expect(socket.sent.at(-1)?.type).toBe('fields')
+  act(() => {
+    socket.receive('fields', [field])
+    socket.receive('describe', {})
+  })
+  expect(socket.sent.at(-1)?.type).toBe('ready')
   const recovered = member === 'root' ? 'store' : 'OK'
   batch({ [field]: [[now + 400, recovered]] })
   expect(target?.querySelector('strong')).toHaveTextContent(recovered)
