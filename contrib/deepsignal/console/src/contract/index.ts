@@ -177,6 +177,8 @@ export interface RouteDef {
   order: number
   Component: FC<{ ctx: ConsoleContext }>
   fields?(ctx: ConsoleContext): string[]
+  /** Diagnostic catalog reader supplies raw fields, including advertised QC. */
+  rawFields?: boolean
 }
 export interface PresetDef {
   id: string

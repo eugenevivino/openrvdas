@@ -190,9 +190,10 @@ function demands(runtime: Runtime, selected: Destination | undefined, tiles: Pre
   const { ctx, adapters, periods } = runtime
   const visible = new Set<string>()
   const fields = new Map<string, FieldRequest>()
-  const add = (field: string, period?: number, logger?: string) => {
+  const add = (field: string, period?: number, logger?: string, raw = false) => {
     const previous = fields.get(field)
-    fields.set(field, { period: previous?.period ?? period, logger: previous?.logger ?? logger })
+    fields.set(field, { period: previous?.period ?? period, logger: previous?.logger ?? logger,
+      raw: previous ? previous.raw === true && raw : raw })
   }
   for (const { plugin, cfg } of tiles) {
     if (!plugin || !cfg) continue
@@ -206,7 +207,7 @@ function demands(runtime: Runtime, selected: Destination | undefined, tiles: Pre
   if (route?.def.fields) {
     for (const field of requestedFields(route.owner, () => route.def.fields!(ctx), problems)) {
       visible.add(field)
-      add(field)
+      add(field, undefined, undefined, route.def.rawFields === true)
     }
   }
   const subscriptions = adapters.map((plugin) => {

@@ -8,6 +8,7 @@ const selfTestModule: ConsoleModule = {
     title: 'Self-test',
     order: 95,
     Component: SelfTest,
+    rawFields: true,
     fields: (ctx) => [...new Set([
       ...ctx.store.listFields(), 'status:logger_status', 'status:cruise_mode',
     ])],

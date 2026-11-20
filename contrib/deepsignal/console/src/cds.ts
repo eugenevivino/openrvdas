@@ -84,6 +84,7 @@ export class CdsClient {
     connection: 'idle', fields: new Map(), history: new Map(), available: [], descriptions: new Map(),
   }
   private wanted = new Map<string, number>()
+  private rawFields: ReadonlySet<string> = new Set()
   private subscribed?: Map<string, number>
   private latestOnly?: ReadonlySet<string>
   private checkBackfill = false
@@ -112,11 +113,13 @@ export class CdsClient {
     if (!this.socket && this.retry === undefined) this.connect()
   }
 
-  setFields(fields: Record<string, number>) {
+  setFields(fields: Record<string, number>, rawFields: ReadonlySet<string> = new Set()) {
     const wanted = new Map(Object.entries(fields))
-    if (sameRequests(wanted, this.wanted)) return
+    if (sameRequests(wanted, this.wanted) && rawFields.size === this.rawFields.size &&
+      [...rawFields].every((field) => this.rawFields.has(field))) return
 
     this.wanted = wanted
+    this.rawFields = new Set(rawFields)
     const requested = this.requests()
     const selected = this.catalog ? requested : wanted
     const visible = new Map(this.snapshot.fields)
@@ -253,18 +256,10 @@ export class CdsClient {
         continue
       }
       set(field, seconds)
-      // Explicitly requested measurements can contain or end in any configured
-      // suffix. Added QC requests are not recursively expanded by this loop.
-      if (this.catalog && field.startsWith('stderr:logger:')) continue
+      // Measurements always request QC, regardless of name. A catalog-reading
+      // diagnostic explicitly asks for raw fields, already including advertised QC.
+      if (this.rawFields.has(field) || (this.catalog && field.startsWith('stderr:logger:'))) continue
       const flag = field + this.qcSuffix
-      // Catalog-wide views select QC fields themselves. Do not synthesize a
-      // second QC layer unless that field actually exists in the catalog.
-      const member = field.slice(field.lastIndexOf(':') + 1)
-      const pairedFlag = this.qcSuffix.length > 0 && member.includes(this.qcSuffix) &&
-        this.snapshot.available.some((base) =>
-          base.slice(0, base.lastIndexOf(':') + 1) === field.slice(0, field.lastIndexOf(':') + 1) &&
-          (field === base + this.qcSuffix || field.startsWith(base + this.qcSuffix + '_')))
-      if (this.catalog && pairedFlag && !this.snapshot.available.includes(flag)) continue
       set(flag, seconds)
       for (const name of this.snapshot.available) {
         if (name.startsWith(flag + '_')) set(name, seconds)

@@ -6,6 +6,7 @@ import { fieldData } from './field-data'
 import type { Reading } from './field-data'
 
 export interface FieldRequest {
+  raw?: boolean
   period?: number
   logger?: string
 }
@@ -73,7 +74,8 @@ export class ConsoleStore implements FieldStore {
   select(fields: ReadonlyMap<string, FieldRequest>) {
     if (fields.size === this.selected.size && [...fields].every(([field, request]) =>
       this.selected.has(field) && this.selected.get(field)?.period === request.period &&
-      this.selected.get(field)?.logger === request.logger)) return
+      this.selected.get(field)?.logger === request.logger &&
+      this.selected.get(field)?.raw === request.raw)) return
     this.selected = fields
     for (const [field, request] of fields) this.preferences.set(field, request)
     this.requestFields()
@@ -187,7 +189,7 @@ export class ConsoleStore implements FieldStore {
     for (const field of this.selected.keys()) {
       fields.set(field, Math.max(this.config.historyS, this.windows.get(field) ?? 0) || -1)
     }
-    this.source.setFields(Object.fromEntries(fields))
+    this.source.setFields(Object.fromEntries(fields), new Set([...this.selected].filter(([, request]) => request.raw).map(([field]) => field)))
   }
 
   private qualityDetails(snapshot: Snapshot, field: string, sourceTime: number | undefined) {

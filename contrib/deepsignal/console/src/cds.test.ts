@@ -420,7 +420,7 @@ it.each([{ count: 70, suffix: '_QC' }, { count: 90, suffix: '_QC' },
   const fields = [...new Set(Array.from({ length: count }, (_, n) => `Sensor${n}`).flatMap((name) => [name, name + '_QC', name + suffix]))]
   fields.push('status:logger_status', 'status:logger_manager')
   const client = new CdsClient('ws://ship:8766', { now: () => 1_000, catalog: true })
-  client.setFields(Object.fromEntries(fields.map((field) => [field, 0])))
+  client.setFields(Object.fromEntries(fields.map((field) => [field, 0])), new Set(fields))
   client.start()
   const socket = MockSocket.sockets[0]
   try {

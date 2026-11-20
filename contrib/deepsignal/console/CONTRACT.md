@@ -88,3 +88,16 @@ stderr lines), `knud1_restart` (depth gap 300-329, STARTING then RUNNING),
 `wind_avg` (Avg1m wind once a minute, T=60), `rad1_off` (EXITED throughout).
 Each module test builds its own minimal fake `ConsoleContext` from this file in
 its own folder (a shared test kit arrives with core v2; do not wait for it).
+
+### Pilot data handling clarifications
+
+Cadence retains the endpoints of the latest 20 measured adjacent intervals across
+subscription epochs, plus the latest anchor (at most 41 observations). Cached
+return batches do not displace this evidence; a late observation splits and
+replaces its prior span. Raw scientific readings remain unchanged.
+
+Lead-approved optional route `rawFields` marks a diagnostic catalog reader whose
+field list already includes advertised QC. Only Self-test uses it. Normal tiles,
+routes and adapters continue requesting each measurement's configured QC even
+before it is advertised. An ordinary consumer overrides a raw demand for the
+same field; names never decide whether a measurement deserves QC.
