@@ -249,8 +249,8 @@ tiles:
     socket.receive('fields', ['Depth', 'Depth_QC', 'Wind', 'Wind_QC'])
     socket.receive('describe', {})
   }
-  const subscribe = (field: string) => {
-    const options = history ? { seconds: history, back_records: 1 } : { seconds: -1 }
+  const subscribe = (field: string, historyS = history) => {
+    const options = historyS ? { seconds: historyS, back_records: 1 } : { seconds: -1 }
     expect(socket.sent.at(-1)).toEqual({ type: 'subscribe', fields: {
       [field]: options, [field + '_QC']: options,
     } })
@@ -272,10 +272,10 @@ tiles:
     fireEvent.keyDown(window, { key })
     await screen.findByRole('heading', { name: field })
   }
-  const navigate = async (page: string, field: string) => {
+  const navigate = async (page: string, field: string, historyS = history) => {
     await show(page, field)
     send({}) // Complete the outstanding ready request for the previous page.
-    act(() => subscribe(field))
+    act(() => subscribe(field, historyS))
   }
   return { store: context!.store, onValue, send, navigate, show }
 }
@@ -391,6 +391,24 @@ it.each([
   expect(screen.getByRole('group', { name: 'Data quality' })).toHaveTextContent('PASS')
 })
 
+function streamMissingSoundings(send: (data: object, offset: number) => void, start: number, end: number) {
+  const missingDepths: [timestamp: number, value: null][] = []
+  const missingFlags: number[][] = []
+  for (let first = start; first <= end; first += 1000) {
+    const last = Math.min(end, first + 999)
+    const depths: typeof missingDepths = []
+    const flags = []
+    for (let offset = first; offset <= last; offset++) {
+      depths.push([noon + offset, null])
+      flags.push([noon + offset, 9], [noon + offset + 0.5, 9])
+    }
+    send({ Depth: depths, Depth_QC: flags }, last + 0.5)
+    missingDepths.push(...depths)
+    missingFlags.push(...flags)
+  }
+  return { missingDepths, missingFlags }
+}
+
 it.each([
   { earlyFlag: 1, lateDepth: 1.5, laterFlag: 1.75, end: 5040 },
   { earlyFlag: 1.25, lateDepth: 1.625, laterFlag: 1.875, end: 5100 },
@@ -403,20 +421,7 @@ it.each([
 
   // The delayed depth arrived behind the CDS watermark at +2 s. Meanwhile the
   // faster QC stream rolls over even though CDS still has all the depths.
-  const missingDepths: [timestamp: number, value: null][] = []
-  const missingFlags: number[][] = []
-  for (let first = 3; first <= end; first += 1000) {
-    const last = Math.min(end, first + 999)
-    const depths: typeof missingDepths = []
-    const flags = []
-    for (let offset = first; offset <= last; offset++) {
-      depths.push([noon + offset, null])
-      flags.push([noon + offset, 9], [noon + offset + 0.5, 9])
-    }
-    send({ Depth: depths, Depth_QC: flags }, last + 0.5)
-    missingDepths.push(...depths)
-    missingFlags.push(...flags)
-  }
+  const { missingDepths, missingFlags } = streamMissingSoundings(send, 3, end)
   send({}, end + 301)
   expect(screen.getByText(/^Last: 18 m at/)).toBeVisible()
 
@@ -452,3 +457,41 @@ it.each([
     expect(store.get('Depth')).toMatchObject({ sourceTime: noon + period, ageS: age, periodS: period })
     expect(onValue).not.toHaveBeenCalled()
   })
+
+it.each([
+  { unseen: 10, fail: 10, newest: 20, end: 5060 },
+  { unseen: 25, fail: 26.5, newest: 40, end: 5100 },
+])('T-CON-14 keeps a gap FAIL at +$fail s through rollover until the missing depth is backfilled', async ({
+  unseen, fail, newest, end,
+}) => {
+  const { store, onValue, send, navigate } = await openSoundings(0)
+  send({ Depth: [[noon, 18]], Depth_QC: [[noon, 1]] }, 0)
+  await navigate('Weather', 'Wind')
+  send({ Wind: [[noon + unseen, 5]] }, newest)
+  await navigate('Soundings', 'Depth')
+
+  // The latest-only subscription sees the FAIL but cannot yet place it.
+  send({ Depth: [[noon + newest, 20]], Depth_QC: [[noon + fail, 4]] })
+  send({ Depth_QC: [[noon + newest, 4]] }, newest + 0.5)
+  const { missingDepths, missingFlags } = streamMissingSoundings(send, newest + 1, end)
+  send({}, end + 301)
+  expect(screen.getByText(/^Last: 18 m at/)).toBeVisible()
+  expect(store.history('Depth', 0)).toEqual([])
+
+  await navigate('Weather', 'Wind')
+  send({ Wind: [[noon + end + 301, 5]] })
+  // A history consumer asks the store to extend its request on the next visit.
+  const history = 10_800
+  expect(store.history('Depth', history)).toEqual([])
+  await navigate('Soundings', 'Depth', history)
+  onValue.mockClear()
+
+  // CDS still has every depth, but its faster flag cache no longer has the FAIL.
+  send({ Depth: [[noon, 18], [noon + unseen, 19], [noon + newest, 20], ...missingDepths],
+    Depth_QC: missingFlags.slice(-stockCachePoints) })
+  expect(store.history('Depth', history)).toContainEqual({ time: noon + unseen, value: 19 })
+  expect(store.get('Depth').sourceTime).toBe(noon + end)
+  expect(screen.getByRole('group', { name: 'Freshness' })).toHaveTextContent('NO DATA')
+  expect(screen.getByText(/^Last: 18 m at/)).toHaveTextContent('Last: 18 m at 12:00:00Z')
+  expect(onValue).not.toHaveBeenCalled()
+})
