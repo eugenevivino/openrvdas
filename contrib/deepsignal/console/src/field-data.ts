@@ -124,8 +124,13 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
   const reopened = resumed && lastObserved !== undefined && priorGaps.at(-1)?.before !== Infinity
     ? { after: lastObserved, before: Infinity, epoch } : undefined
   const gaps = observationGaps(priorGaps, reopened, points, readings)
+  // A correction to a previously observed flag keeps its original observation
+  // provenance; navigation cannot turn a known rejection into unplaced QC.
+  const knownFlagEpochs = new Map((evidence?.flags ?? []).map((flag) => [flag.timestamp, flag.epoch]))
   const qualitySamples = flags.length
-    ? mergeReadings(evidence?.flags ?? [], flags.map((flag) => ({ ...flag, epoch }))) : evidence?.flags ?? []
+    ? mergeReadings(evidence?.flags ?? [], flags.map((flag) => ({
+      ...flag, epoch: knownFlagEpochs.get(flag.timestamp) ?? epoch,
+    }))) : evidence?.flags ?? []
   // Retain the raw tail and the decisive flags of older intervals. Share extra
   // space between QC on non-null readings and flags still awaiting a reading.
   const rawTail = qualitySamples.length > maxHistoryPoints
