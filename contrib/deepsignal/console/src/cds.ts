@@ -121,9 +121,10 @@ export class CdsClient {
       return
     }
 
+    const requested = this.requests()
     this.update({
       fields: new Map([...this.snapshot.fields].filter(([field]) => wanted.has(field))),
-      history: new Map([...this.snapshot.history].filter(([field]) => wanted.has(field))),
+      history: new Map([...this.snapshot.history].filter(([field]) => requested.has(field))),
     })
     if (!wanted.size) {
       this.disconnect()
@@ -329,7 +330,15 @@ export class CdsClient {
     const changed = new Map<string, Reading[]>()
     const wanted = this.catalog ? requested : this.wanted
 
-    for (const field of requested.keys()) readings.set(field, readBatch(batch, field, now))
+    for (const [field, seconds] of requested) {
+      const incoming = readBatch(batch, field, now)
+      readings.set(field, incoming)
+      if (seconds > 0 && incoming.length) {
+        const cutoff = now - seconds
+        const recent = mergeReadings(history.get(field) ?? [], incoming)
+        history.set(field, recent.filter((point) => point.timestamp >= cutoff).slice(-maxHistoryPoints))
+      }
+    }
 
     for (const [field, seconds] of wanted) {
       const incoming = readings.get(field) ?? []
@@ -341,15 +350,15 @@ export class CdsClient {
         if (!flags.length && requested.has(flag)) empty.add(flag)
       }
       const previous = fields.get(field)
-      if (incoming.length || flags.length) fields.set(field, mergeFieldSamples(previous, incoming, flags))
+      if (incoming.length || flags.length) {
+        const points = seconds > 0 && requested.has(flag) ? history.get(field) : undefined
+        fields.set(field, mergeFieldSamples(previous, incoming, flags,
+          points && { points, flags: history.get(flag) ?? [], cutoff: now - seconds }))
+      }
       const latest = previous?.recent.at(-1)
       const fresh = latest ? incoming.filter((reading) =>
         reading.timestamp >= latest.timestamp && !sameReading(latest, reading)) : incoming
       if (fresh.length) changed.set(field, fresh)
-      if (seconds > 0 && incoming.length) {
-        const recent = mergeReadings(history.get(field) ?? [], incoming)
-        history.set(field, recent.filter((point) => point.timestamp >= now - seconds).slice(-maxHistoryPoints))
-      }
     }
     this.failures = 0
     this.checkBackfill = false

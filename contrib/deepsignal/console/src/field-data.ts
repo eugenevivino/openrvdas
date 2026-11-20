@@ -15,14 +15,14 @@ interface OlderReading {
 export interface FieldSamples {
   recent: readonly Reading[]
   flags: readonly Reading[]
-  olderGood: readonly OlderReading[]
+  older: readonly OlderReading[]
   lastGood?: Reading
   quality: Quality
   learnedPeriod?: number
 }
 
 const intervalCount = 20
-const olderGoodLimit = 2
+const fallbackLimit = 2
 const provisionalPeriod = 1
 
 export function qualityFromFlag(flag: unknown): Quality {
@@ -50,25 +50,41 @@ export function mergeReadings(previous: readonly Reading[], incoming: readonly R
 }
 
 export function mergeFieldSamples(previous: FieldSamples | undefined, readings: readonly Reading[],
-  flags: readonly Reading[]): FieldSamples {
-  const previousOlder = previous?.olderGood ?? []
+  flags: readonly Reading[], history?: { points: readonly Reading[]; flags: readonly Reading[]; cutoff: number }): FieldSamples {
+  const previousOlder = previous?.older ?? []
   const samples = mergeReadings([...previousOlder.map(({ reading }) => reading), ...(previous?.recent ?? [])], readings)
-  const qualitySamples = mergeReadings(previous?.flags ?? [], flags)
+  const qualitySamples = mergeReadings([
+    ...(history?.flags.filter(({ timestamp }) => timestamp >= history.cutoff) ?? []), ...(previous?.flags ?? []),
+  ], flags)
   const recent = samples.slice(-intervalCount - 1)
   const firstRecent = samples.length - recent.length
   const usedFlags = new Set(qualitySamples.slice(-intervalCount - 1))
   const olderBoundaries = previousOlder.map(({ nextTimestamp }) => nextTimestamp).sort((a, b) => a - b)
-  const olderGood: Array<OlderReading & { flag?: Reading }> = []
+  const historyPoints = history?.points ?? []
+  const historyCutoff = history?.cutoff ?? Infinity
+  const older: OlderReading[] = []
+  const fallback: Array<OlderReading & { flag?: Reading }> = []
+  let historyIndex = 0
+  let boundaryIndex = 0
   let flagIndex = 0
   let lastGood: Reading | undefined
   let quality = qualityFromFlag(qualitySamples.at(-1)?.value)
 
   for (const [index, sample] of samples.entries()) {
+    while (historyIndex < historyPoints.length && historyPoints[historyIndex].timestamp < sample.timestamp) {
+      historyIndex++
+    }
+    const cached = historyPoints[historyIndex]?.timestamp === sample.timestamp
+    if (cached) historyIndex++
+    while (boundaryIndex < olderBoundaries.length && olderBoundaries[boundaryIndex] <= sample.timestamp) {
+      boundaryIndex++
+    }
+
     // A flag applies to the reading at that timestamp, or to the preceding
     // reading when a flag arrives separately. A newer reading needs its own flag.
     // A known next timestamp still splits QC intervals after that reading is evicted.
     const nextTimestamp = Math.min(samples[index + 1]?.timestamp ?? Infinity,
-      olderBoundaries.find((boundary) => boundary > sample.timestamp) ?? Infinity)
+      historyPoints[historyIndex]?.timestamp ?? Infinity, olderBoundaries[boundaryIndex] ?? Infinity)
     let matched: Reading | undefined
     while (flagIndex < qualitySamples.length && qualitySamples[flagIndex].timestamp < nextTimestamp) {
       matched = qualitySamples[flagIndex++]
@@ -80,24 +96,30 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
     } else {
       quality = 'NOT EVALUATED'
     }
-    if (sample.value != null && isGood(quality)) {
-      lastGood = sample
-      if (index < firstRecent) {
-        // Retain a fallback if delayed QC revokes the newest evicted good reading.
-        olderGood.push({ reading: sample, nextTimestamp, flag: matched })
-        if (olderGood.length > olderGoodLimit) olderGood.shift()
-      }
+    if (sample.value == null) continue
+    const usable = isGood(quality)
+    if (usable) lastGood = sample
+    if (index >= firstRecent) continue
+    if (cached && sample.timestamp >= historyCutoff) {
+      // Keep matched QC for all retained values so a revoked reading stays revoked.
+      older.push({ reading: sample, nextTimestamp })
+      if (matched) usedFlags.add(matched)
+    } else if (usable) {
+      fallback.push({ reading: sample, nextTimestamp, flag: matched })
+      if (fallback.length > fallbackLimit) fallback.shift()
     }
   }
-  for (const { flag } of olderGood) if (flag) usedFlags.add(flag)
+  for (const { reading, nextTimestamp, flag } of fallback) {
+    older.push({ reading, nextTimestamp })
+    if (flag) usedFlags.add(flag)
+  }
 
   const intervals = recent.slice(1).map(({ timestamp }, index) => timestamp - recent[index].timestamp)
     .sort((a, b) => a - b)
   const middle = Math.floor(intervals.length / 2)
   const learnedPeriod = !intervals.length ? undefined
     : intervals.length % 2 ? intervals[middle] : (intervals[middle - 1] + intervals[middle]) / 2
-  return { recent, flags: [...usedFlags], olderGood: olderGood.map(({ reading, nextTimestamp }) => ({ reading, nextTimestamp })),
-    lastGood, quality, learnedPeriod }
+  return { recent, flags: [...usedFlags], older, lastGood, quality, learnedPeriod }
 }
 
 export function fieldData(samples: FieldSamples | undefined, period: number | undefined, now: number) {
