@@ -4,9 +4,17 @@
 
 DeepSignal shows live ship measurements from the OpenRVDAS data cache in a browser.
 
-1. Follow [Install the DeepSignal Console](docs/install.md#configure-nginx-and-install), including the prerequisites at the top of the guide. Set the ship name and time zone in `dist/console.yaml`.
+For Django and React deployments, start with the release prerequisites in the installation guide, then follow its procedure for the ship’s browser origins.
+
+[Install the DeepSignal Console (root-owned installer at /opt/deepsignal-release/contrib/deepsignal/console/install/install.sh)](docs/install.md#configure-nginx-and-install)
+
+1. Set the ship name and time zone in `dist/console.yaml`.
 2. Open `/console/` on the ship server. The Weather tiles show readings from `MwxAirTemp` and `MwxAirRelHumid`. For different fields, use the page example below. Press **Night** or **N** to enter or leave Night mode. In Night mode, use **Red** or **Neutral** to select the palette and **Dim** to change brightness. Use keys **1–9** to switch pages.
 3. Open **Self-test** to view the cache connection and the relay and UDP checks.
+
+To verify the installed site, follow the check procedure with every option used for installation, including each browser origin and the certificate settings for HTTPS.
+
+[Installed-site verification (install.sh --check)](docs/install.md#check-or-remove-the-site)
 
 If the top bar keeps saying **Reconnecting**, check that the data cache and relay are running and that the console's nginx server routes `/cds-ws` to the relay. If a tile keeps waiting for data, compare its **Source** field name with the fields the ship logs. After editing either YAML file, reload the browser tab to pick up the changes.
 
