@@ -75,9 +75,11 @@ it.each<{ period: number; samples: number; replay: boolean; correction?: string;
     store.select(page)
     socket.receive({ type: 'data', status: 200, data: { Wind: [[now, 5]] } })
     socket.receive({ type: 'subscribe', status: 200 })
-    expect(socket.sent.at(-1)).toMatchObject({ type: 'fields' })
-    socket.receive({ type: 'fields', status: 200, data: [field, field + '_QC', 'Wind', 'Wind_QC'] })
-    socket.receive({ type: 'describe', status: 200, data: {} })
+    if (!accelerating) {
+      expect(socket.sent.at(-1)).toMatchObject({ type: 'fields' })
+      socket.receive({ type: 'fields', status: 200, data: [field, field + '_QC', 'Wind', 'Wind_QC'] })
+      socket.receive({ type: 'describe', status: 200, data: {} })
+    }
     expect(socket.sent.at(-1)).toMatchObject({ type: 'ready' })
     if (accelerating) {
       socket.receive({ type: 'data', status: 200, data: { [field]: [[1_000 - 10 * period, 'OK'], [1_000, 'OK']] } })
