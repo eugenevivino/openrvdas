@@ -379,7 +379,7 @@ it.each([['timeout', 'port closed'], ['sync lost', 'reader stopped']])(
 it.each(['status:logger_status', 'status:logger_manager'])('requests explicit manager QC for %s', (field) => {
   vi.stubGlobal('WebSocket', MockSocket)
   vi.useFakeTimers()
-  const client = new CdsClient('ws://ship:8766', { now: () => 1_000 })
+  const client = new CdsClient('ws://ship:8766', { now: () => 1_000, catalog: true })
   client.setFields({ [field]: 0 })
   client.start()
   const socket = MockSocket.sockets[0]
@@ -396,7 +396,7 @@ it.each([70, 90])('keeps a %s-measurement catalog within the existing gateway li
   vi.useFakeTimers()
   const fields = Array.from({ length: count }, (_, n) => `Sensor${n}`).flatMap((name) => [name, name + '_QC'])
   fields.push('status:logger_status', 'status:logger_manager')
-  const client = new CdsClient('ws://ship:8766', { now: () => 1_000 })
+  const client = new CdsClient('ws://ship:8766', { now: () => 1_000, catalog: true })
   client.setFields(Object.fromEntries(fields.map((field) => [field, 0])))
   client.start()
   const socket = MockSocket.sockets[0]
