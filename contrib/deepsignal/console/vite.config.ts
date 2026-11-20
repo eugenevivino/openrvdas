@@ -53,6 +53,9 @@ function pageManifest(): Plugin {
 
 export default defineConfig({
   base: '/console/',
+  build: {
+    rolldownOptions: { output: { charset: 'ascii' } },
+  },
   test: {
     setupFiles: ['./src/testkit/setup.ts'],
     // Let jsdom supply localStorage when Node exposes its own implementation.
