@@ -159,10 +159,10 @@ def check_stream_health(playwright, page, port, traffic, cache, now,
         # CDS. Wait for data after its acknowledgement before publishing recovery.
         traffic.wait_for_streaming()
         playwright.expect(science.locator(".stream-root strong")).to_have_text("Unknown")
-        playwright.expect(science.locator(".stream-root small")).to_have_text("Missing")
+        playwright.expect(science.locator(".stream-root small")).to_have_text("No data · Last reported: parser")
         expect_stage(playwright, science, "sensor", "UNKNOWN", "Stale · Last reported: FAILED")
         expect_stage(playwright, science, "store", "UNKNOWN", "Stale · Last reported: OK")
-        expect_stage(playwright, science, "time", "UNKNOWN", "Missing")
+        expect_stage(playwright, science, "time", "UNKNOWN", "No data · Last reported: OK")
         expect_stage(playwright, science, "endpoint", "UNKNOWN", "Missing")
         playwright.expect(weather.locator(".stream-root strong")).to_have_text("Unknown")
         playwright.expect(weather.locator(".stream-root small")).to_have_text(

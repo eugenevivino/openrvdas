@@ -196,8 +196,7 @@ it('keeps historical producer reports and recovers both roots on the real consol
   const stage = (row: HTMLElement, name: string) => row.querySelector(`[data-stage="${name}"]`)
   expect(root(science)).toHaveTextContent('parserCurrent')
   expect(stage(science, 'parser')).toHaveTextContent('FAILEDCurrent')
-  expect(stage(science, 'time')).toHaveTextContent('UNKNOWNMissing')
-  expect(stage(science, 'time')).not.toHaveTextContent('Last reported')
+  expect(stage(science, 'time')).toHaveTextContent('UNKNOWNNo data · Last reported: OK')
   expect(stage(science, 'sensor')).toHaveTextContent('UNKNOWNMissing')
   expect(root(weather)).toHaveTextContent('endpointCurrent')
 
@@ -254,4 +253,27 @@ it.each([
   expect(report?.querySelector('small')).toHaveTextContent(
     `Stale · FAIL · Last reported: ${latest} · Last usable: ${earlier}`,
   )
+})
+
+
+it.each([
+  { member: 'sensor', reported: 'FAILED' },
+  { member: 'store', reported: 'OFF' },
+  { member: 'root', reported: 'parser' },
+  { member: 'root', reported: null },
+])('retains expired $member observation $reported without presenting it as current', async ({ member, reported }) => {
+  const now = 1_000
+  const field = `ds_chain:science:${member}`
+  const batch = await openStreamHealth(now, { [field]: [[now, reported]] })
+  vi.setSystemTime((now + 400) * 1_000)
+  batch({})
+  const row = screen.getByTestId('stream-health-row')
+  const target = row.querySelector(member === 'root' ? '.stream-root' : `[data-stage="${member}"]`)
+  expect(target?.querySelector('strong')).toHaveTextContent(member === 'root' ? 'Unknown' : 'UNKNOWN')
+  expect(target?.querySelector('small')).toHaveTextContent(`No data · Last reported: ${reported === null ? 'None reported' : reported}`)
+  expect(row.querySelector('[data-stage="endpoint"] small')).toHaveTextContent('Missing')
+  const recovered = member === 'root' ? 'store' : 'OK'
+  batch({ [field]: [[now + 400, recovered]] })
+  expect(target?.querySelector('strong')).toHaveTextContent(recovered)
+  expect(target?.querySelector('small')).toHaveTextContent('Current')
 })
