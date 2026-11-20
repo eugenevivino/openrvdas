@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 
 import '@testing-library/jest-dom/vitest'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import App from './App'
-import type { ConsoleModule, Page } from './contract'
+import type { ConsoleContext, ConsoleModule, Page } from './contract'
+import { ConsoleStore } from './store'
 
 const { discover } = vi.hoisted(() => ({ discover: vi.fn() }))
 vi.mock('./registry', () => ({ discoverModules: discover }))
@@ -201,4 +202,159 @@ tiles:
   expect(freshness).toHaveTextContent('LIVE')
   expect(screen.getByText('22')).toBeVisible()
   expect(screen.getByRole('group', { name: 'Data quality' })).toHaveTextContent('PASS')
+})
+
+const noon = Date.UTC(2026, 10, 20, 12) / 1000
+const stockCachePoints = 8640
+
+async function openSoundings(history: number) {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(noon * 1000)
+  const { default: number } = await import('./modules/number')
+  let context: ConsoleContext | undefined
+  const onValue = vi.fn()
+  const pages: ConsoleModule = {
+    id: 'test-pages',
+    presets: [
+      { id: 'depth', yaml: `title: Soundings
+tiles:
+  - {type: number, field: Depth, label: Depth, unit: m, decimals: 0, period: 1}
+` },
+      { id: 'wind', yaml: `title: Weather
+tiles:
+  - {type: number, field: Wind, label: Wind, unit: m/s}
+` },
+    ],
+    engines: [{ id: 'observe', start: (ctx) => {
+      context = ctx
+      if (!(ctx.store instanceof ConsoleStore)) throw new Error('Expected the production console store')
+      return ctx.store.observeValues((field, reading) => {
+        if (field === 'Depth') onValue(reading)
+      })
+    } }],
+  }
+  discover.mockResolvedValue({ modules: [number, pages], problems: [] })
+  vi.stubGlobal('WebSocket', Socket)
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('console.yaml')
+    ? new Response(`ship: Test\npages: [depth, wind]\nhistory: ${history}\n`)
+    : new Response(null, { status: 404 })))
+  window.history.replaceState(null, '', '#depth')
+  const previousSocket = Socket.current
+  render(<App />)
+  await screen.findByRole('heading', { name: 'Depth' })
+  await waitFor(() => expect(Socket.current).not.toBe(previousSocket))
+
+  const socket = Socket.current
+  const catalog = () => {
+    socket.receive('fields', ['Depth', 'Depth_QC', 'Wind', 'Wind_QC'])
+    socket.receive('describe', {})
+  }
+  const subscribe = (field: string) => {
+    const options = history ? { seconds: history, back_records: 1 } : { seconds: -1 }
+    expect(socket.sent.at(-1)).toEqual({ type: 'subscribe', fields: {
+      [field]: options, [field + '_QC']: options,
+    } })
+    socket.receive('subscribe')
+  }
+  act(() => {
+    socket.dispatchEvent(new Event('open'))
+    catalog()
+    subscribe('Depth')
+  })
+  const send = (data: object, offset?: number) => act(() => {
+    if (offset !== undefined) vi.setSystemTime((noon + offset) * 1000)
+    expect(socket.sent.at(-1)?.type).toBe('ready')
+    socket.receive('data', data)
+    if (socket.sent.at(-1)?.type === 'fields') catalog()
+  })
+  const navigate = async (page: string, field: string) => {
+    const key = screen.getByRole('link', { name: page }).getAttribute('aria-keyshortcuts')!
+    fireEvent.keyDown(window, { key })
+    await screen.findByRole('heading', { name: field })
+    send({}) // Complete the outstanding ready request for the previous page.
+    act(() => subscribe(field))
+  }
+  return { store: context!.store, onValue, send, navigate }
+}
+
+it.each([
+  { variation: 'two delayed FAILs after the stock 8640-point backfill', end: 8640,
+    newer: [8617, 8618], revocations: [[8617, 8618]] },
+  { variation: 'three delayed FAILs across batches after a shorter page-return backfill', end: 8643,
+    newer: [8592, 8603, 8628], revocations: [[8592, 8603.5], [8628]] },
+])('T-CON-14 keeps cached 18 m on page return with $variation', async ({ end, newer, revocations }) => {
+  const history = 10_800
+  const { store, send, navigate } = await openSoundings(history)
+  const measurements = new Map([[0, 18], ...newer.map((offset, index) => [offset, 19 + index] as const)])
+  const depths = Array.from({ length: end + 1 }, (_, offset) => [noon + offset, measurements.get(offset) ?? null])
+  const pass = [[noon, 1]]
+  send({ Depth: depths.slice(0, stockCachePoints), Depth_QC: pass }, stockCachePoints - 1)
+  send({ Depth: depths.slice(stockCachePoints) }, end)
+
+  await navigate('Weather', 'Wind')
+  send({ Wind: [[noon + end, 5]] }, 9000)
+  await navigate('Soundings', 'Depth')
+  const backfill = depths.slice(-stockCachePoints)
+  expect(backfill[0][0]).toBeGreaterThan(noon)
+  send({ Depth: backfill, Depth_QC: pass })
+  expect(store.history('Depth', history)[0]).toEqual({ time: noon, value: 18 })
+  expect(store.history('Depth_QC', history)[0]).toEqual({ time: noon, value: 1 })
+  expect(screen.getByRole('group', { name: 'Freshness' })).toHaveTextContent('NO DATA')
+  expect(screen.getByText(new RegExp(`^Last: ${18 + newer.length} m at`))).toBeVisible()
+
+  for (const batch of revocations) send({ Depth_QC: batch.map((offset) => [noon + offset, 4]) })
+  expect(screen.getByText(/^Last: 18 m at/)).toHaveTextContent('Last: 18 m at 12:00:00Z')
+})
+
+it.each([
+  { variation: 'three late FAILs after 24 nulls', step: 1, good: 4, nulls: 24, returnToPage: false },
+  { variation: 'five late FAILs after 30 nulls and a live-only page return', step: 2, good: 6, nulls: 30,
+    returnToPage: true },
+])('T-CON-14 keeps the oldest usable reading with zero history and $variation', async ({
+  step, good, nulls, returnToPage,
+}) => {
+  const { store, onValue, send, navigate } = await openSoundings(0)
+  send({ Depth: [[noon, 18]], Depth_QC: [[noon, 1]] }, 0)
+  // A previously rejected 19 m must stay rejected even if its flag is absent on return.
+  if (returnToPage) {
+    send({ Depth: [[noon + 1, 19]], Depth_QC: [[noon + 1, 4]] }, 1)
+    expect(store.get('Depth').quality).toBe('FAIL')
+  }
+  for (let i = 1; i < good + nulls; i++) {
+    const offset = i * step
+    send({ Depth: [[noon + offset, i < good ? 20 + i : null]] }, offset)
+  }
+  const lastOffset = (good + nulls - 1) * step
+  const staleOffset = lastOffset + 301
+  const revoke = (i: number) => [noon + i * step + (step - 1) / 2, 4]
+  send({ Depth_QC: [revoke(1)] }, staleOffset)
+  expect(screen.getByRole('group', { name: 'Freshness' })).toHaveTextContent('NO DATA')
+  expect(screen.getByText(new RegExp(`^Last: ${19 + good} m at`))).toBeVisible()
+
+  if (returnToPage) {
+    await navigate('Weather', 'Wind')
+    send({ Wind: [[noon + staleOffset, 5]] })
+    await navigate('Soundings', 'Depth')
+    onValue.mockClear()
+    send({ Depth_QC: [revoke(1)] })
+    expect(store.get('Depth').sourceTime).toBeUndefined()
+    expect(screen.getByRole('group', { name: 'Freshness' })).toHaveTextContent('NO DATA')
+    send({ Depth: [[noon + lastOffset, null]] })
+  }
+  for (let i = 2; i < good; i++) send({ Depth_QC: [revoke(i)] })
+  expect(screen.getByText(/^Last: 18 m at/)).toHaveTextContent('Last: 18 m at 12:00:00Z')
+  if (returnToPage) expect(onValue).not.toHaveBeenCalled()
+  expect(store.history('Depth', 0)).toEqual([])
+
+  send({ Depth_QC: [[noon + 0.5, 4]] })
+  expect(screen.getByRole('group', { name: 'Freshness' })).toHaveTextContent('NO DATA')
+  expect(screen.queryByText(/^Last:/)).toBeNull()
+
+  send({ Depth: [[noon + staleOffset, 42]], Depth_QC: [[noon + staleOffset, 1]] })
+  expect(screen.getByRole('group', { name: 'Freshness' })).toHaveTextContent('LIVE')
+  expect(screen.getByText('42')).toBeVisible()
+  expect(screen.getByRole('group', { name: 'Data quality' })).toHaveTextContent('PASS')
+  if (returnToPage) expect(onValue).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+    timestamp: noon + staleOffset, value: 42,
+  }))
 })

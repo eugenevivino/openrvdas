@@ -7,22 +7,21 @@ export interface Reading {
 export type Freshness = 'LIVE' | 'AGING' | 'STALE' | 'NO DATA'
 export type Quality = 'PASS' | 'NOT EVALUATED' | 'SUSPECT' | 'FAIL' | 'MISSING'
 
-interface OlderReading {
-  reading: Reading
-  nextTimestamp: number
+export interface FieldEvidence {
+  points: readonly Reading[]
+  flags: readonly Reading[]
 }
 
 export interface FieldSamples {
   recent: readonly Reading[]
-  flags: readonly Reading[]
-  older: readonly OlderReading[]
+  evidence: FieldEvidence
   lastGood?: Reading
   quality: Quality
   learnedPeriod?: number
 }
 
 const intervalCount = 20
-const fallbackLimit = 2
+export const maxHistoryPoints = 10_000
 const provisionalPeriod = 1
 
 export function qualityFromFlag(flag: unknown): Quality {
@@ -50,68 +49,39 @@ export function mergeReadings(previous: readonly Reading[], incoming: readonly R
 }
 
 export function mergeFieldSamples(previous: FieldSamples | undefined, readings: readonly Reading[],
-  flags: readonly Reading[], history?: { points: readonly Reading[]; flags: readonly Reading[]; cutoff: number }): FieldSamples {
-  const previousOlder = previous?.older ?? []
-  const samples = mergeReadings([...previousOlder.map(({ reading }) => reading), ...(previous?.recent ?? [])], readings)
-  const qualitySamples = mergeReadings([
-    ...(history?.flags.filter(({ timestamp }) => timestamp >= history.cutoff) ?? []), ...(previous?.flags ?? []),
-  ], flags)
-  const recent = samples.slice(-intervalCount - 1)
-  const firstRecent = samples.length - recent.length
-  const usedFlags = new Set(qualitySamples.slice(-intervalCount - 1))
-  const olderBoundaries = previousOlder.map(({ nextTimestamp }) => nextTimestamp).sort((a, b) => a - b)
-  const historyPoints = history?.points ?? []
-  const historyCutoff = history?.cutoff ?? Infinity
-  const older: OlderReading[] = []
-  const fallback: Array<OlderReading & { flag?: Reading }> = []
-  let historyIndex = 0
-  let boundaryIndex = 0
+  flags: readonly Reading[], { evidence = previous?.evidence, latestOnly = false } = {}): FieldSamples {
+  const retained = evidence?.points ?? []
+  const points = readings.length ? mergeReadings(retained, readings).slice(-maxHistoryPoints) : retained
+  const qualitySamples = flags.length ? mergeReadings(evidence?.flags ?? [], flags) : evidence?.flags ?? []
+  // Keep the raw QC tail for flags arriving ahead of their readings. Also keep
+  // the latest flag in every retained reading's interval, even past that tail.
+  const usedFlags = qualitySamples.length > maxHistoryPoints
+    ? new Set(qualitySamples.slice(-maxHistoryPoints)) : undefined
+
+  // Only measurements delivered to the active subscription can set freshness.
+  const previousRecent = previous?.recent ?? []
+  const earliest = latestOnly && !previousRecent.length ? retained.at(-1)?.timestamp ?? -Infinity : -Infinity
+  const current = earliest === -Infinity ? readings : readings.filter(({ timestamp }) => timestamp >= earliest)
+  const recent = current.length ? mergeReadings(previousRecent, current).slice(-intervalCount - 1) : previousRecent
+  const latest = recent.at(-1)
   let flagIndex = 0
   let lastGood: Reading | undefined
-  let quality = qualityFromFlag(qualitySamples.at(-1)?.value)
+  let quality = qualityFromFlag(latest ? undefined : qualitySamples.at(-1)?.value)
 
-  for (const [index, sample] of samples.entries()) {
-    while (historyIndex < historyPoints.length && historyPoints[historyIndex].timestamp < sample.timestamp) {
-      historyIndex++
-    }
-    const cached = historyPoints[historyIndex]?.timestamp === sample.timestamp
-    if (cached) historyIndex++
-    while (boundaryIndex < olderBoundaries.length && olderBoundaries[boundaryIndex] <= sample.timestamp) {
-      boundaryIndex++
-    }
-
+  for (let index = 0; index < points.length; index++) {
+    const sample = points[index]
     // A flag applies to the reading at that timestamp, or to the preceding
     // reading when a flag arrives separately. A newer reading needs its own flag.
-    // A known next timestamp still splits QC intervals after that reading is evicted.
-    const nextTimestamp = Math.min(samples[index + 1]?.timestamp ?? Infinity,
-      historyPoints[historyIndex]?.timestamp ?? Infinity, olderBoundaries[boundaryIndex] ?? Infinity)
+    const nextTimestamp = points[index + 1]?.timestamp ?? Infinity
     let matched: Reading | undefined
     while (flagIndex < qualitySamples.length && qualitySamples[flagIndex].timestamp < nextTimestamp) {
       matched = qualitySamples[flagIndex++]
     }
     if (matched && matched.timestamp < sample.timestamp) matched = undefined
-    if (matched) {
-      quality = qualityFromFlag(matched.value)
-      if (index >= firstRecent) usedFlags.add(matched)
-    } else {
-      quality = 'NOT EVALUATED'
-    }
-    if (sample.value == null) continue
-    const usable = isGood(quality)
-    if (usable) lastGood = sample
-    if (index >= firstRecent) continue
-    if (cached && sample.timestamp >= historyCutoff) {
-      // Keep matched QC for all retained values so a revoked reading stays revoked.
-      older.push({ reading: sample, nextTimestamp })
-      if (matched) usedFlags.add(matched)
-    } else if (usable) {
-      fallback.push({ reading: sample, nextTimestamp, flag: matched })
-      if (fallback.length > fallbackLimit) fallback.shift()
-    }
-  }
-  for (const { reading, nextTimestamp, flag } of fallback) {
-    older.push({ reading, nextTimestamp })
-    if (flag) usedFlags.add(flag)
+    if (matched) usedFlags?.add(matched)
+    const sampleQuality = qualityFromFlag(matched?.value)
+    if (sample.timestamp === latest?.timestamp) quality = sampleQuality
+    if (sample.value != null && isGood(sampleQuality)) lastGood = sample
   }
 
   const intervals = recent.slice(1).map(({ timestamp }, index) => timestamp - recent[index].timestamp)
@@ -119,7 +89,10 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
   const middle = Math.floor(intervals.length / 2)
   const learnedPeriod = !intervals.length ? undefined
     : intervals.length % 2 ? intervals[middle] : (intervals[middle - 1] + intervals[middle]) / 2
-  return { recent, flags: [...usedFlags], older, lastGood, quality, learnedPeriod }
+  return {
+    recent, lastGood, quality, learnedPeriod,
+    evidence: { points, flags: usedFlags ? qualitySamples.filter((flag) => usedFlags.has(flag)) : qualitySamples },
+  }
 }
 
 export function fieldData(samples: FieldSamples | undefined, period: number | undefined, now: number) {

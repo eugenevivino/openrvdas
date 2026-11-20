@@ -1,6 +1,6 @@
 import type { Connection, FieldDescription } from './contract'
-import { mergeFieldSamples, mergeReadings } from './field-data'
-import type { FieldSamples, Reading } from './field-data'
+import { maxHistoryPoints, mergeFieldSamples, mergeReadings } from './field-data'
+import type { FieldEvidence, FieldSamples, Reading } from './field-data'
 
 export interface Snapshot {
   connection: Connection
@@ -20,7 +20,6 @@ interface CdsOptions {
 
 const responseTimeout = 15_000
 const catalogPeriod = 15
-const maxHistoryPoints = 10_000
 
 function isMapping(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -78,11 +77,13 @@ export class CdsClient {
   private readonly qcSuffix: string
   private readonly catalog: boolean
   private readonly listeners = new Set<() => void>()
+  private readonly evidence = new Map<string, FieldEvidence>()
   private snapshot: Snapshot = {
     connection: 'idle', fields: new Map(), history: new Map(), available: [], descriptions: new Map(),
   }
   private wanted = new Map<string, number>()
   private subscribed?: Map<string, number>
+  private latestOnly?: ReadonlySet<string>
   private checkBackfill = false
   private phase: 'opening' | 'fields' | 'describe' | 'subscribe' | 'data' | 'idle' = 'idle'
   private socket?: WebSocket
@@ -144,6 +145,7 @@ export class CdsClient {
 
   stop() {
     this.wanted.clear()
+    this.evidence.clear()
     this.disconnect()
     this.update({
       connection: 'idle', fields: new Map(), history: new Map(), available: [], descriptions: new Map(),
@@ -249,6 +251,7 @@ export class CdsClient {
   private sendSubscription(requested: Map<string, number>, latest?: ReadonlySet<string>) {
     this.phase = 'subscribe'
     this.subscribed = requested
+    this.latestOnly = latest
     this.checkBackfill = latest === undefined
     const fields = [...requested].map(([field, window]) => {
       const seconds = latest?.has(field) ? -1 : window
@@ -330,35 +333,43 @@ export class CdsClient {
     const changed = new Map<string, Reading[]>()
     const wanted = this.catalog ? requested : this.wanted
 
-    for (const [field, seconds] of requested) {
-      const incoming = readBatch(batch, field, now)
-      readings.set(field, incoming)
-      if (seconds > 0 && incoming.length) {
-        const cutoff = now - seconds
-        const recent = mergeReadings(history.get(field) ?? [], incoming)
-        history.set(field, recent.filter((point) => point.timestamp >= cutoff).slice(-maxHistoryPoints))
-      }
-    }
+    for (const field of requested.keys()) readings.set(field, readBatch(batch, field, now))
 
-    for (const [field, seconds] of wanted) {
-      const incoming = readings.get(field) ?? []
-      const flag = field + this.qcSuffix
-      const flags = readings.get(flag) ?? []
-      const explicitlyRequested = this.wanted.has(field) || (field.startsWith('status:') && this.wanted.has('status:*'))
-      if (this.checkBackfill && seconds > 0 && !incoming.length && explicitlyRequested) {
-        empty.add(field)
-        if (!flags.length && requested.has(flag)) empty.add(flag)
-      }
+    for (const [field, seconds] of requested) {
+      const incoming = readings.get(field)!
       const previous = fields.get(field)
-      if (incoming.length || flags.length) {
-        const points = seconds > 0 && requested.has(flag) ? history.get(field) : undefined
-        fields.set(field, mergeFieldSamples(previous, incoming, flags,
-          points && { points, flags: history.get(flag) ?? [], cutoff: now - seconds }))
+      const evidence = this.evidence.get(field) ?? previous?.evidence
+      let points: readonly Reading[] | undefined
+      if (wanted.has(field)) {
+        const flag = field + this.qcSuffix
+        const flags = readings.get(flag) ?? []
+        const explicitlyRequested = this.wanted.has(field) || (field.startsWith('status:') && this.wanted.has('status:*'))
+        if (this.checkBackfill && seconds > 0 && !incoming.length && explicitlyRequested) {
+          empty.add(field)
+          if (!flags.length && requested.has(flag)) empty.add(flag)
+        }
+        const latestOnly = seconds < 0 || this.latestOnly?.has(field)
+        if (incoming.length || flags.length) {
+          const next = mergeFieldSamples(previous, incoming, flags, { evidence, latestOnly })
+          fields.set(field, next)
+          if (requested.has(flag)) this.evidence.set(field, next.evidence)
+          points = next.evidence.points
+        }
+        const latest = latestOnly ? evidence?.points.at(-1) : previous?.recent.at(-1)
+        const fresh = latest ? incoming.filter((reading) =>
+          reading.timestamp >= latest.timestamp && !sameReading(latest, reading)) : incoming
+        if (fresh.length) changed.set(field, fresh)
       }
-      const latest = previous?.recent.at(-1)
-      const fresh = latest ? incoming.filter((reading) =>
-        reading.timestamp >= latest.timestamp && !sameReading(latest, reading)) : incoming
-      if (fresh.length) changed.set(field, fresh)
+      if (seconds > 0 && incoming.length) {
+        const priorHistory = history.get(field)
+        // Graphs keep their requested time window and share the retained array
+        // when every point in it was received for that window.
+        const merged = points && priorHistory === evidence?.points ? points : mergeReadings(priorHistory ?? [], incoming)
+        const cutoff = now - seconds
+        const first = merged.findIndex((point) => point.timestamp >= cutoff)
+        const start = first < 0 ? merged.length : Math.max(first, merged.length - maxHistoryPoints)
+        history.set(field, start > 0 ? merged.slice(start) : merged)
+      }
     }
     this.failures = 0
     this.checkBackfill = false

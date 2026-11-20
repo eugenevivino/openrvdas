@@ -154,6 +154,7 @@ it.each([21, 25])('T-CON-1 keeps the prior usable reading after a late FAIL and 
     const before = client.getSnapshot().fields.get('Depth')
     expect(before?.recent[0].timestamp).toBeGreaterThan(1000)
     expect(before?.lastGood).toMatchObject({ timestamp: 1000, value: 20 })
+    expect(client.getSnapshot().history.size).toBe(0)
 
     const failTime = count === 21 ? 1000 : 1000.5
     socket.receive({ type: 'data', status: 200, data: { Depth_QC: [[failTime, 4]] } })
@@ -168,6 +169,51 @@ it.each([21, 25])('T-CON-1 keeps the prior usable reading after a late FAIL and 
     expect(client.getSnapshot().fields.get('Depth')).toMatchObject({
       lastGood: { timestamp: 1026, value: 22 }, quality: 'PASS',
     })
+  } finally {
+    client.stop()
+  }
+})
+
+it('T-CON-14 keeps a matched FAIL across QC rollover and stops at the 10000-point measurement cap', () => {
+  vi.stubGlobal('WebSocket', MockSocket)
+  vi.useFakeTimers()
+  const start = 1000
+  const count = 10_000
+  const cap = 8640
+  const failed = start + 1400
+  const client = new CdsClient('ws://ship:8766', { now: () => start + count })
+  client.setFields({ Depth: 10_800 })
+  const [socket] = MockSocket.sockets
+  const depths = Array.from({ length: count }, (_, i) => {
+    const timestamp = start + i
+    return [timestamp, i === 0 ? 18 : timestamp === failed ? 19 : null]
+  })
+  const flags = Array.from({ length: count }, (_, i) => [failed + 1 + i / 2, 1])
+  const send = (data: object) => socket.receive({ type: 'data', status: 200, data })
+  const subscribe = () => socket.receive({ type: 'subscribe', status: 200 })
+  try {
+    socket.open()
+    subscribe()
+    send({ Depth: depths.slice(0, cap), Depth_QC: [[start, 1], [failed, 4]] })
+    send({ Depth: depths.slice(cap), Depth_QC: flags.slice(0, cap) })
+    send({ Depth_QC: flags.slice(cap) })
+    expect(client.getSnapshot().history.get('Depth')).toHaveLength(count)
+    expect(client.getSnapshot().history.get('Depth_QC')?.[0].timestamp).toBeGreaterThan(failed)
+
+    client.setFields({ Wind: -1 })
+    send({})
+    subscribe()
+    expect(client.getSnapshot().fields.has('Depth')).toBe(false)
+    client.setFields({ Depth: 10_800 })
+    send({})
+    subscribe()
+    const returned = depths.slice(-cap)
+    expect(returned).toContainEqual([failed, 19])
+    send({ Depth: returned, Depth_QC: flags.slice(-cap) })
+    expect(client.getSnapshot().fields.get('Depth')?.lastGood).toMatchObject({ timestamp: start, value: 18 })
+
+    send({ Depth: [[start + count, null]] })
+    expect(client.getSnapshot().fields.get('Depth')?.lastGood).toBeUndefined()
   } finally {
     client.stop()
   }
