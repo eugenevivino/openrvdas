@@ -143,8 +143,10 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
   const previousCadence = previous?.cadence ?? (previous?.recent ?? []).map((reading) => ({
     ...reading, epoch: evidence?.epoch ?? 0,
   }))
+  const observedEpochs = new Map(previousCadence.map((reading) => [reading.timestamp, reading.epoch]))
   const cadence = current.length ? mergeReadings(previousCadence,
-    current.map((reading) => ({ ...reading, epoch }))).slice(-intervalCount - 1) : previousCadence
+    current.map((reading) => ({ ...reading, epoch: observedEpochs.get(reading.timestamp) ?? epoch })))
+    .slice(-intervalCount - 1) : previousCadence
   const latest = recent.at(-1)
   let flagIndex = 0
   let gapIndex = 0
