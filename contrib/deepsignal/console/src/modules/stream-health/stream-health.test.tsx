@@ -77,7 +77,7 @@ it.each([
   await screen.findByText(/Waiting for the logger manager/)
   expect(screen.queryByTestId('stream-health-row')).not.toBeInTheDocument()
   fireEvent.click(screen.getByRole('link', { name: 'Stream Health' }))
-  await screen.findByRole('heading', { name: 'Stream Health', exact: true })
+  await screen.findByRole('heading', { name: 'Stream Health' })
   const row = await screen.findByTestId('stream-health-row')
   const report = row.querySelector(member === 'root' ? '.stream-root' : `[data-stage="${member}"]`)!
   expect(report.querySelector('strong')).toHaveTextContent(/^unknown$/i)
