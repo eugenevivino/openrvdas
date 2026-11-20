@@ -73,11 +73,12 @@ it.each<{ period: number; samples: number; replay: boolean; correction?: string;
     socket.receive({ type: 'data', status: 200, data: {} })
     socket.receive({ type: 'subscribe', status: 200 })
     expect(store.get(field).sourceTime).toBeUndefined()
-    now = accelerating ? 1_000 + 0.5 * period : 1_000 + 30 * period - 1
+    now = accelerating ? 1_000 + 0.5 * period : cachedReplay ? 1_000 + 9 * period :
+      cachedHistory ? 1_000 + 28 * period : 1_000 + 30 * period - 1
     store.select(page)
     socket.receive({ type: 'data', status: 200, data: { Wind: [[now, 5]] } })
     socket.receive({ type: 'subscribe', status: 200 })
-    if (!accelerating) {
+    if (now >= 1_015) {
       expect(socket.sent.at(-1)).toMatchObject({ type: 'fields' })
       socket.receive({ type: 'fields', status: 200, data: [field, field + '_QC', 'Wind', 'Wind_QC'] })
       socket.receive({ type: 'describe', status: 200, data: {} })
