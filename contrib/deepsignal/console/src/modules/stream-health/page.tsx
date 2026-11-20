@@ -44,7 +44,7 @@ function presentReport(report: FieldState, label: (value: unknown) => string | u
     const historical = report.lastReported ? label(report.lastReported.value) : value
     if (historical !== undefined) detail.push(`Last reported: ${historical}`)
     if (!qualityAccepted || value === undefined) {
-      const lastUsable = label(report.lastGood?.value)
+      const lastUsable = label((report.lastAccepted ?? report.lastGood)?.value)
       if (lastUsable !== undefined) detail.push(`Last usable: ${lastUsable}`)
     }
     return { value: unknownLabel, detail: detail.join(' · ') }

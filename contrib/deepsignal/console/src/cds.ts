@@ -255,8 +255,13 @@ export class CdsClient {
       set(field, seconds)
       // Explicitly requested measurements can contain or end in any configured
       // suffix. Added QC requests are not recursively expanded by this loop.
-      if (this.catalog && (field.startsWith('status:') || field.startsWith('stderr:logger:'))) continue
+      if (this.catalog && field.startsWith('stderr:logger:')) continue
       const flag = field + this.qcSuffix
+      // Catalog-wide views select QC fields themselves. Do not synthesize a
+      // second QC layer unless that field actually exists in the catalog.
+      const pairedFlag = this.qcSuffix.length > 0 && field.endsWith(this.qcSuffix) &&
+        this.snapshot.available.includes(field.slice(0, -this.qcSuffix.length))
+      if (this.catalog && pairedFlag && !this.snapshot.available.includes(flag)) continue
       set(flag, seconds)
       for (const name of this.snapshot.available) {
         if (name.startsWith(flag + '_')) set(name, seconds)
@@ -376,8 +381,13 @@ export class CdsClient {
           points = next.evidence.points
         }
         const latest = evidence?.points.at(-1) ?? previous?.recent.at(-1)
-        const candidates = latest ? incoming.filter((reading) => reading.timestamp > latest.timestamp ||
-          (reading.timestamp === latest.timestamp && !(resuming && field.startsWith('stderr:logger:')))) : incoming
+        // A replay can also contain new events at the latest timestamp. Keep
+        // its ordered suffix after the last retained event, rather than dropping
+        // the whole timestamp or replaying the older prefix.
+        const replayEnd = latest && resuming && field.startsWith('stderr:logger:')
+          ? incoming.findLastIndex((reading) => sameReading(latest, reading)) : -1
+        const tail = incoming.slice(replayEnd + 1)
+        const candidates = latest ? tail.filter((reading) => reading.timestamp >= latest.timestamp) : tail
         const firstChange = latest ? candidates.findIndex((reading) => !sameReading(latest, reading)) : 0
         // Preserve order after the first change, including a final event that
         // returns to the prior value at the same timestamp.

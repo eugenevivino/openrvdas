@@ -41,6 +41,8 @@ export interface FieldState {
   freshness: Freshness
   /** Last valid value; always kept for STALE and NO_DATA. */
   lastGood?: { value: unknown; time: number }
+  /** Last quality-accepted producer report, including explicit null. Historical only. */
+  lastAccepted?: { value: unknown; time: number }
   /** Latest observed producer report, including rejected values. Historical only. */
   lastReported?: { value: unknown; time: number }
   quality: Quality

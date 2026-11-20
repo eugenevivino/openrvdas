@@ -118,7 +118,7 @@ export class ConsoleStore implements FieldStore {
     const data = this.source.getSnapshot()
     const samples = data.fields.get(field)
     const period = this.preferences.get(field)?.period ?? samples?.learnedPeriod ?? this.learnedPeriods.get(field)
-    const { value, timestamp, receivedAt, expectedPeriod, freshness, quality, age, lastGood } =
+    const { value, timestamp, receivedAt, expectedPeriod, freshness, quality, age, lastGood, lastAccepted } =
       fieldData(samples, period, this.clock.now())
     const { qualityTests, qualityReason } = this.qualityDetails(data, field, timestamp)
     const reported = samples?.evidence.points.at(-1)
@@ -128,6 +128,7 @@ export class ConsoleStore implements FieldStore {
       sourceTime: timestamp, receiveTime: receivedAt, periodS: expectedPeriod, ageS: age,
       freshness: freshness === 'NO DATA' ? 'NO_DATA' : freshness,
       lastGood: lastGood && { value: lastGood.value, time: lastGood.timestamp },
+      lastAccepted: lastAccepted && { value: lastAccepted.value, time: lastAccepted.timestamp },
       lastReported: reported && { value: reported.value, time: reported.timestamp },
       quality: quality === 'NOT EVALUATED' ? 'NOT_EVALUATED' : quality, qualityTests, qualityReason,
       ...(this.health.get(logger ?? '') ?? unknownHealth),

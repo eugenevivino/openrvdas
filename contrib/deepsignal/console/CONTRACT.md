@@ -25,6 +25,10 @@ open their own websocket.
   observed producer value and timestamp, including rejected reports. It is history,
   never evidence of a new measurement or a healthy current value. QC-only responses
   may leave `sourceTime` absent while this history remains available.
+- Lead-approved optional `lastAccepted` retains the latest quality-accepted report,
+  including explicit null (for example a cleared root cause). Consumers interpret
+  its value; it does not replace the non-null `lastGood` measurement contract or
+  establish current freshness. Both follow the same retained rejection evidence.
 - Freshness, from expected period T (page `period`, else median of the last 20
   intervals): LIVE age <= 2T; AGING 2T to 5T; STALE > 5T (value kept); NO_DATA
   past the hard timeout (60T, at least 300 s): value replaced by "—", `lastGood` kept.

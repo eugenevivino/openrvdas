@@ -37,6 +37,7 @@ export interface FieldSamples {
   cadenceResumePending?: boolean
   evidence: FieldEvidence
   lastGood?: Reading
+  lastAccepted?: Reading
   quality: Quality
   learnedPeriod?: number
 }
@@ -160,6 +161,7 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
   let discardedIndex = 0
   let unplacedIndex = 0
   let lastGood: Reading | undefined
+  let lastAccepted: Reading | undefined
   let quality = qualityFromFlag(qualityTimestamp === undefined ? qualitySamples.at(-1)?.value : undefined)
 
   for (let index = 0; index < points.length; index++) {
@@ -196,7 +198,7 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
           firstRejected = flag
           rawTail.add(flag)
         }
-        if (archiveRemaining > 0 && sample.value != null && !rawTail.has(flag)) {
+        if (archiveRemaining > 0 && !rawTail.has(flag)) {
           rawTail.add(flag)
           archiveRemaining--
         }
@@ -212,7 +214,7 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
 
     const sampleQuality = qualityFromFlag(matched?.value)
     if (sample.timestamp === qualityTimestamp) quality = sampleQuality
-    if (sample.value == null || !isGood(sampleQuality)) continue
+    if (!isGood(sampleQuality)) continue
     // A prior rejection must not become an eligible Last value just because
     // its precise QC record exceeded the bounded archive before backfill.
     const flagTime = matched?.timestamp ?? -Infinity
@@ -224,12 +226,15 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
     while (unplacedIndex < unplaced.length && (unplaced[unplacedIndex].last < sample.timestamp ||
       unplaced[unplacedIndex].last <= flagTime)) unplacedIndex++
     const possibleUnplacedRejection = unplaced[unplacedIndex]
-    if (!possibleUnplacedRejection || possibleUnplacedRejection.first >= sample.timestamp) lastGood = sample
+    if (!possibleUnplacedRejection || possibleUnplacedRejection.first >= sample.timestamp) {
+      lastAccepted = sample
+      if (sample.value != null) lastGood = sample
+    }
   }
 
   // Time outside an observed subscription is not a measured producer interval.
   const intervals = cadence.slice(1).flatMap(({ timestamp, epoch }, index) =>
-    epoch === cadence[index].epoch ? [timestamp - cadence[index].timestamp] : [])
+    epoch >= 0 && epoch === cadence[index].epoch ? [timestamp - cadence[index].timestamp] : [])
     .sort((a, b) => a - b)
   const middle = Math.floor(intervals.length / 2)
   const learnedPeriod = !intervals.length ? previous?.learnedPeriod
@@ -237,7 +242,7 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
   const oldest = points[0]?.timestamp ?? Infinity
   return {
     recent, cadence, cadenceResumePending: cadenceResumePending && !hasUnseenReading,
-    lastGood, quality, learnedPeriod,
+    lastGood, lastAccepted, quality, learnedPeriod,
     evidence: {
       points, gaps, epoch,
       flags: rawTail ? qualitySamples.filter((flag) => rawTail.has(flag)) : qualitySamples,
@@ -268,5 +273,6 @@ export function fieldData(samples: FieldSamples | undefined, period: number | un
     ai: 'NONE' as const,
     age,
     lastGood: samples?.lastGood,
+    lastAccepted: samples?.lastAccepted,
   }
 }
