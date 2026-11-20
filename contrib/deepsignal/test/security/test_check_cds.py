@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 import runpy
+import shutil
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -40,6 +41,65 @@ def test_udp_listener_pass_and_fail():
                                 runner_with('UNCONN 0 0 0.0.0.0:6225 0.0.0.0:*'))
     assert passed[0]
     assert not failed[0]
+
+
+@pytest.mark.parametrize(('binary', 'listener'), [
+    ('/usr/bin/ss', '127.0.0.1:8766'),
+    ('/usr/sbin/ss', '[::1]:8766'),
+], ids=['ipv4', 'ipv6'])
+def test_d_fix1_checker_uses_system_ss(monkeypatch, binary, listener):
+    def which(name, *, path):
+        assert name == 'ss' and str(Path(binary).parent) in path.split(':')
+        return binary
+
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        assert kwargs['timeout'] > 0
+        return subprocess.CompletedProcess(argv, 0, f'LISTEN 0 128 {listener} *:*')
+
+    monkeypatch.setattr(shutil, 'which', which)
+    monkeypatch.setattr(subprocess, 'run', run)
+    checker = runpy.run_path(check_cds.__file__)
+    assert checker['check_cds_listener']()[0]
+    assert calls == [[binary, '-ltn']]
+
+
+@pytest.mark.parametrize('failure', ['missing', 'exit', 'timeout'])
+def test_d_fix1_configured_listeners_fail_closed(monkeypatch, failure):
+    binary = None if failure == 'missing' else '/usr/bin/ss'
+    monkeypatch.setattr(shutil, 'which', lambda *args, **kwargs: binary)
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if failure == 'timeout':
+            raise subprocess.TimeoutExpired(argv, kwargs.get('timeout'))
+        return subprocess.CompletedProcess(argv, 1, 'UNCONN 0 0 192.0.2.10:6225 *:*\n'
+                                           'LISTEN 0 128 127.0.0.1:8766 *:*')
+
+    monkeypatch.setattr(subprocess, 'run', run)
+    checker = runpy.run_path(check_cds.__file__)
+    assert checker['check_udp_listener']() == (True, 'PASS: no UDP live-data feed is configured.')
+    assert calls == []
+    assert not checker['check_udp_listener'](6225, '192.0.2.10')[0]
+    assert not checker['check_cds_listener']()[0]
+    assert calls == ([] if binary is None else [[binary, '-lun'], [binary, '-ltn']])
+
+
+@pytest.mark.parametrize(('address', 'display', 'expected'), [
+    ('eth0', 'eth0', True),
+    ('192.0.2.10', '192.0.2.10', True),
+    ('2001:db8::1', '[2001:db8::1]', True),
+    ('*', '*', False),
+    ('0.0.0.0', '0.0.0.0', False),
+    ('::', '[::]', False),
+    ('0:0:0:0:0:0:0:0', '[0:0:0:0:0:0:0:0]', False),
+], ids=['named', 'ipv4', 'ipv6', 'star', 'any-ipv4', 'any-ipv6', 'expanded-any-ipv6'])
+def test_d_fix1_udp_binding(address, display, expected):
+    assert check_udp_listener(6225, address,
+                              runner_with(f'UNCONN 0 0 {display}:6225 *:*'))[0] is expected
 
 
 def test_nginx_template_guard_pass_and_fail(nginx_install):

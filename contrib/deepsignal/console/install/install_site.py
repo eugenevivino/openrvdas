@@ -22,10 +22,21 @@ INVENTORY = runpy.run_path(str(INSTALL / 'nginx_inventory.py'))
 Inventory = INVENTORY['Inventory']
 SITE_NAME = RENDERER['SITE_NAME']
 PROBE_PATH = SECURITY / 'probe_cds.py'
+SYSTEM_PATH = '/usr/bin:/bin:/usr/sbin:/sbin'
+NGINX_PATH = '/usr/sbin:/usr/bin:/sbin:/bin'
+LOCAL_NGINX_PATH = '/usr/local/sbin:/usr/local/bin:/opt/homebrew/bin'
+PROC = Path('/proc')
 
 
 def command(*args, capture=False):
     return subprocess.run(args, capture_output=capture, check=True, timeout=15)
+
+
+def system_command(name, *args, capture=False):
+    binary = shutil.which(name, path=SYSTEM_PATH)
+    if binary is None:
+        raise FileNotFoundError(f'{name} is required to verify the running nginx service.')
+    return command(binary, *args, capture=capture)
 
 
 def snapshot(main, path, contents, ports, nginx):
@@ -46,9 +57,26 @@ def nginx_command(nginx, action):
     return (nginx[0], action, *nginx[1:])
 
 
+def preview_nginx(uid):
+    binary = shutil.which('nginx', path=NGINX_PATH)
+    if binary is not None:
+        return binary
+    binary = shutil.which('nginx', path=LOCAL_NGINX_PATH)
+    if binary is None or uid != 0:
+        return binary
+    # A local or Homebrew installation can be managed by a non-root user.
+    candidate = Path(binary)
+    executable = candidate.resolve(strict=True)
+    for path in (executable, *executable.parents, *candidate.parents):
+        info = path.stat()
+        if info.st_uid != 0 or info.st_mode & 0o022:
+            return None
+    return str(executable)
+
+
 def master_pid():
-    pid = command('systemctl', 'show', '--property=MainPID', '--value', 'nginx',
-                  capture=True).stdout.strip()
+    pid = system_command('systemctl', 'show', '--property=MainPID', '--value', 'nginx',
+                         capture=True).stdout.strip()
     if not pid.isdigit() or int(pid) <= 1:
         raise ValueError('Cannot identify the running nginx master.')
     return pid.decode()
@@ -56,7 +84,7 @@ def master_pid():
 
 def service_configuration(main):
     master = master_pid()
-    output = command('ps', '-o', 'args=', '-p', master, '-ww', capture=True).stdout
+    output = system_command('ps', '-o', 'args=', '-p', master, '-ww', capture=True).stdout
     title = output.decode().strip()
     prefix = 'nginx: master process '
     if not title.startswith(prefix):
@@ -79,16 +107,20 @@ def service_configuration(main):
         parsed[flag] = value
     if '-c' in parsed and Path(parsed['-c']) != main:
         raise ValueError(f'{main}: nginx master uses {parsed["-c"]} instead.')
-    # With no -c, the main path printed by this binary must match main.
+    # Check the reported command against the kernel's executable for this PID.
+    executable = PROC / master / 'exe'
+    if not executable.exists() or not Path(binary).is_file() or not executable.samefile(binary):
+        raise ValueError('Cannot verify the running nginx master executable.')
+    # With no -c, the main path printed by the running binary must match main.
     if separator:
         options.extend(('-g', globals_))
-    return master, (binary, *options)
+    return master, (str(executable), *options)
 
 
 def worker_generation(master):
     if master_pid() != master:
         raise ValueError('The nginx master changed during installation.')
-    output = command('ps', '-o', 'pid=,args=', '--ppid', master, capture=True).stdout
+    output = system_command('ps', '-o', 'pid=,args=', '--ppid', master, capture=True).stdout
     return {int(pid) for pid in re.findall(rb'^[ \t]*(\d+) nginx: worker process[ \t]*$',
                                            output, re.MULTILINE)}
 
@@ -98,7 +130,7 @@ def confirm_reload(master, previous):
     while time.monotonic() < deadline:
         current = worker_generation(master)
         if current and not current & previous:
-            command('systemctl', 'is-active', '--quiet', 'nginx')
+            system_command('systemctl', 'is-active', '--quiet', 'nginx')
             return
     raise ValueError('Could not confirm a new nginx worker generation after reload.')
 
@@ -177,7 +209,7 @@ def apply(args, main, path, files, desired, rendered, ports, nginx, master, runt
         if not previous:
             raise ValueError('Cannot identify the active nginx workers.')
         reload_attempted = True
-        command('systemctl', 'reload', 'nginx')
+        system_command('systemctl', 'reload', 'nginx')
         confirm_reload(master, previous)
         if updated != snapshot(main, path, rendered, ports, nginx):
             raise ValueError('The effective nginx configuration changed during reload.')
@@ -195,7 +227,7 @@ def apply(args, main, path, files, desired, rendered, ports, nginx, master, runt
                     previous = worker_generation(master)
                     if not previous:
                         raise ValueError('Cannot identify the active nginx workers.')
-                    command('systemctl', 'reload', 'nginx')
+                    system_command('systemctl', 'reload', 'nginx')
                     confirm_reload(master, previous)
                 except (OSError, ValueError, subprocess.SubprocessError) as exc:
                     print(f'Could not confirm the nginx rollback reload: {exc}', file=sys.stderr)
@@ -230,10 +262,11 @@ def install(args, site, uid, read_ports):
         raise ValueError('The installer site must differ from the nginx main configuration.')
     if path.is_symlink():
         raise ValueError(f'{path}: installer site must be a regular file, with no symlink.')
-    binary = shutil.which('nginx')
-    nginx = (binary, '-c', str(main)) if binary else None
-    master = None
-    if binary and not args.dry_run:
+    if args.dry_run:
+        binary = preview_nginx(uid)
+        nginx = (binary, '-c', str(main)) if binary else None
+        master = None
+    else:
         master, nginx = service_configuration(main)
     # Serialize installs, including idempotent reloads, without adding a lock file.
     fd = os.open(main.parent, os.O_RDONLY | os.O_DIRECTORY)

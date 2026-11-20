@@ -3,9 +3,11 @@
 
 import argparse
 import asyncio
+from ipaddress import ip_address
 import json
 from pathlib import Path
 import runpy
+import shutil
 import subprocess
 import time
 from urllib.parse import urlsplit
@@ -13,16 +15,29 @@ from urllib.parse import urlsplit
 import websockets
 
 
-def _run(runner, command):
+SS_PATH = '/usr/bin:/usr/sbin:/bin:/sbin'
+SS_TIMEOUT = 3
+
+
+def _run(runner, option):
+    binary = shutil.which('ss', path=SS_PATH)
+    if runner is None:
+        if binary is None:
+            return ''
+        runner = subprocess.run
+    # An injected runner can supply listener output on a host without iproute2.
     try:
-        result = runner(command, capture_output=True, text=True, check=False)
-    except OSError:
+        result = runner([binary or '/usr/bin/ss', option], capture_output=True,
+                        text=True, check=False, timeout=SS_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
         return ''
-    return result if isinstance(result, str) else result.stdout
+    if isinstance(result, str):
+        return result
+    return '' if getattr(result, 'returncode', 0) else result.stdout
 
 
-def check_cds_listener(runner=subprocess.run, port=8766):
-    output = _run(runner, ['ss', '-ltn'])
+def check_cds_listener(runner=None, port=8766):
+    output = _run(runner, '-ltn')
     addresses = _listener_addresses(output, port)
     if not addresses:
         return False, ('FAIL: live-data server is not listening on port %d. '
@@ -35,10 +50,10 @@ def check_cds_listener(runner=subprocess.run, port=8766):
     return True, 'PASS: live-data server is listening only on loopback.'
 
 
-def check_udp_listener(port=None, interface=None, runner=subprocess.run):
+def check_udp_listener(port=None, interface=None, runner=None):
     if port is None:
         return True, 'PASS: no UDP live-data feed is configured.'
-    output = _run(runner, ['ss', '-lun'])
+    output = _run(runner, '-lun')
     addresses = _listener_addresses(output, port)
     if (not interface or not addresses or
             any(not _is_named(address, interface) for address in addresses)):
@@ -77,7 +92,12 @@ def _is_loopback(address):
 
 
 def _is_named(address, interface):
-    return address == interface and address not in ('0.0.0.0', '*', '::')
+    if address != interface or address == '*':
+        return False
+    try:
+        return not ip_address(address).is_unspecified
+    except ValueError:
+        return True  # Keep literal matching for interface names.
 
 
 async def _check_foreign_origin(gateway_url, origin, **options):

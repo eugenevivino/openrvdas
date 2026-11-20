@@ -4,7 +4,9 @@ import asyncio
 import errno
 import json
 from pathlib import Path
+import shutil
 import socket
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -33,6 +35,57 @@ def test_probe_reads_all_configured_udp_ports(probe, tmp_path, monkeypatch):
     })
     assert probe.configured_udp_ports(path) == (6225, 6226, 6227)
     assert probe.configured_udp_ports(supervisor_config(tmp_path, '--port=8766')) == ()
+
+
+@pytest.mark.parametrize('binary', ['/usr/bin/supervisorctl', '/usr/local/bin/supervisorctl'],
+                         ids=['packaged', 'local'])
+def test_d_fix1_probe_uses_trusted_supervisorctl(probe, tmp_path, monkeypatch, binary):
+    path = supervisor_config(tmp_path, '--udp "%(ENV_CDS_UDP_PORTS)s" '
+                             '--udp_interface "%(ENV_CDS_UDP_INTERFACE)s"')
+
+    def which(name, *, path):
+        assert name == 'supervisorctl' and str(Path(binary).parent) in path.split(':')
+        return binary
+
+    def run(argv, **kwargs):
+        assert argv == [binary, 'pid', 'cached_data_server']
+        assert kwargs == dict(cwd='/', capture_output=True, check=True, timeout=3)
+        return subprocess.CompletedProcess(argv, 0, b'123\n')
+
+    def environ(path):
+        assert str(path) == '/proc/123/environ'
+        return b'CDS_UDP_PORTS=6225,6226\0CDS_UDP_INTERFACE=192.0.2.10\0IGNORED=\xff\0'
+
+    monkeypatch.setattr(shutil, 'which', which)
+    monkeypatch.setattr(subprocess, 'run', run)
+    monkeypatch.setattr(Path, 'read_bytes', environ)
+    assert probe.configured_udp_ports(path) == (6225, 6226)
+
+
+@pytest.mark.parametrize('failure', ['missing', 'exit', 'timeout', 'malformed-pid', 'init-pid'])
+def test_d_fix1_probe_supervisor_lookup_fails_closed(probe, tmp_path, monkeypatch, failure):
+    path = supervisor_config(tmp_path, '--udp "%(ENV_CDS_UDP_PORTS)s" '
+                             '--udp_interface "%(ENV_CDS_UDP_INTERFACE)s"')
+    binary = None if failure == 'missing' else '/usr/bin/supervisorctl'
+    monkeypatch.setattr(shutil, 'which', lambda *args, **kwargs: binary)
+
+    def run(argv, **kwargs):
+        assert binary is not None
+        if failure == 'exit':
+            assert kwargs['check']
+            raise subprocess.CalledProcessError(1, argv)
+        if failure == 'timeout':
+            raise subprocess.TimeoutExpired(argv, kwargs['timeout'])
+        pid = b'1\n' if failure == 'init-pid' else b'not-a-pid\n'
+        return subprocess.CompletedProcess(argv, 0, pid)
+
+    def environ(path):
+        pytest.fail(f'unexpected process environment read: {path}')
+
+    monkeypatch.setattr(subprocess, 'run', run)
+    monkeypatch.setattr(Path, 'read_bytes', environ)
+    with pytest.raises(ValueError):
+        probe.configured_udp_ports(path)
 
 
 @pytest.mark.parametrize('options', [

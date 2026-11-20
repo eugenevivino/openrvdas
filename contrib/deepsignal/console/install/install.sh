@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-installer_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+installer_dir=$(CDPATH='' cd -- "$(/usr/bin/dirname -- "$0")" && pwd -P)
 console_dir=${installer_dir%/*}
 security_dir=${console_dir%/*}/security
 
@@ -10,8 +10,8 @@ trusted_path() (
     [ -f "$path" ] || return 1
     while :; do
         [ ! -L "$path" ] || return 1
-        metadata=$(stat -c '%u %a' -- "$path" 2>/dev/null ||
-                   stat -f '%u %Lp' -- "$path" 2>/dev/null) || return 1
+        metadata=$(/usr/bin/stat -c '%u %a' -- "$path" 2>/dev/null ||
+                   /usr/bin/stat -f '%u %Lp' -- "$path" 2>/dev/null) || return 1
         read -r owner mode <<EOF
 $metadata
 EOF
@@ -23,7 +23,7 @@ EOF
     done
 )
 
-uid=$(id -u)
+uid=$(/usr/bin/id -u)
 require_trusted=false
 if [ "$uid" -eq 0 ]; then require_trusted=true; fi
 for arg do

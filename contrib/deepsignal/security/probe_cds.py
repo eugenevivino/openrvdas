@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import secrets
 import shlex
+import shutil
 import socket
 import ssl
 import subprocess
@@ -24,6 +25,7 @@ from websockets.exceptions import WebSocketException
 
 
 SUPERVISOR_CONFIG = '/etc/supervisor/conf.d/cached_data_server.conf'
+SUPERVISORCTL_PATH = '/usr/bin:/bin:/usr/local/bin'
 CDS_PORT, GATEWAY_PORT = 8766, 8767
 PROBE_FIELD = 'deepsignal_gateway_self_test'
 TIMEOUT = 3
@@ -34,7 +36,10 @@ ERRORS = (OSError, ValueError, http.client.HTTPException, WebSocketException)
 
 def supervisor_environment():
     """Use the environment Supervisor actually passed to the CDS."""
-    result = subprocess.run(['supervisorctl', 'pid', 'cached_data_server'], cwd='/',
+    binary = shutil.which('supervisorctl', path=SUPERVISORCTL_PATH)
+    if binary is None:
+        raise FileNotFoundError('supervisorctl is required to read the running CDS environment')
+    result = subprocess.run([binary, 'pid', 'cached_data_server'], cwd='/',
                             capture_output=True, check=True, timeout=TIMEOUT)
     pid = result.stdout.strip()
     if not re.fullmatch(rb'[1-9][0-9]*', pid) or pid == b'1':
