@@ -34,6 +34,43 @@ class MockSocket extends EventTarget {
   }
 }
 
+it.each([1, 2])('retains a learned %s-second cadence after a delayed report on page return', (period) => {
+  vi.stubGlobal('WebSocket', MockSocket)
+  vi.useFakeTimers()
+  let now = 1_000
+  const store = new ConsoleStore({ websocket: 'ws://ship:8766', historyS: 0, qcSuffix: '_QC' }, { now: () => now })
+  const field = 'ds_chain:science:sensor'
+  const page = new Map([[field, {}]])
+  store.select(page)
+  store.start()
+  const socket = MockSocket.sockets[0]
+  try {
+    socket.open()
+    socket.receive({ type: 'fields', status: 200, data: [field, field + '_QC', 'Wind', 'Wind_QC'] })
+    socket.receive({ type: 'describe', status: 200, data: {} })
+    socket.receive({ type: 'subscribe', status: 200 })
+    socket.receive({ type: 'data', status: 200, data: {
+      [field]: Array.from({ length: 21 }, (_, i) => [1_000 - (20 - i) * period, 'OK']),
+    } })
+    expect(store.get(field)).toMatchObject({ periodS: period, freshness: 'LIVE' })
+    store.select(new Map([['Wind', {}]]))
+    socket.receive({ type: 'data', status: 200, data: {} })
+    socket.receive({ type: 'subscribe', status: 200 })
+    expect(store.get(field).sourceTime).toBeUndefined()
+    now = 1_000 + 30 * period - 1
+    store.select(page)
+    socket.receive({ type: 'data', status: 200, data: { Wind: [[now, 5]] } })
+    socket.receive({ type: 'subscribe', status: 200 })
+    socket.receive({ type: 'data', status: 200, data: { [field]: [[1_000, 'OK']] } })
+    now = 1_000 + 30 * period
+    socket.receive({ type: 'data', status: 200, data: { [field]: [[now, 'OK']] } })
+    now += 10 * period
+    expect(store.get(field)).toMatchObject({ periodS: period, freshness: 'STALE', ageS: 10 * period })
+  } finally {
+    store.stop()
+  }
+})
+
 afterEach(() => {
   MockSocket.sockets = []
   vi.unstubAllGlobals()
