@@ -34,6 +34,7 @@ export interface FieldEvidence {
 export interface FieldSamples {
   recent: readonly Reading[]
   cadence?: readonly (Reading & { epoch: number })[]
+  cadenceIntervals?: readonly number[]
   cadenceResumePending?: boolean
   evidence: FieldEvidence
   lastGood?: Reading
@@ -151,8 +152,9 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
   // either to old observations or to the subsequent live response.
   const cadenceEpoch = cadenceResumePending && retained.length ? -epoch : epoch
   const hasUnseenReading = current.some((reading) => !observedEpochs.has(reading.timestamp))
-  const cadence = current.length ? mergeReadings(previousCadence,
-    current.map((reading) => ({ ...reading, epoch: observedEpochs.get(reading.timestamp) ?? cadenceEpoch })))
+  const cadence = current.length ? mergeReadings(previousCadence.filter(({ epoch }) => epoch >= 0),
+    current.map((reading) => ({ ...reading, epoch: observedEpochs.get(reading.timestamp) ?? cadenceEpoch }))
+      .filter(({ epoch }) => epoch >= 0))
     .slice(-intervalCount - 1) : previousCadence
   const latest = recent.at(-1)
   const qualityTimestamp = latest?.timestamp ?? points.at(-1)?.timestamp
@@ -232,16 +234,21 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
     }
   }
 
-  // Time outside an observed subscription is not a measured producer interval.
-  const intervals = cadence.slice(1).flatMap(({ timestamp, epoch }, index) =>
-    epoch >= 0 && epoch === cadence[index].epoch ? [timestamp - cadence[index].timestamp] : [])
-    .sort((a, b) => a - b)
+  // Retain measured intervals independently of cached/replayed observations.
+  // A return batch must neither teach a gap nor evict valid cadence evidence.
+  const retainedIntervals = previous?.cadenceIntervals ?? previousCadence.slice(1).flatMap(({ timestamp, epoch }, index) =>
+    epoch >= 0 && epoch === previousCadence[index].epoch ? [timestamp - previousCadence[index].timestamp] : [])
+  const newIntervals = cadence.slice(1).flatMap(({ timestamp, epoch }, index) =>
+    !observedEpochs.has(timestamp) && epoch >= 0 && epoch === cadence[index].epoch
+      ? [timestamp - cadence[index].timestamp] : [])
+  const cadenceIntervals = [...retainedIntervals, ...newIntervals].slice(-intervalCount)
+  const intervals = [...cadenceIntervals].sort((a, b) => a - b)
   const middle = Math.floor(intervals.length / 2)
   const learnedPeriod = !intervals.length ? previous?.learnedPeriod
     : intervals.length % 2 ? intervals[middle] : (intervals[middle - 1] + intervals[middle]) / 2
   const oldest = points[0]?.timestamp ?? Infinity
   return {
-    recent, cadence, cadenceResumePending: cadenceResumePending && !hasUnseenReading,
+    recent, cadence, cadenceIntervals, cadenceResumePending: cadenceResumePending && !hasUnseenReading,
     lastGood, lastAccepted, quality, learnedPeriod,
     evidence: {
       points, gaps, epoch,

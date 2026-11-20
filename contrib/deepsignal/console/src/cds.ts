@@ -261,8 +261,9 @@ export class CdsClient {
       // second QC layer unless that field actually exists in the catalog.
       const member = field.slice(field.lastIndexOf(':') + 1)
       const pairedFlag = this.qcSuffix.length > 0 && member.includes(this.qcSuffix) &&
-        this.snapshot.available.some((base) => field === base + this.qcSuffix ||
-          field.startsWith(base + this.qcSuffix + '_'))
+        this.snapshot.available.some((base) =>
+          base.slice(0, base.lastIndexOf(':') + 1) === field.slice(0, field.lastIndexOf(':') + 1) &&
+          (field === base + this.qcSuffix || field.startsWith(base + this.qcSuffix + '_')))
       if (this.catalog && pairedFlag && !this.snapshot.available.includes(flag)) continue
       set(flag, seconds)
       for (const name of this.snapshot.available) {
