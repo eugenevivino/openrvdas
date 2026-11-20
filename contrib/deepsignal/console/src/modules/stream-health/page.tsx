@@ -35,13 +35,14 @@ function presentReport(report: FieldState, label: (value: unknown) => string | u
   const qualityAccepted = report.quality === 'PASS' || report.quality === 'NOT_EVALUATED'
   const value = label(report.value)
   const noData = report.freshness === 'NO_DATA'
-  if (noData && report.sourceTime === undefined && report.lastGood === undefined) {
+  if (noData && report.sourceTime === undefined && report.lastGood === undefined && report.lastReported === undefined) {
     return { value: unknownLabel, detail: 'Missing' }
   }
   if (report.freshness === 'STALE' || noData) {
     const detail = [noData ? 'No data' : 'Stale']
     if (!qualityAccepted) detail.push(report.quality)
-    if (value !== undefined) detail.push(`Last reported: ${value}`)
+    const historical = report.lastReported ? label(report.lastReported.value) : value
+    if (historical !== undefined) detail.push(`Last reported: ${historical}`)
     if (!qualityAccepted || value === undefined) {
       const lastUsable = label(report.lastGood?.value)
       if (lastUsable !== undefined) detail.push(`Last usable: ${lastUsable}`)

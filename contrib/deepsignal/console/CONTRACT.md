@@ -21,9 +21,15 @@ and keeps one `FieldState` per field. Modules read through `ctx.store` and never
 open their own websocket.
 
 - `value`, `sourceTime` (record timestamp), `receiveTime` (console clock).
+- Lead-approved additive pilot repair: optional `lastReported` preserves the latest
+  observed producer value and timestamp, including rejected reports. It is history,
+  never evidence of a new measurement or a healthy current value. QC-only responses
+  may leave `sourceTime` absent while this history remains available.
 - Freshness, from expected period T (page `period`, else median of the last 20
   intervals): LIVE age <= 2T; AGING 2T to 5T; STALE > 5T (value kept); NO_DATA
   past the hard timeout (60T, at least 300 s): value replaced by "—", `lastGood` kept.
+  Learned intervals do not bridge subscription gaps; a gap is not a measured
+  change in producer cadence.
 - Quality from QARTOD fields published by the QARTOD module: `<field><qc_suffix>`
   (default suffix `_QC`): 1 PASS, 2 NOT_EVALUATED, 3 SUSPECT, 4 FAIL, 9 MISSING;
   absent means NOT_EVALUATED. Per-test flags `<field>_QC_<test>`, text `<field>_QC_reason`.

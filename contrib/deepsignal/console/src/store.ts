@@ -121,12 +121,14 @@ export class ConsoleStore implements FieldStore {
     const { value, timestamp, receivedAt, expectedPeriod, freshness, quality, age, lastGood } =
       fieldData(samples, period, this.clock.now())
     const { qualityTests, qualityReason } = this.qualityDetails(data, field, timestamp)
+    const reported = samples?.evidence.points.at(-1)
     const logger = this.describe(field)?.logger
     return {
       field, value: timestamp === undefined ? undefined : value,
       sourceTime: timestamp, receiveTime: receivedAt, periodS: expectedPeriod, ageS: age,
       freshness: freshness === 'NO DATA' ? 'NO_DATA' : freshness,
       lastGood: lastGood && { value: lastGood.value, time: lastGood.timestamp },
+      lastReported: reported && { value: reported.value, time: reported.timestamp },
       quality: quality === 'NOT EVALUATED' ? 'NOT_EVALUATED' : quality, qualityTests, qualityReason,
       ...(this.health.get(logger ?? '') ?? unknownHealth),
     }

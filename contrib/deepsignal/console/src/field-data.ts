@@ -33,7 +33,7 @@ export interface FieldEvidence {
 
 export interface FieldSamples {
   recent: readonly Reading[]
-  cadence?: readonly Reading[]
+  cadence?: readonly (Reading & { epoch: number })[]
   evidence: FieldEvidence
   lastGood?: Reading
   quality: Quality
@@ -140,8 +140,11 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
   const earliest = latestOnly && !previousRecent.length ? lastObserved ?? -Infinity : -Infinity
   const current = earliest === -Infinity ? readings : readings.filter(({ timestamp }) => timestamp >= earliest)
   const recent = current.length ? mergeReadings(previousRecent, current).slice(-intervalCount - 1) : previousRecent
-  const previousCadence = previous?.cadence ?? previous?.recent ?? []
-  const cadence = current.length ? mergeReadings(previousCadence, current).slice(-intervalCount - 1) : previousCadence
+  const previousCadence = previous?.cadence ?? (previous?.recent ?? []).map((reading) => ({
+    ...reading, epoch: evidence?.epoch ?? 0,
+  }))
+  const cadence = current.length ? mergeReadings(previousCadence,
+    current.map((reading) => ({ ...reading, epoch }))).slice(-intervalCount - 1) : previousCadence
   const latest = recent.at(-1)
   let flagIndex = 0
   let gapIndex = 0
@@ -215,10 +218,12 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
     if (!possibleUnplacedRejection || possibleUnplacedRejection.first >= sample.timestamp) lastGood = sample
   }
 
-  const intervals = cadence.slice(1).map(({ timestamp }, index) => timestamp - cadence[index].timestamp)
+  // Time outside an observed subscription is not a measured producer interval.
+  const intervals = cadence.slice(1).flatMap(({ timestamp, epoch }, index) =>
+    epoch === cadence[index].epoch ? [timestamp - cadence[index].timestamp] : [])
     .sort((a, b) => a - b)
   const middle = Math.floor(intervals.length / 2)
-  const learnedPeriod = !intervals.length ? undefined
+  const learnedPeriod = !intervals.length ? previous?.learnedPeriod
     : intervals.length % 2 ? intervals[middle] : (intervals[middle - 1] + intervals[middle]) / 2
   const oldest = points[0]?.timestamp ?? Infinity
   return {
