@@ -1,4 +1,4 @@
-import{d as e,f as t,r as n,s as r}from"./index-Mgd318FY.js";import{t as i}from"./loggerStatus-CpbsKu9X.js";var a=t(),o=`- match:
+import{d as e,f as t,r as n,s as r}from"./index-Cx24uk8P.js";import{t as i}from"./loggerStatus-CSpX90TL.js";var a=t(),o=`- match:
     stderr: "no data.*(?:serial|/dev/tty)|(?:serial|/dev/tty).*no data"
   hint: "Check that the serial port cable is connected and the instrument is sending data."
 - match:
