@@ -207,7 +207,7 @@ tiles:
 const noon = Date.UTC(2026, 10, 20, 12) / 1000
 const stockCachePoints = 8640
 
-async function openSoundings(history: number) {
+async function openSoundings(history: number, period: number | null = 1) {
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(noon * 1000)
   const { default: number } = await import('./modules/number')
@@ -218,7 +218,7 @@ async function openSoundings(history: number) {
     presets: [
       { id: 'depth', yaml: `title: Soundings
 tiles:
-  - {type: number, field: Depth, label: Depth, unit: m, decimals: 0, period: 1}
+  - {type: number, field: Depth, label: Depth, unit: m, decimals: 0${period === null ? '' : `, period: ${period}`}}
 ` },
       { id: 'wind', yaml: `title: Weather
 tiles:
@@ -267,14 +267,17 @@ tiles:
     socket.receive('data', data)
     if (socket.sent.at(-1)?.type === 'fields') catalog()
   })
-  const navigate = async (page: string, field: string) => {
+  const show = async (page: string, field: string) => {
     const key = screen.getByRole('link', { name: page }).getAttribute('aria-keyshortcuts')!
     fireEvent.keyDown(window, { key })
     await screen.findByRole('heading', { name: field })
+  }
+  const navigate = async (page: string, field: string) => {
+    await show(page, field)
     send({}) // Complete the outstanding ready request for the previous page.
     act(() => subscribe(field))
   }
-  return { store: context!.store, onValue, send, navigate }
+  return { store: context!.store, onValue, send, navigate, show }
 }
 
 it.each([
@@ -358,3 +361,94 @@ it.each([
     timestamp: noon + staleOffset, value: 42,
   }))
 })
+
+it.each([
+  { unseen: 10, fail: 10, newest: 20 },
+  { unseen: 25, fail: 26.5, newest: 40 },
+])('T-CON-14 preserves last good across a zero-history gap with a FAIL at +$fail s', async ({ unseen, fail, newest }) => {
+  const { store, onValue, send, navigate } = await openSoundings(0)
+  send({ Depth: [[noon, 18]], Depth_QC: [[noon, 1]] }, 0)
+  await navigate('Weather', 'Wind')
+  send({ Wind: [[noon + unseen, 5]] }, newest)
+  await navigate('Soundings', 'Depth')
+
+  // Stock CDS returns only the newest entry from each field's separate cache.
+  // Depth 19 was never delivered to this client.
+  send({ Depth: [[noon + newest, 20]], Depth_QC: [[noon + fail, 4]] })
+  expect(store.get('Depth')).toMatchObject({ sourceTime: noon + newest, quality: 'NOT_EVALUATED' })
+  send({ Depth_QC: [[noon + newest, 4]] }, 360)
+  expect(screen.getByRole('group', { name: 'Freshness' })).toHaveTextContent('NO DATA')
+  expect(screen.getByText(/^Last: 18 m at/)).toHaveTextContent('Last: 18 m at 12:00:00Z')
+  expect(store.history('Depth', 0)).toEqual([])
+
+  onValue.mockClear()
+  send({ Depth: [[noon + newest, 20]], Depth_QC: [[noon + newest, 4]] })
+  expect(onValue).not.toHaveBeenCalled()
+  send({ Depth_QC: [[noon, 4]] })
+  expect(screen.queryByText(/^Last:/)).toBeNull()
+  send({ Depth: [[noon + 361, 42]], Depth_QC: [[noon + 361, 1]] }, 361)
+  expect(onValue).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ timestamp: noon + 361, value: 42 }))
+  expect(screen.getByRole('group', { name: 'Data quality' })).toHaveTextContent('PASS')
+})
+
+it.each([
+  { earlyFlag: 1, lateDepth: 1.5, laterFlag: 1.75, end: 5040 },
+  { earlyFlag: 1.25, lateDepth: 1.625, laterFlag: 1.875, end: 5100 },
+])('T-CON-14 retains a FAIL at +$earlyFlag s after QC rollover and a delayed depth splits the interval', async ({
+  earlyFlag, lateDepth, laterFlag, end,
+}) => {
+  const { store, onValue, send, navigate } = await openSoundings(10_800)
+  send({ Depth: [[noon, 18], [noon + 1, 19], [noon + 2, null]],
+    Depth_QC: [[noon, 1], [noon + earlyFlag, 4], [noon + laterFlag, 4]] }, 2)
+
+  // The delayed depth arrived behind the CDS watermark at +2 s. Meanwhile the
+  // faster QC stream rolls over even though CDS still has all the depths.
+  const missingDepths: number[][] = []
+  const missingFlags: number[][] = []
+  for (let first = 3; first <= end; first += 1000) {
+    const last = Math.min(end, first + 999)
+    const depths = []
+    const flags = []
+    for (let offset = first; offset <= last; offset++) {
+      depths.push([noon + offset, null])
+      flags.push([noon + offset, 9], [noon + offset + 0.5, 9])
+    }
+    send({ Depth: depths, Depth_QC: flags }, last + 0.5)
+    missingDepths.push(...depths)
+    missingFlags.push(...flags)
+  }
+  send({}, end + 301)
+  expect(screen.getByText(/^Last: 18 m at/)).toBeVisible()
+
+  await navigate('Weather', 'Wind')
+  send({ Wind: [[noon + end + 301, 5]] })
+  await navigate('Soundings', 'Depth')
+  onValue.mockClear()
+  send({ Depth: [[noon, 18], [noon + 1, 19], [noon + lateDepth, 20], [noon + 2, null], ...missingDepths],
+    Depth_QC: missingFlags.slice(-stockCachePoints) })
+  expect(store.get('Depth').sourceTime).toBe(noon + end)
+  expect(screen.getByRole('group', { name: 'Freshness' })).toHaveTextContent('NO DATA')
+  expect(screen.getByText(/^Last: 18 m at/)).toHaveTextContent('Last: 18 m at 12:00:00Z')
+  expect(onValue).not.toHaveBeenCalled()
+})
+
+it.each([
+  { period: 30, age: 10 },
+  { period: 60, age: 25 },
+])('T-CON-2 / T-CON-14 keeps a healthy $period-second reading on a rapid return with a ready request pending',
+  async ({ period, age }) => {
+    const { store, onValue, send, show } = await openSoundings(600, null)
+    send({ Depth: [[noon, 17], [noon + period, 18]], Depth_QC: [[noon + period, 1]] }, period + age)
+    expect(store.get('Depth')).toMatchObject({ periodS: period, freshness: 'LIVE' })
+    onValue.mockClear()
+
+    await show('Weather', 'Wind')
+    await show('Soundings', 'Depth')
+    send({}) // CDS still has the Depth subscription, so it sends no duplicate data.
+
+    expect(screen.getByRole('group', { name: 'Freshness' })).toHaveTextContent('LIVE')
+    expect(screen.getByText('18')).toBeVisible()
+    expect(screen.getByRole('group', { name: 'Data quality' })).toHaveTextContent('PASS')
+    expect(store.get('Depth')).toMatchObject({ sourceTime: noon + period, ageS: age, periodS: period })
+    expect(onValue).not.toHaveBeenCalled()
+  })
