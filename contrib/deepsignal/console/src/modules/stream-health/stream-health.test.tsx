@@ -53,9 +53,12 @@ afterEach(() => {
   window.history.replaceState(null, '', '/')
 })
 
-it.each(['CTD_QC_1', 'lab_QC_secondary'])('retains QC rejection for valid stream name %s', async (stream) => {
+it.each([
+  { stream: 'CTD_QC_1', extra: [] }, { stream: 'lab_QC_secondary', extra: [] },
+  { stream: 'CTD_QC_1', extra: ['ds_chain:CTD'] }, { stream: 'lab_QC_secondary', extra: ['ds_chain:lab'] },
+])('retains QC rejection for valid stream name $stream with catalog $extra', async ({ stream, extra }) => {
   const field = `ds_chain:${stream}:sensor`
-  await openStreamHealth(1_000, { [field]: [[1_000, 'OK']], [field + '_QC']: [[1_000, 4]] })
+  await openStreamHealth(1_000, { [field]: [[1_000, 'OK']], [field + '_QC']: [[1_000, 4]] }, extra)
   const report = screen.getByTestId('stream-health-row').querySelector('[data-stage="sensor"]')!
   expect(report.querySelector('strong')).toHaveTextContent('UNKNOWN')
   expect(report.querySelector('small')).toHaveTextContent('FAIL')
@@ -174,7 +177,7 @@ class CatalogSocket extends EventTarget {
   }
 }
 
-async function openStreamHealth(now: number, firstBatch: Record<string, unknown>) {
+async function openStreamHealth(now: number, firstBatch: Record<string, unknown>, extraFields: string[] = []) {
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(now * 1_000)
   vi.stubGlobal('WebSocket', CatalogSocket)
@@ -191,7 +194,7 @@ async function openStreamHealth(now: number, firstBatch: Record<string, unknown>
   const socket = CatalogSocket.current
   act(() => {
     socket.dispatchEvent(new Event('open'))
-    socket.receive('fields', Object.keys(firstBatch))
+    socket.receive('fields', [...Object.keys(firstBatch), ...extraFields])
     socket.receive('describe', {})
   })
   expect(socket.sent.at(-1)).toMatchObject({ type: 'subscribe' })
@@ -318,4 +321,34 @@ it.each([
   batch({ [field]: [[now + 400, recovered]] })
   expect(target?.querySelector('strong')).toHaveTextContent(recovered)
   expect(target?.querySelector('small')).toHaveTextContent('Current')
+})
+
+
+it.each(['sensor', 'store'])('retains a rejected %s report after a QC-only subscription response', async (member) => {
+  const field = `ds_chain:science:${member}`
+  const qc = field + '_QC'
+  const batch = await openStreamHealth(1_000, { [field]: [[1_000, 'FAILED']], [qc]: [[1_000, 4]] })
+  const socket = CatalogSocket.current
+  fireEvent.click(screen.getByRole('link', { name: /^Health$/ }))
+  await screen.findByText(/Waiting for the logger manager/)
+  batch({})
+  expect(socket.sent.at(-1)?.type).toBe('subscribe')
+  act(() => socket.receive('subscribe'))
+  vi.setSystemTime(1_400_000)
+  fireEvent.click(screen.getByRole('link', { name: 'Stream Health' }))
+  await screen.findByTestId('stream-health-row')
+  batch({})
+  expect(socket.sent.at(-1)?.type).toBe('subscribe')
+  act(() => socket.receive('subscribe'))
+  expect(socket.sent.at(-1)?.type).toBe('fields')
+  act(() => {
+    socket.receive('fields', [field, qc])
+    socket.receive('describe', {})
+  })
+  expect(socket.sent.at(-1)?.type).toBe('ready')
+  batch({ [qc]: [[1_000, 4]] })
+  const report = screen.getByTestId('stream-health-row').querySelector(`[data-stage="${member}"]`)!
+  expect(report.querySelector('strong')).toHaveTextContent('UNKNOWN')
+  expect(report.querySelector('small')).toHaveTextContent('No data · FAIL · Last reported: FAILED')
+  expect(report).not.toHaveTextContent('Current')
 })

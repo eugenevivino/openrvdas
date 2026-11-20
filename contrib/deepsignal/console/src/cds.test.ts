@@ -34,7 +34,10 @@ class MockSocket extends EventTarget {
   }
 }
 
-it.each([1, 2])('retains a learned %s-second cadence after a delayed report on page return', (period) => {
+it.each([{ period: 1, samples: 21, replay: true }, { period: 2, samples: 21, replay: true },
+  { period: 1, samples: 2, replay: false }, { period: 2, samples: 2, replay: false }])(
+  'retains a learned $period-second cadence after a delayed report on page return with $samples samples',
+  ({ period, samples, replay }) => {
   vi.stubGlobal('WebSocket', MockSocket)
   vi.useFakeTimers()
   let now = 1_000
@@ -50,7 +53,7 @@ it.each([1, 2])('retains a learned %s-second cadence after a delayed report on p
     socket.receive({ type: 'describe', status: 200, data: {} })
     socket.receive({ type: 'subscribe', status: 200 })
     socket.receive({ type: 'data', status: 200, data: {
-      [field]: Array.from({ length: 21 }, (_, i) => [1_000 - (20 - i) * period, 'OK']),
+      [field]: Array.from({ length: samples }, (_, i) => [1_000 - (samples - 1 - i) * period, 'OK']),
     } })
     expect(store.get(field)).toMatchObject({ periodS: period, freshness: 'LIVE' })
     store.select(new Map([['Wind', {}]]))
@@ -65,7 +68,7 @@ it.each([1, 2])('retains a learned %s-second cadence after a delayed report on p
     socket.receive({ type: 'fields', status: 200, data: [field, field + '_QC', 'Wind', 'Wind_QC'] })
     socket.receive({ type: 'describe', status: 200, data: {} })
     expect(socket.sent.at(-1)).toMatchObject({ type: 'ready' })
-    socket.receive({ type: 'data', status: 200, data: { [field]: [[1_000, 'OK']] } })
+    if (replay) socket.receive({ type: 'data', status: 200, data: { [field]: [[1_000, 'OK']] } })
     now = 1_000 + 30 * period
     socket.receive({ type: 'data', status: 200, data: { [field]: [[now, 'OK']] } })
     now += 10 * period
