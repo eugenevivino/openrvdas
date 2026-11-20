@@ -375,7 +375,7 @@ export class CdsClient {
           const resumed = this.awaitingCoverage.delete(field)
           const next = mergeFieldSamples(previous, incoming, flags, { evidence, latestOnly, resumed })
           fields.set(field, next)
-          if (requested.has(flag)) this.evidence.set(field, next.evidence)
+          this.evidence.set(field, next.evidence)
           points = next.evidence.points
         }
         const latest = evidence?.points.at(-1) ?? previous?.recent.at(-1)

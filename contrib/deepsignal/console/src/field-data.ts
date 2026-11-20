@@ -34,6 +34,7 @@ export interface FieldEvidence {
 export interface FieldSamples {
   recent: readonly Reading[]
   cadence?: readonly (Reading & { epoch: number })[]
+  cadenceCacheThrough?: number
   cadenceResumePending?: boolean
   evidence: FieldEvidence
   lastGood?: Reading
@@ -147,11 +148,15 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
   }))
   const observedEpochs = new Map(previousCadence.map((reading) => [reading.timestamp, reading.epoch]))
   const cadenceResumePending = resumed || previous?.cadenceResumePending === true
-  // The first unseen return batch may come from the cache. Do not bridge it
-  // either to old observations or to the subsequent live response.
-  const cadenceEpoch = cadenceResumePending && retained.length ? -epoch : epoch
+  // Cache provenance survives duplicate replies caused by an out-of-order CDS
+  // cursor. Unknown timestamps at/before the first return batch's high-water
+  // mark never become newly observed cadence samples merely by being replayed.
+  const cadenceCacheThrough = cadenceResumePending && retained.length && readings.length
+    ? readings.reduce((latest, reading) => Math.max(latest, reading.timestamp), previous?.cadenceCacheThrough ?? -Infinity)
+    : previous?.cadenceCacheThrough
   const observations = current.length ? mergeReadings(previousCadence.filter(({ epoch }) => epoch >= 0),
-    current.map((reading) => ({ ...reading, epoch: observedEpochs.get(reading.timestamp) ?? cadenceEpoch }))
+    current.map((reading) => ({ ...reading, epoch: observedEpochs.get(reading.timestamp) ??
+      (cadenceCacheThrough !== undefined && reading.timestamp <= cadenceCacheThrough ? -epoch : epoch) }))
       .filter(({ epoch }) => epoch >= 0))
     : previousCadence
   const latest = recent.at(-1)
@@ -247,7 +252,7 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
     : intervals.length % 2 ? intervals[middle] : (intervals[middle - 1] + intervals[middle]) / 2
   const oldest = points[0]?.timestamp ?? Infinity
   return {
-    recent, cadence, cadenceResumePending: cadenceResumePending && !readings.length,
+    recent, cadence, cadenceCacheThrough, cadenceResumePending: cadenceResumePending && !readings.length,
     lastGood, lastAccepted, quality, learnedPeriod,
     evidence: {
       points, gaps, epoch,
