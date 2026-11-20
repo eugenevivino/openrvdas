@@ -53,6 +53,15 @@ afterEach(() => {
   window.history.replaceState(null, '', '/')
 })
 
+it.each(['CTD_QC_1', 'lab_QC_secondary'])('retains QC rejection for valid stream name %s', async (stream) => {
+  const field = `ds_chain:${stream}:sensor`
+  await openStreamHealth(1_000, { [field]: [[1_000, 'OK']], [field + '_QC']: [[1_000, 4]] })
+  const report = screen.getByTestId('stream-health-row').querySelector('[data-stage="sensor"]')!
+  expect(report.querySelector('strong')).toHaveTextContent('UNKNOWN')
+  expect(report.querySelector('small')).toHaveTextContent('FAIL')
+  expect(report).not.toHaveTextContent('Current')
+})
+
 describe('stream health registered view', () => {
   const route = streamHealthModule.routes![0]
   const Page = route.Component
