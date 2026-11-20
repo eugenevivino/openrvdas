@@ -120,10 +120,11 @@ export class CdsClient {
     const requested = this.requests()
     const selected = this.catalog ? requested : wanted
     const visible = new Map(this.snapshot.fields)
-    // A rapid page return can reuse state while its subscription is still live.
+    // Navigation and reconnects retain observed samples, including cadence and
+    // rejected history. Their original timestamps still determine freshness.
     for (const [field, samples] of visible) {
       if (selected.has(field)) continue
-      if (this.subscribed?.has(field)) this.parkedFields.set(field, samples)
+      this.parkedFields.set(field, samples)
       visible.delete(field)
     }
     for (const [field, samples] of this.parkedFields) {
@@ -160,6 +161,7 @@ export class CdsClient {
   stop() {
     this.wanted.clear()
     this.evidence.clear()
+    this.parkedFields.clear()
     this.disconnect()
     this.update({
       connection: 'idle', fields: new Map(), history: new Map(), available: [], descriptions: new Map(),
@@ -203,7 +205,6 @@ export class CdsClient {
     const socket = this.socket
     this.socket = undefined
     this.subscribed = undefined
-    this.parkedFields.clear()
     this.awaitingCoverage.clear()
     this.phase = 'idle'
     clearTimeout(this.retry)
@@ -267,7 +268,6 @@ export class CdsClient {
   private sendSubscription(requested: Map<string, number>, latest?: ReadonlySet<string>) {
     this.phase = 'subscribe'
     this.subscribed = requested
-    this.parkedFields.clear()
     this.awaitingCoverage = new Set(requested.keys())
     this.latestOnly = latest
     this.checkBackfill = latest === undefined
