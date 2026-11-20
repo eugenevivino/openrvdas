@@ -403,11 +403,11 @@ it.each([
 
   // The delayed depth arrived behind the CDS watermark at +2 s. Meanwhile the
   // faster QC stream rolls over even though CDS still has all the depths.
-  const missingDepths: number[][] = []
+  const missingDepths: [timestamp: number, value: null][] = []
   const missingFlags: number[][] = []
   for (let first = 3; first <= end; first += 1000) {
     const last = Math.min(end, first + 999)
-    const depths = []
+    const depths: typeof missingDepths = []
     const flags = []
     for (let offset = first; offset <= last; offset++) {
       depths.push([noon + offset, null])
