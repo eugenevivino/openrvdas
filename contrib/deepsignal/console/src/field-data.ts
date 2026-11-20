@@ -27,6 +27,7 @@ export interface FieldEvidence {
   flags: readonly Flag[]
   gaps: readonly ObservationGap[]
   discardedRejections: readonly FlagRange[]
+  unplacedRejections: readonly FlagRange[]
   epoch: number
 }
 
@@ -89,7 +90,7 @@ function observationGaps(previous: readonly ObservationGap[], reopened: Observat
   return gaps
 }
 
-function retainDiscardedRejections(previous: readonly FlagRange[], incoming: readonly FlagRange[], oldest: number) {
+function retainRejectionRanges(previous: readonly FlagRange[], incoming: readonly FlagRange[], oldest: number) {
   if (!incoming.length) {
     return previous.length && previous[0].last < oldest ? previous.filter(({ last }) => last >= oldest) : previous
   }
@@ -121,13 +122,15 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
   const gaps = observationGaps(priorGaps, reopened, points, readings)
   const qualitySamples = flags.length
     ? mergeReadings(evidence?.flags ?? [], flags.map((flag) => ({ ...flag, epoch }))) : evidence?.flags ?? []
-  // Retain the raw tail and the decisive flags of older intervals. Reserve extra
-  // space for QC on non-null readings so later backfill can split their intervals.
+  // Retain the raw tail and the decisive flags of older intervals. Share extra
+  // space between QC on non-null readings and flags still awaiting a reading.
   const rawTail = qualitySamples.length > maxHistoryPoints
     ? new Set(qualitySamples.slice(-maxHistoryPoints)) : undefined
   let archiveRemaining = maxHistoryPoints
   const discarded = evidence?.discardedRejections ?? []
+  const unplaced = evidence?.unplacedRejections ?? []
   const newlyDiscarded: FlagRange[] = []
+  const newlyUnplaced: FlagRange[] = []
 
   // Only measurements delivered to the active subscription can set freshness.
   const previousRecent = previous?.recent ?? []
@@ -138,6 +141,7 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
   let flagIndex = 0
   let gapIndex = 0
   let discardedIndex = 0
+  let unplacedIndex = 0
   let lastGood: Reading | undefined
   let quality = qualityFromFlag(latest ? undefined : qualitySamples.at(-1)?.value)
 
@@ -155,7 +159,21 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
       const gap = gaps[gapIndex]
       // A new flag inside an observation gap has no defensible preceding
       // reading. Exact timestamps and QC seen before the gap retain provenance.
-      if (flag.timestamp !== sample.timestamp && gap && gap.after < flag.timestamp && flag.epoch >= gap.epoch) continue
+      if (flag.timestamp !== sample.timestamp && gap && gap.after < flag.timestamp && flag.epoch >= gap.epoch) {
+        if (rawTail && !rawTail.has(flag)) {
+          if (archiveRemaining > 0) {
+            rawTail.add(flag)
+            archiveRemaining--
+          } else if (!isGood(qualityFromFlag(flag.value))) {
+            // At the archive limit, preserve uncertainty for newly recovered
+            // readings after the old observation and through the rejected time.
+            const range = newlyUnplaced.at(-1)
+            if (range?.first === gap.after) range.last = flag.timestamp
+            else newlyUnplaced.push({ first: gap.after, last: flag.timestamp })
+          }
+        }
+        continue
+      }
       if (rawTail) {
         if (!firstRejected && !isGood(qualityFromFlag(flag.value))) {
           firstRejected = flag
@@ -180,10 +198,16 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
     if (sample.value == null || !isGood(sampleQuality)) continue
     // A prior rejection must not become an eligible Last value just because
     // its precise QC record exceeded the bounded archive before backfill.
+    const flagTime = matched?.timestamp ?? -Infinity
     while (discardedIndex < discarded.length && (discarded[discardedIndex].last < sample.timestamp ||
-      discarded[discardedIndex].last <= (matched?.timestamp ?? -Infinity))) discardedIndex++
+      discarded[discardedIndex].last <= flagTime)) discardedIndex++
     const possibleRejection = discarded[discardedIndex]
-    if (!possibleRejection || possibleRejection.first >= nextTimestamp) lastGood = sample
+    if (possibleRejection && possibleRejection.first < nextTimestamp) continue
+
+    while (unplacedIndex < unplaced.length && (unplaced[unplacedIndex].last < sample.timestamp ||
+      unplaced[unplacedIndex].last <= flagTime)) unplacedIndex++
+    const possibleUnplacedRejection = unplaced[unplacedIndex]
+    if (!possibleUnplacedRejection || possibleUnplacedRejection.first >= sample.timestamp) lastGood = sample
   }
 
   const intervals = recent.slice(1).map(({ timestamp }, index) => timestamp - recent[index].timestamp)
@@ -191,12 +215,14 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
   const middle = Math.floor(intervals.length / 2)
   const learnedPeriod = !intervals.length ? undefined
     : intervals.length % 2 ? intervals[middle] : (intervals[middle - 1] + intervals[middle]) / 2
+  const oldest = points[0]?.timestamp ?? Infinity
   return {
     recent, lastGood, quality, learnedPeriod,
     evidence: {
       points, gaps, epoch,
       flags: rawTail ? qualitySamples.filter((flag) => rawTail.has(flag)) : qualitySamples,
-      discardedRejections: retainDiscardedRejections(discarded, newlyDiscarded, points[0]?.timestamp ?? Infinity),
+      discardedRejections: retainRejectionRanges(discarded, newlyDiscarded, oldest),
+      unplacedRejections: retainRejectionRanges(unplaced, newlyUnplaced, oldest),
     },
   }
 }
