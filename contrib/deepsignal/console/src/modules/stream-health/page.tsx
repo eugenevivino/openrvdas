@@ -32,11 +32,14 @@ function rootLabel(value: unknown) {
 }
 
 function presentReport(report: FieldState, label: (value: unknown) => string | undefined, unknownLabel: string) {
-  if (report.freshness === 'NO_DATA') return { value: unknownLabel, detail: 'Missing' }
   const qualityAccepted = report.quality === 'PASS' || report.quality === 'NOT_EVALUATED'
   const value = label(report.value)
-  if (report.freshness === 'STALE') {
-    const detail = ['Stale']
+  const noData = report.freshness === 'NO_DATA'
+  if (noData && report.sourceTime === undefined && report.lastGood === undefined) {
+    return { value: unknownLabel, detail: 'Missing' }
+  }
+  if (report.freshness === 'STALE' || noData) {
+    const detail = [noData ? 'No data' : 'Stale']
     if (!qualityAccepted) detail.push(report.quality)
     if (value !== undefined) detail.push(`Last reported: ${value}`)
     if (!qualityAccepted || value === undefined) {
