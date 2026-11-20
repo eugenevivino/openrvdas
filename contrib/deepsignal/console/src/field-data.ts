@@ -34,6 +34,7 @@ export interface FieldEvidence {
 export interface FieldSamples {
   recent: readonly Reading[]
   cadence?: readonly (Reading & { epoch: number })[]
+  cadenceResumePending?: boolean
   evidence: FieldEvidence
   lastGood?: Reading
   quality: Quality
@@ -144,16 +145,22 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
     ...reading, epoch: evidence?.epoch ?? 0,
   }))
   const observedEpochs = new Map(previousCadence.map((reading) => [reading.timestamp, reading.epoch]))
+  const cadenceResumePending = resumed || previous?.cadenceResumePending === true
+  // The first unseen return batch may come from the cache. Do not bridge it
+  // either to old observations or to the subsequent live response.
+  const cadenceEpoch = cadenceResumePending && retained.length ? -epoch : epoch
+  const hasUnseenReading = current.some((reading) => !observedEpochs.has(reading.timestamp))
   const cadence = current.length ? mergeReadings(previousCadence,
-    current.map((reading) => ({ ...reading, epoch: observedEpochs.get(reading.timestamp) ?? epoch })))
+    current.map((reading) => ({ ...reading, epoch: observedEpochs.get(reading.timestamp) ?? cadenceEpoch })))
     .slice(-intervalCount - 1) : previousCadence
   const latest = recent.at(-1)
+  const qualityTimestamp = latest?.timestamp ?? points.at(-1)?.timestamp
   let flagIndex = 0
   let gapIndex = 0
   let discardedIndex = 0
   let unplacedIndex = 0
   let lastGood: Reading | undefined
-  let quality = qualityFromFlag(latest ? undefined : qualitySamples.at(-1)?.value)
+  let quality = qualityFromFlag(qualityTimestamp === undefined ? qualitySamples.at(-1)?.value : undefined)
 
   for (let index = 0; index < points.length; index++) {
     const sample = points[index]
@@ -204,7 +211,7 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
     if (lostFirst !== undefined) newlyDiscarded.push({ first: lostFirst, last: lostLast! })
 
     const sampleQuality = qualityFromFlag(matched?.value)
-    if (sample.timestamp === latest?.timestamp) quality = sampleQuality
+    if (sample.timestamp === qualityTimestamp) quality = sampleQuality
     if (sample.value == null || !isGood(sampleQuality)) continue
     // A prior rejection must not become an eligible Last value just because
     // its precise QC record exceeded the bounded archive before backfill.
@@ -229,7 +236,8 @@ export function mergeFieldSamples(previous: FieldSamples | undefined, readings: 
     : intervals.length % 2 ? intervals[middle] : (intervals[middle - 1] + intervals[middle]) / 2
   const oldest = points[0]?.timestamp ?? Infinity
   return {
-    recent, cadence, lastGood, quality, learnedPeriod,
+    recent, cadence, cadenceResumePending: cadenceResumePending && !hasUnseenReading,
+    lastGood, quality, learnedPeriod,
     evidence: {
       points, gaps, epoch,
       flags: rawTail ? qualitySamples.filter((flag) => rawTail.has(flag)) : qualitySamples,

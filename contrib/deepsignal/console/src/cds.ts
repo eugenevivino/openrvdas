@@ -253,10 +253,9 @@ export class CdsClient {
         continue
       }
       set(field, seconds)
-      if (this.catalog && (field.startsWith('status:') || field.startsWith('stderr:logger:') ||
-        field.endsWith(this.qcSuffix) ||
-        this.snapshot.available.some((base) => base.length > field.lastIndexOf(':') &&
-          field.startsWith(base + this.qcSuffix + '_')))) continue
+      // Explicitly requested measurements can contain or end in any configured
+      // suffix. Added QC requests are not recursively expanded by this loop.
+      if (this.catalog && (field.startsWith('status:') || field.startsWith('stderr:logger:'))) continue
       const flag = field + this.qcSuffix
       set(flag, seconds)
       for (const name of this.snapshot.available) {
@@ -357,6 +356,7 @@ export class CdsClient {
     for (const [field, seconds] of requested) {
       const incoming = readings.get(field)!
       const previous = fields.get(field)
+      const resuming = this.awaitingCoverage.has(field)
       const evidence = this.evidence.get(field) ?? previous?.evidence
       let points: readonly Reading[] | undefined
       if (wanted.has(field)) {
@@ -376,8 +376,12 @@ export class CdsClient {
           points = next.evidence.points
         }
         const latest = evidence?.points.at(-1) ?? previous?.recent.at(-1)
-        const fresh = latest ? incoming.filter((reading) =>
-          reading.timestamp >= latest.timestamp && !sameReading(latest, reading)) : incoming
+        const candidates = latest ? incoming.filter((reading) => reading.timestamp > latest.timestamp ||
+          (reading.timestamp === latest.timestamp && !(resuming && field.startsWith('stderr:logger:')))) : incoming
+        const firstChange = latest ? candidates.findIndex((reading) => !sameReading(latest, reading)) : 0
+        // Preserve order after the first change, including a final event that
+        // returns to the prior value at the same timestamp.
+        const fresh = firstChange < 0 ? [] : candidates.slice(firstChange)
         if (fresh.length) changed.set(field, fresh)
       }
       if (seconds > 0 && incoming.length) {
