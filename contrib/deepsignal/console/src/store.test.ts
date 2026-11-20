@@ -80,6 +80,7 @@ it('maps absent and custom quality flags, with per-test evidence independent of 
     Depth_flag_reason: { seconds: 60, back_records: 1 },
     Temp_flag: { seconds: 60, back_records: 1 },
     'status:logger_status': { seconds: 60, back_records: 1 },
+    'status:logger_status_flag': { seconds: 60, back_records: 1 },
   })
   socket.receive('data', { Depth: [[108, 2]], Depth_flag: [[108, 1]], Temp: [[110, 5]], 'status:logger_status': [[110, {}]], Unasked: [[110, 8]] })
   now = 114
@@ -160,7 +161,7 @@ it('requests and applies quality flags for namespaced measurements', () => {
   socket.receive('fields', [field, flag, flag + '_range', flag + '_reason', status, stderr])
   socket.receive('describe', {})
   expect(socket.sent.at(-1)?.fields).toEqual(Object.fromEntries(
-    [field, flag, flag + '_range', flag + '_reason', status, stderr].map((name) => [name, { seconds: -1 }]),
+    [field, flag, flag + '_range', flag + '_reason', status, status + '_flag', stderr].map((name) => [name, { seconds: -1 }]),
   ))
   socket.receive('subscribe')
   socket.receive('data', { [field]: [[110, 40]], [flag]: [[110, 4]],
