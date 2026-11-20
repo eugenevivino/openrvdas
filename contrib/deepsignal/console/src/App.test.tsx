@@ -498,3 +498,28 @@ it.each([
   expect(screen.getByText(/^Last: 18 m at/)).toHaveTextContent('Last: 18 m at 12:00:00Z')
   expect(onValue).not.toHaveBeenCalled()
 })
+
+
+it.each([70, 90])('Self-test reads a %s-measurement QC catalog without recursive subscriptions', async (count) => {
+  const { default: selfTest } = await import('./modules/self-test')
+  discover.mockResolvedValue({ modules: [selfTest], problems: [] })
+  vi.stubGlobal('WebSocket', Socket)
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('console.yaml')
+    ? new Response('ship: Test\npages: [self-test]\n') : new Response(null, { status: 404 })))
+  const previousSocket = new Socket()
+  render(<App />)
+  await screen.findByText('Disconnected')
+  await waitFor(() => expect(Socket.current).not.toBe(previousSocket))
+  const socket = Socket.current
+  const catalog = Array.from({ length: count }, (_, n) => `Sensor${n}`).flatMap((field) => [field, field + '_QC'])
+  act(() => {
+    socket.dispatchEvent(new Event('open'))
+    socket.receive('fields', catalog)
+    socket.receive('describe', {})
+  })
+  act(() => { socket.receive('subscribe'); socket.receive('data', {}) })
+  const request = () => socket.sent.filter((message) => message.type === 'subscribe').at(-1)!
+  await waitFor(() => expect(request().fields).toHaveProperty('Sensor0'))
+  expect(Object.keys(request().fields!)).toEqual(expect.arrayContaining(catalog))
+  expect(Object.keys(request().fields!).length).toBeLessThanOrEqual(200)
+})

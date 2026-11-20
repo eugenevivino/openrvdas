@@ -34,7 +34,7 @@ class MockSocket extends EventTarget {
   }
 }
 
-it.each<{ period: number; samples: number; replay: boolean; correction?: string; unseen?: boolean; batched?: boolean; cachedHistory?: boolean }>([{ period: 1, samples: 21, replay: true }, { period: 2, samples: 21, replay: true },
+it.each<{ period: number; samples: number; replay: boolean; correction?: string; unseen?: boolean; batched?: boolean; cachedHistory?: boolean; accelerating?: boolean }>([{ period: 1, samples: 21, replay: true }, { period: 2, samples: 21, replay: true },
   { period: 1, samples: 2, replay: false }, { period: 2, samples: 2, replay: false },
   { period: 1, samples: 2, replay: true, correction: 'FAILED' },
   { period: 2, samples: 2, replay: true, correction: 'OFF' },
@@ -43,13 +43,15 @@ it.each<{ period: number; samples: number; replay: boolean; correction?: string;
   { period: 1, samples: 2, replay: false, batched: true },
   { period: 2, samples: 2, replay: false, batched: true },
   { period: 1, samples: 21, replay: false, cachedHistory: true },
-  { period: 2, samples: 21, replay: false, cachedHistory: true }])(
+  { period: 2, samples: 21, replay: false, cachedHistory: true },
+  { period: 1, samples: 2, replay: false, accelerating: true },
+  { period: 2, samples: 2, replay: false, accelerating: true }])(
   'retains a learned $period-second cadence after a delayed report on page return with $samples samples',
-  ({ period, samples, replay, correction, unseen, batched, cachedHistory }) => {
+  ({ period, samples, replay, correction, unseen, batched, cachedHistory, accelerating }) => {
   vi.stubGlobal('WebSocket', MockSocket)
   vi.useFakeTimers()
   let now = 1_000
-  const store = new ConsoleStore({ websocket: 'ws://ship:8766', historyS: cachedHistory ? 300 : 0, qcSuffix: '_QC' }, { now: () => now })
+  const store = new ConsoleStore({ websocket: 'ws://ship:8766', historyS: cachedHistory || accelerating ? 300 : 0, qcSuffix: '_QC' }, { now: () => now })
   const field = 'ds_chain:science:sensor'
   const page = new Map([[field, {}]])
   store.select(page)
@@ -62,14 +64,14 @@ it.each<{ period: number; samples: number; replay: boolean; correction?: string;
     socket.receive({ type: 'subscribe', status: 200 })
     socket.receive({ type: 'data', status: 200, data: {
       [field]: cachedHistory ? [...Array.from({ length: 19 }, (_, i) => [1_000 - (38 - i) * period, 'OK']), [1_000 - 10 * period, 'OK'], [1_000, 'OK']] :
-        Array.from({ length: samples }, (_, i) => [1_000 - (samples - 1 - i) * period, 'OK']),
+        Array.from({ length: samples }, (_, i) => [1_000 - (samples - 1 - i) * period * (accelerating ? 10 : 1), 'OK']),
     } })
-    expect(store.get(field)).toMatchObject({ periodS: period, freshness: 'LIVE' })
+    expect(store.get(field)).toMatchObject({ periodS: accelerating ? 10 * period : period, freshness: 'LIVE' })
     store.select(new Map([['Wind', {}]]))
     socket.receive({ type: 'data', status: 200, data: {} })
     socket.receive({ type: 'subscribe', status: 200 })
     expect(store.get(field).sourceTime).toBeUndefined()
-    now = 1_000 + 30 * period - 1
+    now = accelerating ? 1_000 + 0.5 * period : 1_000 + 30 * period - 1
     store.select(page)
     socket.receive({ type: 'data', status: 200, data: { Wind: [[now, 5]] } })
     socket.receive({ type: 'subscribe', status: 200 })
@@ -77,6 +79,16 @@ it.each<{ period: number; samples: number; replay: boolean; correction?: string;
     socket.receive({ type: 'fields', status: 200, data: [field, field + '_QC', 'Wind', 'Wind_QC'] })
     socket.receive({ type: 'describe', status: 200, data: {} })
     expect(socket.sent.at(-1)).toMatchObject({ type: 'ready' })
+    if (accelerating) {
+      socket.receive({ type: 'data', status: 200, data: { [field]: [[1_000 - 10 * period, 'OK'], [1_000, 'OK']] } })
+      for (let i = 1; i <= 3; i++) {
+        now = 1_000 + i * period
+        socket.receive({ type: 'data', status: 200, data: { [field]: [[now, 'OK']] } })
+      }
+      now += 10 * period
+      expect(store.get(field)).toMatchObject({ periodS: period, freshness: 'STALE' })
+      return
+    }
     if (cachedHistory) {
       now = 1_000 + 28 * period
       socket.receive({ type: 'data', status: 200, data: { [field]: Array.from({ length: 18 }, (_, i) => [1_000 + (i + 1) * period, 'OK']) } })
@@ -433,6 +445,43 @@ it.each(['time', 'store'])('requests new stage QC despite a stream-name prefix w
   try {
     socket.open()
     socket.receive({ type: 'fields', status: 200, data: ['ds_chain:run', field] })
+    socket.receive({ type: 'describe', status: 200, data: {} })
+    expect(socket.sent.at(-1)).toMatchObject({ type: 'subscribe', fields: { [field + suffix]: { seconds: 0 } } })
+  } finally { client.stop() }
+})
+
+
+it.each([1, 2])('replaces an interval split by a late reading at scale %s', (scale) => {
+  vi.stubGlobal('WebSocket', MockSocket)
+  vi.useFakeTimers()
+  let now = 1_000
+  const field = 'ds_chain:science:sensor'
+  const store = new ConsoleStore({ websocket: 'ws://ship:8766', historyS: 300, qcSuffix: '_QC' }, { now: () => now })
+  store.select(new Map([[field, {}]])); store.start()
+  const socket = MockSocket.sockets[0]
+  try {
+    socket.open()
+    socket.receive({ type: 'fields', status: 200, data: [field] })
+    socket.receive({ type: 'describe', status: 200, data: {} })
+    socket.receive({ type: 'subscribe', status: 200 })
+    socket.receive({ type: 'data', status: 200, data: { [field]: [[1_000, 'OK'], [1_000 - 10 * scale, 'OK']] } })
+    now += scale
+    socket.receive({ type: 'data', status: 200, data: { [field]: [[1_000, 'OK'], [1_000 - scale, 'OK'], [now, 'OK']] } })
+    now += 6 * scale
+    expect(store.get(field)).toMatchObject({ periodS: scale, freshness: 'STALE' })
+  } finally { store.stop() }
+})
+
+it.each(['Depth', 'Frequency'])('requests first QC for actual measurement LF%s beside LF', (suffix) => {
+  vi.stubGlobal('WebSocket', MockSocket)
+  vi.useFakeTimers()
+  const field = 'LF' + suffix
+  const client = new CdsClient('ws://ship:8766', { now: () => 1_000, catalog: true, qcSuffix: suffix })
+  client.setFields({ [field]: 0 }); client.start()
+  const socket = MockSocket.sockets[0]
+  try {
+    socket.open()
+    socket.receive({ type: 'fields', status: 200, data: ['LF', field] })
     socket.receive({ type: 'describe', status: 200, data: {} })
     expect(socket.sent.at(-1)).toMatchObject({ type: 'subscribe', fields: { [field + suffix]: { seconds: 0 } } })
   } finally { client.stop() }
