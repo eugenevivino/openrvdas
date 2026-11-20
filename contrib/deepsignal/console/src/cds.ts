@@ -78,6 +78,8 @@ export class CdsClient {
   private readonly catalog: boolean
   private readonly listeners = new Set<() => void>()
   private readonly evidence = new Map<string, FieldEvidence>()
+  private readonly parkedFields = new Map<string, FieldSamples>()
+  private awaitingCoverage = new Set<string>()
   private snapshot: Snapshot = {
     connection: 'idle', fields: new Map(), history: new Map(), available: [], descriptions: new Map(),
   }
@@ -115,16 +117,28 @@ export class CdsClient {
     if (sameRequests(wanted, this.wanted)) return
 
     this.wanted = wanted
+    const requested = this.requests()
+    const selected = this.catalog ? requested : wanted
+    const visible = new Map(this.snapshot.fields)
+    // A rapid page return can reuse state while its subscription is still live.
+    for (const [field, samples] of visible) {
+      if (selected.has(field)) continue
+      if (this.subscribed?.has(field)) this.parkedFields.set(field, samples)
+      visible.delete(field)
+    }
+    for (const [field, samples] of this.parkedFields) {
+      if (!selected.has(field)) continue
+      visible.set(field, samples)
+      this.parkedFields.delete(field)
+    }
     if (this.catalog) {
-      const requested = this.requests()
-      this.update({ fields: new Map([...this.snapshot.fields].filter(([field]) => requested.has(field))) })
+      this.update({ fields: visible })
       if (this.socket && this.phase === 'idle') this.requestNext()
       return
     }
 
-    const requested = this.requests()
     this.update({
-      fields: new Map([...this.snapshot.fields].filter(([field]) => wanted.has(field))),
+      fields: visible,
       history: new Map([...this.snapshot.history].filter(([field]) => requested.has(field))),
     })
     if (!wanted.size) {
@@ -189,6 +203,8 @@ export class CdsClient {
     const socket = this.socket
     this.socket = undefined
     this.subscribed = undefined
+    this.parkedFields.clear()
+    this.awaitingCoverage.clear()
     this.phase = 'idle'
     clearTimeout(this.retry)
     clearTimeout(this.watchdog)
@@ -251,6 +267,8 @@ export class CdsClient {
   private sendSubscription(requested: Map<string, number>, latest?: ReadonlySet<string>) {
     this.phase = 'subscribe'
     this.subscribed = requested
+    this.parkedFields.clear()
+    this.awaitingCoverage = new Set(requested.keys())
     this.latestOnly = latest
     this.checkBackfill = latest === undefined
     const fields = [...requested].map(([field, window]) => {
@@ -350,12 +368,13 @@ export class CdsClient {
         }
         const latestOnly = seconds < 0 || this.latestOnly?.has(field)
         if (incoming.length || flags.length) {
-          const next = mergeFieldSamples(previous, incoming, flags, { evidence, latestOnly })
+          const resumed = this.awaitingCoverage.delete(field)
+          const next = mergeFieldSamples(previous, incoming, flags, { evidence, latestOnly, resumed })
           fields.set(field, next)
           if (requested.has(flag)) this.evidence.set(field, next.evidence)
           points = next.evidence.points
         }
-        const latest = latestOnly ? evidence?.points.at(-1) : previous?.recent.at(-1)
+        const latest = evidence?.points.at(-1) ?? previous?.recent.at(-1)
         const fresh = latest ? incoming.filter((reading) =>
           reading.timestamp >= latest.timestamp && !sameReading(latest, reading)) : incoming
         if (fresh.length) changed.set(field, fresh)
