@@ -74,11 +74,11 @@ it.each([
   vi.setSystemTime(1_401_000)
   act(() => CatalogSocket.current.dispatchEvent(new Event('close')))
   fireEvent.click(screen.getByRole('link', { name: /^Health$/ }))
-  await screen.findByRole('heading', { name: 'Health', exact: true })
+  await screen.findByText(/Waiting for the logger manager/)
   expect(screen.queryByTestId('stream-health-row')).not.toBeInTheDocument()
   fireEvent.click(screen.getByRole('link', { name: 'Stream Health' }))
   await screen.findByRole('heading', { name: 'Stream Health', exact: true })
-  const row = screen.getByTestId('stream-health-row')
+  const row = await screen.findByTestId('stream-health-row')
   const report = row.querySelector(member === 'root' ? '.stream-root' : `[data-stage="${member}"]`)!
   expect(report.querySelector('strong')).toHaveTextContent(/^unknown$/i)
   expect(report.querySelector('small')).toHaveTextContent(
