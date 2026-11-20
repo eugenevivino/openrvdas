@@ -34,7 +34,7 @@ class MockSocket extends EventTarget {
   }
 }
 
-it.each<{ period: number; samples: number; replay: boolean; correction?: string; unseen?: boolean; batched?: boolean; cachedHistory?: boolean; accelerating?: boolean }>([{ period: 1, samples: 21, replay: true }, { period: 2, samples: 21, replay: true },
+it.each<{ period: number; samples: number; replay: boolean; correction?: string; unseen?: boolean; batched?: boolean; cachedHistory?: boolean; accelerating?: boolean; cachedReplay?: boolean }>([{ period: 1, samples: 21, replay: true }, { period: 2, samples: 21, replay: true },
   { period: 1, samples: 2, replay: false }, { period: 2, samples: 2, replay: false },
   { period: 1, samples: 2, replay: true, correction: 'FAILED' },
   { period: 2, samples: 2, replay: true, correction: 'OFF' },
@@ -45,13 +45,15 @@ it.each<{ period: number; samples: number; replay: boolean; correction?: string;
   { period: 1, samples: 21, replay: false, cachedHistory: true },
   { period: 2, samples: 21, replay: false, cachedHistory: true },
   { period: 1, samples: 2, replay: false, accelerating: true },
-  { period: 2, samples: 2, replay: false, accelerating: true }])(
+  { period: 2, samples: 2, replay: false, accelerating: true },
+  { period: 1, samples: 2, replay: false, cachedReplay: true },
+  { period: 2, samples: 2, replay: false, cachedReplay: true }])(
   'retains a learned $period-second cadence after a delayed report on page return with $samples samples',
-  ({ period, samples, replay, correction, unseen, batched, cachedHistory, accelerating }) => {
+  ({ period, samples, replay, correction, unseen, batched, cachedHistory, accelerating, cachedReplay }) => {
   vi.stubGlobal('WebSocket', MockSocket)
   vi.useFakeTimers()
   let now = 1_000
-  const store = new ConsoleStore({ websocket: 'ws://ship:8766', historyS: cachedHistory || accelerating ? 300 : 0, qcSuffix: '_QC' }, { now: () => now })
+  const store = new ConsoleStore({ websocket: 'ws://ship:8766', historyS: cachedHistory || accelerating || cachedReplay ? 300 : 0, qcSuffix: '_QC' }, { now: () => now })
   const field = 'ds_chain:science:sensor'
   const page = new Map([[field, {}]])
   store.select(page)
@@ -81,6 +83,14 @@ it.each<{ period: number; samples: number; replay: boolean; correction?: string;
       socket.receive({ type: 'describe', status: 200, data: {} })
     }
     expect(socket.sent.at(-1)).toMatchObject({ type: 'ready' })
+    if (cachedReplay) {
+      socket.receive({ type: 'data', status: 200, data: { [field]: [[1_000 - period, 'OK'], [1_000, 'OK'], [1_000 + 2 * period, 'OK'], [1_000 + 8 * period, 'OK'], [1_000 + period, 'OK']] } })
+      now = 1_000 + 14 * period
+      socket.receive({ type: 'data', status: 200, data: { [field]: [[1_000 + 2 * period, 'OK'], [1_000 + 8 * period, 'OK'], [now, 'OK']] } })
+      now += 7 * period
+      expect(store.get(field)).toMatchObject({ periodS: period, freshness: 'STALE' })
+      return
+    }
     if (accelerating) {
       socket.receive({ type: 'data', status: 200, data: { [field]: [[1_000 - 10 * period, 'OK'], [1_000, 'OK']] } })
       for (let i = 1; i <= 3; i++) {
@@ -510,4 +520,35 @@ it.each([false, true])('changes QC demand for the same fields when raw mode star
     expect(request().type).toBe('subscribe')
     expect(Object.hasOwn(request().fields, 'Depth_QC')).toBe(raw)
   } finally { client.stop() }
+})
+
+
+it.each(['sensor', 'store'])('preserves accepted %s history while Self-test reads raw fields', (member) => {
+  vi.stubGlobal('WebSocket', MockSocket)
+  vi.useFakeTimers()
+  let now = 1_000
+  const field = `ds_chain:science:${member}`
+  const store = new ConsoleStore({ websocket: 'ws://ship:8766', historyS: 0, qcSuffix: '_QC' }, { now: () => now })
+  store.select(new Map([[field, {}]])); store.start()
+  const socket = MockSocket.sockets[0]
+  const data = (values: Record<string, unknown>) => socket.receive({ type: 'data', status: 200, data: values })
+  try {
+    socket.open()
+    socket.receive({ type: 'fields', status: 200, data: [field] })
+    socket.receive({ type: 'describe', status: 200, data: {} })
+    socket.receive({ type: 'subscribe', status: 200 })
+    data({ [field]: [[now, 'OFF']] })
+    store.select(new Map([[field, { raw: true }]]))
+    data({}); socket.receive({ type: 'subscribe', status: 200 })
+    data({ [field]: [[now, 'OFF']] })
+    now++; data({ [field]: [[now, 'DEGRADED']] })
+    now++; data({ [field]: [[now, 'OK']] })
+    store.select(new Map([[field, {}]]))
+    data({}); socket.receive({ type: 'subscribe', status: 200 })
+    data({ [field]: [[now, 'OK']] })
+    data({ [field + '_QC']: [[now, 4]] })
+    now += 6
+    expect(store.get(field)).toMatchObject({ quality: 'FAIL', freshness: 'STALE',
+      lastReported: { value: 'OK', time: 1_002 }, lastAccepted: { value: 'DEGRADED', time: 1_001 } })
+  } finally { store.stop() }
 })
