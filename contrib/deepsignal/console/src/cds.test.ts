@@ -34,20 +34,22 @@ class MockSocket extends EventTarget {
   }
 }
 
-it.each<{ period: number; samples: number; replay: boolean; correction?: string; unseen?: boolean; batched?: boolean }>([{ period: 1, samples: 21, replay: true }, { period: 2, samples: 21, replay: true },
+it.each<{ period: number; samples: number; replay: boolean; correction?: string; unseen?: boolean; batched?: boolean; cachedHistory?: boolean }>([{ period: 1, samples: 21, replay: true }, { period: 2, samples: 21, replay: true },
   { period: 1, samples: 2, replay: false }, { period: 2, samples: 2, replay: false },
   { period: 1, samples: 2, replay: true, correction: 'FAILED' },
   { period: 2, samples: 2, replay: true, correction: 'OFF' },
   { period: 1, samples: 2, replay: false, unseen: true },
   { period: 2, samples: 2, replay: false, unseen: true },
   { period: 1, samples: 2, replay: false, batched: true },
-  { period: 2, samples: 2, replay: false, batched: true }])(
+  { period: 2, samples: 2, replay: false, batched: true },
+  { period: 1, samples: 21, replay: false, cachedHistory: true },
+  { period: 2, samples: 21, replay: false, cachedHistory: true }])(
   'retains a learned $period-second cadence after a delayed report on page return with $samples samples',
-  ({ period, samples, replay, correction, unseen, batched }) => {
+  ({ period, samples, replay, correction, unseen, batched, cachedHistory }) => {
   vi.stubGlobal('WebSocket', MockSocket)
   vi.useFakeTimers()
   let now = 1_000
-  const store = new ConsoleStore({ websocket: 'ws://ship:8766', historyS: 0, qcSuffix: '_QC' }, { now: () => now })
+  const store = new ConsoleStore({ websocket: 'ws://ship:8766', historyS: cachedHistory ? 300 : 0, qcSuffix: '_QC' }, { now: () => now })
   const field = 'ds_chain:science:sensor'
   const page = new Map([[field, {}]])
   store.select(page)
@@ -59,7 +61,8 @@ it.each<{ period: number; samples: number; replay: boolean; correction?: string;
     socket.receive({ type: 'describe', status: 200, data: {} })
     socket.receive({ type: 'subscribe', status: 200 })
     socket.receive({ type: 'data', status: 200, data: {
-      [field]: Array.from({ length: samples }, (_, i) => [1_000 - (samples - 1 - i) * period, 'OK']),
+      [field]: cachedHistory ? [...Array.from({ length: 19 }, (_, i) => [1_000 - (38 - i) * period, 'OK']), [1_000 - 10 * period, 'OK'], [1_000, 'OK']] :
+        Array.from({ length: samples }, (_, i) => [1_000 - (samples - 1 - i) * period, 'OK']),
     } })
     expect(store.get(field)).toMatchObject({ periodS: period, freshness: 'LIVE' })
     store.select(new Map([['Wind', {}]]))
@@ -74,6 +77,12 @@ it.each<{ period: number; samples: number; replay: boolean; correction?: string;
     socket.receive({ type: 'fields', status: 200, data: [field, field + '_QC', 'Wind', 'Wind_QC'] })
     socket.receive({ type: 'describe', status: 200, data: {} })
     expect(socket.sent.at(-1)).toMatchObject({ type: 'ready' })
+    if (cachedHistory) {
+      now = 1_000 + 28 * period
+      socket.receive({ type: 'data', status: 200, data: { [field]: Array.from({ length: 18 }, (_, i) => [1_000 + (i + 1) * period, 'OK']) } })
+      expect(store.get(field)).toMatchObject({ periodS: period, freshness: 'STALE', ageS: 10 * period })
+      return
+    }
     if (replay) socket.receive({ type: 'data', status: 200, data: { [field]: [[1_000, correction ?? 'OK']] } })
     if (unseen) socket.receive({ type: 'data', status: 200, data: { [field]: [[1_000 + period, 'OK']] } })
     now = 1_000 + 30 * period
@@ -409,5 +418,22 @@ it.each([{ count: 70, suffix: '_QC' }, { count: 90, suffix: '_QC' },
     const request = socket.sent.at(-1) as { fields: Record<string, unknown> }
     expect(Object.keys(request.fields).length).toBeLessThanOrEqual(200)
     expect(Object.keys(request.fields)).toEqual(expect.arrayContaining(fields))
+  } finally { client.stop() }
+})
+
+
+it.each(['time', 'store'])('requests new stage QC despite a stream-name prefix with suffix %s', (suffix) => {
+  vi.stubGlobal('WebSocket', MockSocket)
+  vi.useFakeTimers()
+  const field = `ds_chain:run${suffix}_aux:${suffix}`
+  const client = new CdsClient('ws://ship:8766', { now: () => 1_000, catalog: true, qcSuffix: suffix })
+  client.setFields({ [field]: 0 })
+  client.start()
+  const socket = MockSocket.sockets[0]
+  try {
+    socket.open()
+    socket.receive({ type: 'fields', status: 200, data: ['ds_chain:run', field] })
+    socket.receive({ type: 'describe', status: 200, data: {} })
+    expect(socket.sent.at(-1)).toMatchObject({ type: 'subscribe', fields: { [field + suffix]: { seconds: 0 } } })
   } finally { client.stop() }
 })
