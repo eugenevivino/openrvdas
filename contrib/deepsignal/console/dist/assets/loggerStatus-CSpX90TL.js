@@ -1,1 +1,0 @@
-import{s as e}from"./index-Cx24uk8P.js";var t=[`RUNNING`,`STARTING`,`FAILED`,`EXITED`];function n(n){return e(n)&&Object.values(n).every(n=>e(n)&&typeof n.config==`string`&&t.some(e=>e===n.status))}export{n as t};
