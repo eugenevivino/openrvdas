@@ -1,0 +1,18 @@
+.stream-health { display: grid; gap: 12px; }
+.stream-health-empty { margin: 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--muted); font-size: 18px; }
+.stream-list { display: grid; gap: 12px; }
+.stream-card { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.stream-card header { display: flex; align-items: start; justify-content: space-between; gap: 20px; margin-bottom: 14px; }
+.stream-card h2 { margin: 0; font: 600 24px/1.2 var(--f-number); overflow-wrap: anywhere; }
+.stream-root { display: grid; justify-items: end; color: var(--muted); }
+.stream-root strong { color: var(--fg); font: 600 20px/1.3 var(--f-mono); }
+.stream-root small, .stream-stage small { color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.stream-stages { display: grid; grid-template-columns: repeat(8, minmax(105px, 1fr)); gap: 8px; overflow-x: auto; padding-bottom: 4px; }
+.stream-stage { display: grid; align-content: start; gap: 5px; min-height: 92px; padding: 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel2); }
+.stream-stage-label { font: 15px/1.25 var(--f-mono); overflow-wrap: anywhere; }
+.stream-state { font: 600 19px/1.2 var(--f-number); }
+.stream-state-ok { color: var(--ok); }
+.stream-state-degraded { color: var(--check); }
+.stream-state-failed { color: var(--down); }
+.stream-state-unknown, .stream-state-off { color: var(--stale); }
+@media (max-width: 700px) { .stream-card header { display: grid; } .stream-root { justify-items: start; } }
