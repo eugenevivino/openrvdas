@@ -259,8 +259,10 @@ export class CdsClient {
       const flag = field + this.qcSuffix
       // Catalog-wide views select QC fields themselves. Do not synthesize a
       // second QC layer unless that field actually exists in the catalog.
-      const pairedFlag = this.qcSuffix.length > 0 && field.endsWith(this.qcSuffix) &&
-        this.snapshot.available.includes(field.slice(0, -this.qcSuffix.length))
+      const member = field.slice(field.lastIndexOf(':') + 1)
+      const pairedFlag = this.qcSuffix.length > 0 && member.includes(this.qcSuffix) &&
+        this.snapshot.available.some((base) => field === base + this.qcSuffix ||
+          field.startsWith(base + this.qcSuffix + '_'))
       if (this.catalog && pairedFlag && !this.snapshot.available.includes(flag)) continue
       set(flag, seconds)
       for (const name of this.snapshot.available) {
