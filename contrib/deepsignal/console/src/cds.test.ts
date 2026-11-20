@@ -488,3 +488,26 @@ it.each(['Depth', 'Frequency'])('requests first QC for actual measurement LF%s b
     expect(socket.sent.at(-1)).toMatchObject({ type: 'subscribe', fields: { [field + suffix]: { seconds: 0 } } })
   } finally { client.stop() }
 })
+
+
+it.each([false, true])('changes QC demand for the same fields when raw mode starts as %s', (raw) => {
+  vi.stubGlobal('WebSocket', MockSocket)
+  vi.useFakeTimers()
+  const client = new CdsClient('ws://ship:8766', { now: () => 1_000, catalog: true })
+  client.setFields({ Depth: 0 }, raw ? new Set(['Depth']) : new Set()); client.start()
+  const socket = MockSocket.sockets[0]
+  try {
+    socket.open()
+    socket.receive({ type: 'fields', status: 200, data: ['Depth', 'Depth_QC'] })
+    socket.receive({ type: 'describe', status: 200, data: {} })
+    const request = () => socket.sent.at(-1) as { type: string; fields: Record<string, unknown> }
+    expect(request().type).toBe('subscribe')
+    expect(Object.hasOwn(request().fields, 'Depth_QC')).toBe(!raw)
+    socket.receive({ type: 'subscribe', status: 200 })
+    socket.receive({ type: 'data', status: 200, data: { Depth: [[1_000, 20]] } })
+    client.setFields({ Depth: 0 }, raw ? new Set() : new Set(['Depth']))
+    socket.receive({ type: 'data', status: 200, data: {} })
+    expect(request().type).toBe('subscribe')
+    expect(Object.hasOwn(request().fields, 'Depth_QC')).toBe(raw)
+  } finally { client.stop() }
+})
