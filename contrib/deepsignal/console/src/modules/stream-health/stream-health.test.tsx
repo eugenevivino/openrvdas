@@ -62,6 +62,27 @@ it.each(['CTD_QC_1', 'lab_QC_secondary'])('retains QC rejection for valid stream
   expect(report).not.toHaveTextContent('Current')
 })
 
+it.each([
+  { member: 'sensor', before: 'OK', rejected: 'FAILED' },
+  { member: 'root', before: 'parser', rejected: 'store' },
+])('retains rejected $member history when navigating during a CDS outage', async ({ member, before, rejected }) => {
+  const field = `ds_chain:science:${member}`
+  const qc = field + '_QC'
+  const batch = await openStreamHealth(1_000, { [field]: [[1_000, before]], [qc]: [[1_000, 1]] })
+  vi.setSystemTime(1_001_000)
+  batch({ [field]: [[1_001, rejected]], [qc]: [[1_001, 4]] })
+  vi.setSystemTime(1_401_000)
+  act(() => CatalogSocket.current.dispatchEvent(new Event('close')))
+  fireEvent.click(screen.getByRole('link', { name: /^Health$/ }))
+  fireEvent.click(screen.getByRole('link', { name: 'Stream Health' }))
+  const row = screen.getByTestId('stream-health-row')
+  const report = row.querySelector(member === 'root' ? '.stream-root' : `[data-stage="${member}"]`)!
+  expect(report.querySelector('strong')).toHaveTextContent(/^unknown$/i)
+  expect(report.querySelector('small')).toHaveTextContent(
+    `No data · FAIL · Last reported: ${rejected} · Last usable: ${before}`,
+  )
+})
+
 describe('stream health registered view', () => {
   const route = streamHealthModule.routes![0]
   const Page = route.Component
