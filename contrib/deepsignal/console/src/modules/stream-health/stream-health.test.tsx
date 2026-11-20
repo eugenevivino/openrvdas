@@ -368,3 +368,17 @@ it.each(['time', 'store'])('requests stage QC when configured suffix is %s', asy
   expect(report.querySelector('strong')).toHaveTextContent('UNKNOWN')
   expect(report.querySelector('small')).toHaveTextContent('FAIL')
 })
+
+
+it.each(['parser', 'endpoint'])('preserves a cleared root after %s before a rejected report', async (earlier) => {
+  const field = 'ds_chain:science:root'
+  const batch = await openStreamHealth(1_000, {
+    [field]: [[998, earlier], [999, null], [1_000, 'store']],
+    [field + '_QC']: [[998, 1], [999, 1], [1_000, 4]],
+  })
+  vi.setSystemTime(1_010_000)
+  batch({})
+  expect(screen.getByTestId('stream-health-row').querySelector('.stream-root')).toHaveTextContent(
+    'Last reported: store · Last usable: None reported',
+  )
+})

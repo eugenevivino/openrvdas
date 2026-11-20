@@ -34,14 +34,16 @@ class MockSocket extends EventTarget {
   }
 }
 
-it.each<{ period: number; samples: number; replay: boolean; correction?: string; unseen?: boolean }>([{ period: 1, samples: 21, replay: true }, { period: 2, samples: 21, replay: true },
+it.each<{ period: number; samples: number; replay: boolean; correction?: string; unseen?: boolean; batched?: boolean }>([{ period: 1, samples: 21, replay: true }, { period: 2, samples: 21, replay: true },
   { period: 1, samples: 2, replay: false }, { period: 2, samples: 2, replay: false },
   { period: 1, samples: 2, replay: true, correction: 'FAILED' },
   { period: 2, samples: 2, replay: true, correction: 'OFF' },
   { period: 1, samples: 2, replay: false, unseen: true },
-  { period: 2, samples: 2, replay: false, unseen: true }])(
+  { period: 2, samples: 2, replay: false, unseen: true },
+  { period: 1, samples: 2, replay: false, batched: true },
+  { period: 2, samples: 2, replay: false, batched: true }])(
   'retains a learned $period-second cadence after a delayed report on page return with $samples samples',
-  ({ period, samples, replay, correction, unseen }) => {
+  ({ period, samples, replay, correction, unseen, batched }) => {
   vi.stubGlobal('WebSocket', MockSocket)
   vi.useFakeTimers()
   let now = 1_000
@@ -75,7 +77,7 @@ it.each<{ period: number; samples: number; replay: boolean; correction?: string;
     if (replay) socket.receive({ type: 'data', status: 200, data: { [field]: [[1_000, correction ?? 'OK']] } })
     if (unseen) socket.receive({ type: 'data', status: 200, data: { [field]: [[1_000 + period, 'OK']] } })
     now = 1_000 + 30 * period
-    socket.receive({ type: 'data', status: 200, data: { [field]: [[now, 'OK']] } })
+    socket.receive({ type: 'data', status: 200, data: { [field]: [...(batched ? [[1_000 + period, 'OK']] : []), [now, 'OK']] } })
     now += 10 * period
     expect(store.get(field)).toMatchObject({ periodS: period, freshness: 'STALE', ageS: 10 * period })
   } finally {
@@ -346,3 +348,64 @@ it.each([['timeout', 'port closed'], ['sync lost', 'reader stopped']])(
     }
   },
 )
+
+
+it.each([['timeout', 'port closed'], ['sync lost', 'reader stopped']])(
+  'delivers new same-timestamp logger error after reconnect: %s then %s', (first, last) => {
+    vi.stubGlobal('WebSocket', MockSocket)
+    vi.useFakeTimers()
+    const field = 'stderr:logger:CTD'
+    const store = new ConsoleStore({ websocket: 'ws://ship:8766', historyS: 300, qcSuffix: '_QC' }, { now: () => 1_001 })
+    const values: unknown[] = []
+    store.observeValues((name, reading) => { if (name === field) values.push(reading.value) })
+    store.select(new Map([[field, {}]]))
+    store.start()
+    const socket = MockSocket.sockets[0]
+    try {
+      socket.open()
+      socket.receive({ type: 'fields', status: 200, data: [field, 'Wind'] })
+      socket.receive({ type: 'describe', status: 200, data: {} })
+      socket.receive({ type: 'subscribe', status: 200 })
+      socket.receive({ type: 'data', status: 200, data: { [field]: [[1_000, first]] } })
+      store.select(new Map([[field, {}], ['Wind', {}]]))
+      socket.receive({ type: 'data', status: 200, data: {} })
+      socket.receive({ type: 'subscribe', status: 200 })
+      socket.receive({ type: 'data', status: 200, data: { [field]: [[1_000, first], [1_000, last]], Wind: [[1_000, 5]] } })
+      expect(values).toEqual([first, last])
+    } finally { store.stop() }
+  },
+)
+
+it.each(['status:logger_status', 'status:logger_manager'])('requests explicit manager QC for %s', (field) => {
+  vi.stubGlobal('WebSocket', MockSocket)
+  vi.useFakeTimers()
+  const client = new CdsClient('ws://ship:8766', { now: () => 1_000 })
+  client.setFields({ [field]: 0 })
+  client.start()
+  const socket = MockSocket.sockets[0]
+  try {
+    socket.open()
+    socket.receive({ type: 'fields', status: 200, data: [field, field + '_QC'] })
+    socket.receive({ type: 'describe', status: 200, data: {} })
+    expect(socket.sent.at(-1)).toMatchObject({ type: 'subscribe', fields: { [field + '_QC']: { seconds: 0 } } })
+  } finally { client.stop() }
+})
+
+it.each([70, 90])('keeps a %s-measurement catalog within the existing gateway limit', (count) => {
+  vi.stubGlobal('WebSocket', MockSocket)
+  vi.useFakeTimers()
+  const fields = Array.from({ length: count }, (_, n) => `Sensor${n}`).flatMap((name) => [name, name + '_QC'])
+  fields.push('status:logger_status', 'status:logger_manager')
+  const client = new CdsClient('ws://ship:8766', { now: () => 1_000 })
+  client.setFields(Object.fromEntries(fields.map((field) => [field, 0])))
+  client.start()
+  const socket = MockSocket.sockets[0]
+  try {
+    socket.open()
+    socket.receive({ type: 'fields', status: 200, data: fields })
+    socket.receive({ type: 'describe', status: 200, data: {} })
+    const request = socket.sent.at(-1) as { fields: Record<string, unknown> }
+    expect(Object.keys(request.fields).length).toBeLessThanOrEqual(200)
+    expect(Object.keys(request.fields)).toEqual(expect.arrayContaining(fields))
+  } finally { client.stop() }
+})
