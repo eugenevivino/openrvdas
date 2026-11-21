@@ -33,7 +33,7 @@ async def smoke(state_path: Path) -> dict:
     parameters = StdioServerParameters(
         command=sys.executable,
         args=['-B', '-m', 'contrib.deepsignal.workspace.mcp_server',
-              '--state', str(state_path.resolve())],
+              '--state', str(state_path.resolve()), '--access-mode', 'fixture-editor'],
         env={'PYTHONPATH': str(repository), 'PYTHONUNBUFFERED': '1',
              'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONNOUSERSITE': '1'},
     )

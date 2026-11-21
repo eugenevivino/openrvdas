@@ -173,7 +173,8 @@ class Workspace:
                 'profile': 'fixture-parse-transform-v1', 'version': '0.1.0',
                 'source_status': 'fixed synthetic experiment; no vessel connection',
                 'permissions': sorted(self.principal.permissions), 'limits': dict(LIMITS),
-                'capabilities': {**{key: 'fixture only' for key in self.METHODS},
+                'capabilities': {**{key: 'fixture only' for key, permission in self.METHODS.items()
+                                   if 'read' in self.principal.permissions and permission in self.principal.permissions},
                                  'live_control': 'unavailable', 'real_archive': 'unverified',
                                  'grafana': 'required; not implemented',
                                  'general_replay': 'unsupported',

@@ -11,7 +11,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from .service import Workspace
+from .service import Principal, Workspace
 
 Identifier = Annotated[str, Field(min_length=1, max_length=160, strict=True)]
 Revision = Annotated[int, Field(ge=1, le=1_000_000, strict=True)]
@@ -41,8 +41,11 @@ WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False,
                         idempotent_hint=False, open_world_hint=False)
 
 
-def create_server(state_path: Path) -> MCPServer:
-    workspace = Workspace(state_path)
+def create_server(state_path: Path, access_mode: str = 'read-only') -> MCPServer:
+    if access_mode not in ('read-only', 'fixture-editor'):
+        raise ValueError('Unsupported fixture access mode')
+    permissions = frozenset({'read'}) if access_mode == 'read-only' else frozenset({'read', 'write', 'export'})
+    workspace = Workspace(state_path, Principal(permissions=permissions))
     server = MCPServer(
         'DeepSignal fixture workspace', version='0.1.0', log_level='WARNING',
         instructions=(
@@ -94,6 +97,14 @@ def create_server(state_path: Path) -> MCPServer:
     def ds_get_health(deployment_id: Identifier) -> Envelope:
         """Read separate activity, freshness, parser and archival evidence."""
         return call('ds_get_health', {'deployment_id': deployment_id})
+
+    @server.tool(annotations=READ)
+    def ds_get_artifact(deployment_id: Identifier, artifact_id: Identifier) -> Envelope:
+        """Read a bounded artifact after checking its deployment scope again."""
+        return call('ds_get_artifact', {'deployment_id': deployment_id, 'artifact_id': artifact_id})
+
+    if access_mode == 'read-only':
+        return server
 
     @server.tool(annotations=WRITE)
     def ds_query_data(deployment_id: Identifier, stream_id: Identifier,
@@ -149,11 +160,6 @@ def create_server(state_path: Path) -> MCPServer:
         """Create a portable local report without sending or publishing it."""
         return call('ds_export_investigation', {'deployment_id': deployment_id, 'investigation_id': investigation_id})
 
-    @server.tool(annotations=READ)
-    def ds_get_artifact(deployment_id: Identifier, artifact_id: Identifier) -> Envelope:
-        """Read a bounded artifact after checking its deployment scope again."""
-        return call('ds_get_artifact', {'deployment_id': deployment_id, 'artifact_id': artifact_id})
-
     return server
 
 
@@ -161,8 +167,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--state', required=True, type=Path,
                         help='Operator-configured fixture metadata database; not a tool argument')
+    parser.add_argument('--access-mode', choices=('read-only', 'fixture-editor'), default='read-only',
+                        help='Read-only by default; fixture-editor enables local synthetic artifact/draft writes only')
     args = parser.parse_args()
-    create_server(args.state).run(transport='stdio')
+    create_server(args.state, args.access_mode).run(transport='stdio')
 
 
 if __name__ == '__main__':
