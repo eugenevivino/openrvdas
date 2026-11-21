@@ -1,5 +1,7 @@
 """Real Chromium journey against an owned disposable loopback fixture server."""
 import argparse
+from contextlib import closing
+from http.client import HTTPConnection, HTTPException
 import json
 import os
 from pathlib import Path
@@ -7,7 +9,6 @@ import socket
 import subprocess
 import tempfile
 import time
-from urllib.request import urlopen
 from playwright.sync_api import sync_playwright, expect
 
 
@@ -31,10 +32,14 @@ def main():
                     if process.poll() is not None:
                         raise RuntimeError('Owned fixture server exited before readiness')
                     try:
-                        with urlopen(base + '/api/workspace/session', timeout=0.2) as response:
-                            if response.status == 200:
-                                break
-                    except OSError:
+                        # Readiness only contacts our loopback server, without
+                        # environment proxies, URL schemes or redirect following.
+                        with closing(HTTPConnection('127.0.0.1', port, timeout=0.2)) as connection:
+                            connection.request('GET', '/api/workspace/session')
+                            with connection.getresponse() as response:
+                                if response.status == 200:
+                                    break
+                    except (OSError, HTTPException):
                         time.sleep(0.1)
                 else:
                     raise RuntimeError('Owned fixture server readiness timeout')
