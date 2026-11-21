@@ -18,8 +18,18 @@ class McpAcceptanceChecks(unittest.TestCase):
             with self.subTest(expected=sorted(expected)):
                 with tempfile.TemporaryDirectory() as directory:
                     with patch.object(mcp_smoke, 'TOOLS', expected):
-                        with self.assertRaisesRegex(AssertionError, 'Unexpected tool catalog'):
+                        with self.assertRaises(Exception) as failure:
                             asyncio.run(mcp_smoke.smoke(Path(directory) / 'state.sqlite3'))
+                        # SDK task groups may wrap the original acceptance failure.
+                        pending = [failure.exception]
+                        leaves = []
+                        while pending:
+                            error = pending.pop()
+                            if isinstance(error, BaseExceptionGroup):
+                                pending.extend(error.exceptions)
+                            else:
+                                leaves.append((type(error), str(error)))
+                        self.assertEqual(leaves, [(AssertionError, 'Unexpected tool catalog')])
 
 
 if __name__ == '__main__':
