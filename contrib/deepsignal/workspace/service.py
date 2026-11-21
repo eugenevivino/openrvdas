@@ -58,15 +58,15 @@ class Principal:
     # Set by the process owner, never by a tool argument.
     name: str = 'local-fixture-operator'
     deployment_id: str = DEPLOYMENT
-    permissions: frozenset = frozenset({'read', 'write', 'export'})
+    permissions: frozenset = frozenset({'read', 'derive', 'write', 'export'})
 
 
 class Workspace:
     METHODS = {
-        'ds_query_data': 'write', 'ds_analyze': 'write',
+        'ds_query_data': 'derive', 'ds_analyze': 'derive',
         'ds_create_investigation': 'write', 'ds_export_investigation': 'export',
         'ds_get_artifact': 'read',
-        'ds_get_configuration': 'write', 'ds_create_draft': 'write',
+        'ds_get_configuration': 'derive', 'ds_create_draft': 'write',
         'ds_validate_draft': 'write', 'ds_replay_draft': 'write',
         'ds_get_system': 'read', 'ds_list_assets': 'read', 'ds_get_health': 'read',
         'ds_add_finding': 'write',
