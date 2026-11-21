@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from contrib.deepsignal.workspace.service import Workspace
+from contrib.deepsignal.workspace.service import Workspace, Principal
 
 
 class InvestigationJourney(unittest.TestCase):
@@ -60,6 +60,30 @@ class InvestigationJourney(unittest.TestCase):
         first = self.call('ds_query_data', stream_id='fixture-vessel/temperature', start=0, end=6)
         second = self.call('ds_query_data', stream_id='fixture-vessel/temperature', start=0.0, end=6.0)
         self.assertEqual(first['dataset_id'], second['dataset_id'])
+
+    def test_empty_and_one_point_selections_do_not_invent_measurements(self):
+        empty = self.call('ds_query_data', stream_id='fixture-vessel/temperature', start=2, end=4)
+        result = self.call('ds_analyze', dataset_id=empty['dataset_id'])
+        self.assertEqual(result['finite_count'], 0)
+        self.assertIsNone(result['mean'])
+        self.assertEqual(result['missing_expected_times'], [2, 3])
+        one = self.call('ds_query_data', stream_id='fixture-vessel/temperature', start=0, end=1)
+        result = self.call('ds_analyze', dataset_id=one['dataset_id'])
+        self.assertEqual(result['mean'], 10)
+        self.assertEqual(result['stddev'], 0)
+
+    def test_permissions_are_server_owned_and_artifact_reads_are_rechecked(self):
+        dataset = self.call('ds_query_data', stream_id='fixture-vessel/temperature', start=0, end=6)
+        read_only = Workspace(self.path, Principal(permissions=frozenset({'read'})))
+        result = read_only.call('ds_create_investigation', {'deployment_id': 'fixture-vessel',
+                                   'title': 'must not save', 'evidence_ids': []})
+        self.assertEqual(result['error']['code'], 'PERMISSION_DENIED')
+        other = Workspace(self.path, Principal(deployment_id='another-vessel'))
+        result = other.call('ds_get_artifact', {'deployment_id': 'fixture-vessel',
+                                               'artifact_id': dataset['dataset_id']})
+        self.assertEqual(result['error']['code'], 'PERMISSION_DENIED')
+        result = self.service.call('ds_get_system', {'deployment_id': 'fixture-vessel', 'role': 'admin'})
+        self.assertEqual(result['error']['code'], 'INVALID_ARGUMENT')
 
     def test_changed_runtime_identity_cannot_keep_validation_green(self):
         original = Path.read_text

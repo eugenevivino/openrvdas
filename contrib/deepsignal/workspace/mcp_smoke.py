@@ -124,6 +124,12 @@ async def smoke(state_path: Path) -> dict:
         )
         oversized = await client.call_tool('ds_get_system', {'deployment_id': 'x' * 161})
         assert oversized.is_error
+        for start in (True, '0'):
+            malformed = await client.call_tool('ds_query_data', {
+                'deployment_id': DEPLOYMENT, 'stream_id': 'fixture-vessel/temperature',
+                'start': start, 'end': 6,
+            })
+            assert malformed.is_error, 'Protocol must not coerce an invalid scientific interval'
         stale = await client.call_tool('ds_add_finding', {
             'deployment_id': DEPLOYMENT,
             'investigation_id': investigation['investigation_id'],
