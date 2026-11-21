@@ -26,9 +26,10 @@ async def smoke(state_path: Path) -> dict:
     repository = Path(__file__).resolve().parents[3]
     parameters = StdioServerParameters(
         command=sys.executable,
-        args=['-m', 'contrib.deepsignal.workspace.mcp_server',
+        args=['-B', '-m', 'contrib.deepsignal.workspace.mcp_server',
               '--state', str(state_path.resolve())],
-        env={'PYTHONPATH': str(repository), 'PYTHONUNBUFFERED': '1'},
+        env={'PYTHONPATH': str(repository), 'PYTHONUNBUFFERED': '1',
+             'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONNOUSERSITE': '1'},
     )
     direct = Workspace(state_path)
     async with asyncio.timeout(45), Client(parameters) as client:
