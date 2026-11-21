@@ -1,0 +1,4 @@
+# Official modelcontextprotocol/python-sdk; PyPI metadata verified 2026-11-21.
+# Install in the isolated workspace environment, never the acquisition environment.
+mcp==2.3.0
+mcp-types==2.3.0

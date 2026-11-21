@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "profile": "fixture-parse-transform-v1",
+  "environment": "simulated",
+  "upstream_base": "3b4b76e61af8ca020a29afcea3660bb157e78138",
+  "product_base": "b67f3072daee63d0d307a16bc1d34e24b3c75002",
+  "release_version": null,
+  "python": "3.12",
+  "runtime_dependencies": {
+    "parse": "1.22.4",
+    "PyYAML": "6.0.3"
+  },
+  "mcp_dependencies": {
+    "mcp": "2.3.0",
+    "mcp-types": "2.3.0"
+  },
+  "source_sha256": {
+    "logger/transforms/parse_transform.py": "a3cc2511d3477900210e56740f2cc67725f5daaf768b9c534fc18319902fd9fd",
+    "logger/utils/record_parser.py": "09d73cd85e3f22ac2b77cf7bb11e0b0d761c57b211823b39516cc0aa7b830bef",
+    "contrib/deepsignal/console/package-lock.json": "a09ad08ab20f6eef1d300096363d50c5e7178d604773106453377acdf47e6702",
+    "contrib/deepsignal/workspace/fixtures/incident.json": "5f6d8d052a94ef940a4a749f6b0ef8624d04204dc68805c2c9c105492c7eaa9a",
+    "logger/transforms/transform.py": "be24cdd7c1591b937265f5688f36e26edb32f4d7bcd93c6e19d224ce8f5d0c3f",
+    "logger/utils/formats.py": "bc09bf8fc89deacf96bd79c6be6ed73a60f4de34f297ae0a6b5fd681cfa642aa",
+    "logger/utils/read_config.py": "16554e3629c69b256b4d4d9ba6a1e3f3e5cc762fdf5ebe0f270db7dedefc1929",
+    "logger/utils/das_record.py": "378fb49ec43d86a4fc92cd88182768dfd0c6b5bc9e19bf4829a9e4a9e927f56d",
+    "logger/utils/record_parser_formats.py": "2bb8429882edc47651152cb725e1159630cdadb3f9aea19fee97fb4750686dee"
+  },
+  "capabilities": {
+    "synthetic_history": "implementation in progress",
+    "parser_replay": "implementation in progress; fixed component and fixture only",
+    "arbitrary_replay": "unsupported",
+    "real_manager": "unverified",
+    "real_archive": "unverified",
+    "live_control": "disabled",
+    "production_approval_boundary": "unavailable"
+  },
+  "verification": "Pending new slice tests. Prior Console and Stream Health pilot evidence remains valid only at product_base."
+}

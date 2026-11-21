@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "deployment_id": "fixture-vessel",
+  "environment": "simulated",
+  "as_of": 6,
+  "time_basis": "seconds since synthetic experiment epoch; not UTC acquisition time",
+  "stream_id": "fixture-vessel/temperature",
+  "unit": "degree_Celsius",
+  "quantity_kind": "scalar",
+  "cadence_s": 1,
+  "source_class": "synthetic-reference",
+  "coverage": "complete selection of fixture records; gaps are present on the declared grid",
+  "rows": [
+    {"time": 0, "value": 10, "reason": null, "source_flag": "not_evaluated", "source_ref": "incident:record:0", "raw": "SIM 0 TEMP=10"},
+    {"time": 1, "value": 12, "reason": null, "source_flag": "not_evaluated", "source_ref": "incident:record:1", "raw": "SIM 1 TEMP=12"},
+    {"time": 4, "value": 18, "reason": null, "source_flag": "not_evaluated", "source_ref": "incident:record:4", "raw": "SIM 4 TEMP=18"},
+    {"time": 5, "value": 20, "reason": null, "source_flag": "not_evaluated", "source_ref": "incident:record:5", "raw": "SIM 5 TEMP=20"}
+  ],
+  "last_parsed": {"time": -1, "value": 9},
+  "baseline_pattern": "T={temperature:g}",
+  "supported_patterns": ["T={temperature:g}", "TEMP={temperature:g}"],
+  "limitations": ["Synthetic reference values are not live parsed observations.", "No actual vessel, instrument, loaded manager configuration, or production archive is observed."]
+}
