@@ -67,3 +67,24 @@ remaining full-scope/security/production gates remain held. Later story/docs com
 have no new exact-head gate stamp. Program architecture now requires configurable
 selected access, read-only and permitted instrument modes, and protected secret
 resolution; the fixture does not implement those production capabilities.
+
+## Read-only analysis and style follow-up
+
+Candidate ce22f377f29c9bf5ba444a463d7a355c44adec61 passed all five declared
+Relay access-analysis stages and Linux44883447788 affected-harness-checks.
+The default seven-tool MCP catalog supports bounded query, scalar analysis and
+configuration inspection without draft, investigation-edit or export permission.
+An explicit fixture-editor process exposes thirteen tools. Actual SDK tests
+verify permissions and reject undeclared arguments; the model cannot promote
+its access mode. Read-only permits local immutable evidence and audit persistence.
+
+Relay recorded maximum dependency-completion to worker-start latency of
+0.08093214 seconds for this bounded run, not host-wide utilization or whole-module
+throughput. Existing frontend evidence is reused only after exact tree equality.
+Linux security policy remains FAIL; full module and production gates remain HOLD.
+
+The repository style check then failed on ce22f377. Candidate
+219a6c80b601a47602f4722d30fa6f387079cd3a repairs formatting only; all ten workspace
+Python ASTs match ce22f377, and Relay m1-style-fixed passed flake8 7.5.0 under
+the unchanged repository rules. Original failures are retained. New exact-head
+Linux validation is pending; later documentation changes do not inherit gate stamps.

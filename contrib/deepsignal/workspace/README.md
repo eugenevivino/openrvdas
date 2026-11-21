@@ -52,6 +52,9 @@ Tests (run through the existing Relay path under machine admission):
 ```
 
 See `MCP.md` for the actual official-SDK stdio client and opt-in Codex setup.
+MCP defaults to read-only inspection/analysis; the full fixture smoke explicitly
+opts into local editing with `--access-mode fixture-editor`. Neither mode controls
+instruments. Local bounded evidence and audit writes still occur in read-only mode.
 The service applies the same permission and input checks across all three adapters.
 Local process owners can alter code/state: this is not a production approval
 boundary. The HTTP listener is loopback-only, uses a per-process token and strict

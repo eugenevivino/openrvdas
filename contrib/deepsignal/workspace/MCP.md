@@ -1,7 +1,8 @@
 # Fixture MCP interface
 
 This stdio server calls the same `Workspace.call` service as the ordinary
-workspace. It contains synthetic evidence and local draft/investigation writes.
+workspace. It defaults to read-only synthetic evidence access. The operator enables
+local draft/investigation writes with `--access-mode fixture-editor`.
 It has no acquisition approval, execution, arbitrary command, URL, or file tool.
 The operator chooses the metadata database at process startup. Tool arguments
 cannot select another database. The service checks deployment scope on every call.
@@ -42,8 +43,8 @@ has been prepared through the existing resource guard:
 /private/tmp/deepsignal/product-m1-env/bin/python -m contrib.deepsignal.workspace.mcp_smoke --state /private/tmp/deepsignal/m1-mcp-smoke.sqlite3
 ```
 
-The real SDK client starts a real stdio subprocess, lists and validates the
-13-tool catalog, runs discovery → dataset → scalar analysis → configuration
+The SDK smoke client explicitly selects fixture-editor mode, starts a real stdio
+subprocess, validates the 13-tool catalog, runs discovery → dataset → scalar analysis → configuration
 correction → validation → baseline/candidate replay → investigation → export.
 It compares direct-service and MCP results and checks the hand-worked statistics
 (4 finite values, mean/median 15, population standard deviation √17), parser
@@ -53,10 +54,25 @@ deadline; this does not qualify cancellation of arbitrary long replay jobs.
 
 ## Tools and limits
 
-Read tools: `ds_get_system`, `ds_list_assets`, `ds_get_health`, `ds_get_artifact`.
-Artifact/draft writers: `ds_query_data`, `ds_analyze`, `ds_get_configuration`,
-`ds_create_draft`, `ds_validate_draft`, `ds_replay_draft`,
-`ds_create_investigation`, `ds_add_finding`, `ds_export_investigation`.
+Default read-only mode registers seven tools:
+`ds_get_system`, `ds_list_assets`, `ds_get_health`, `ds_get_artifact`,
+`ds_query_data`, `ds_analyze`, `ds_get_configuration`.
+The shared-service principal has `read` and `derive` permissions, not editing or
+export permission. Query/analysis/configuration inspection can persist bounded
+immutable evidence, and their tool annotations disclose those local writes.
+Audit persistence also continues. Read-only describes source/configuration and
+investigation access, not a filesystem with no writes.
+
+Explicit fixture-editor mode adds `ds_create_draft`, `ds_validate_draft`,
+`ds_replay_draft`, `ds_create_investigation`, `ds_add_finding` and
+`ds_export_investigation`. It permits local synthetic workflow edits only; neither
+mode has an instrument or live acquisition executor. Capability results reflect
+current permissions, and undeclared tool arguments are rejected.
+
+The UI/CLI fixture remains an editing demo. This startup choice does not implement
+production per-user/field authorization, protect against the OS account owner or
+control an external client's onward disclosure. The model cannot change access
+mode through a tool argument; only the process owner selects it.
 
 Every tool requires `deployment_id`. Discover the fixed `fixture-vessel` profile
 first. Query `fixture-vessel/temperature` over `[0, 6)` for the demonstration.
@@ -88,8 +104,11 @@ tool_timeout_sec = 30
 ```
 
 For another checkout, substitute its actual absolute checkout, prepared Python
-and owned metadata paths. Use `/mcp` to inspect the connected server, then ask for
-a fixture investigation through its actual tools. The smoke test is the
+and owned metadata paths. Use `/mcp` to inspect the server, then ask to inspect
+the synthetic catalog, health and bounded analysis. This configuration defaults
+to read-only. For the full local investigation, the operator adds
+`"--access-mode", "fixture-editor"` to startup args; this enables only synthetic
+workspace editing. The smoke test is the
 reproducible model-free procedure. Returning data to a cloud-connected client
 can expose it to that client; stdio does not establish a local-only AI boundary.
 
