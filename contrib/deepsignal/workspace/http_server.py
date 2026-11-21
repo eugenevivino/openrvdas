@@ -21,6 +21,7 @@ def create_app(workspace, origin='http://127.0.0.1:8765'):
     authority = origin.removeprefix('http://')
     epoch = time.time() - 6
     console = Path(__file__).resolve().parents[1] / 'console'
+    service_slot = asyncio.Lock()
 
     def permitted(headers):
         return (headers.get('host') == authority and
@@ -48,7 +49,10 @@ def create_app(workspace, origin='http://127.0.0.1:8765'):
             value = json.loads(body)
             if not isinstance(value, dict) or set(value) != {'method', 'arguments'}:
                 return Response(status_code=400)
-            result = await run_in_threadpool(workspace.call, value['method'], value['arguments'])
+            if service_slot.locked():
+                return Response(status_code=429, headers={'Retry-After': '1'})
+            async with service_slot:
+                result = await run_in_threadpool(workspace.call, value['method'], value['arguments'])
             return JSONResponse(result, headers={'Cache-Control': 'no-store'})
         except (ValueError, RecursionError, TimeoutError):
             return Response(status_code=400)
@@ -130,7 +134,9 @@ def main():
         parser.error('use an unprivileged loopback port')
     app = create_app(Workspace(args.state), origin=f'http://127.0.0.1:{args.port}')
     uvicorn.run(app, host='127.0.0.1', port=args.port, workers=1,
-                limit_concurrency=8, timeout_keep_alive=3, ws_max_size=8192,
+                # Static module/font loading needs browser burst capacity; the
+                # separate application slot still admits only one service call.
+                limit_concurrency=32, timeout_keep_alive=3, ws_max_size=8192,
                 ws_max_queue=4, log_level='warning')
 
 
