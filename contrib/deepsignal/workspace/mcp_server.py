@@ -41,12 +41,29 @@ WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False,
                         idempotent_hint=False, open_world_hint=False)
 
 
+class FixtureMCPServer(MCPServer):
+    """Reject undeclared arguments before the SDK can discard them."""
+
+    async def list_tools(self):
+        tools = await super().list_tools()
+        return [tool.model_copy(update={
+            'input_schema': {**tool.input_schema, 'additionalProperties': False},
+        }) for tool in tools]
+
+    async def call_tool(self, name, arguments, context=None):
+        schema = next((tool.input_schema for tool in await self.list_tools() if tool.name == name), None)
+        if schema is not None and (not isinstance(arguments, dict) or
+                                   set(arguments) - set(schema.get('properties', {}))):
+            raise ToolError('INVALID_ARGUMENT: undeclared tool arguments')
+        return await super().call_tool(name, arguments, context)
+
+
 def create_server(state_path: Path, access_mode: str = 'read-only') -> MCPServer:
     if access_mode not in ('read-only', 'fixture-editor'):
         raise ValueError('Unsupported fixture access mode')
     permissions = frozenset({'read'}) if access_mode == 'read-only' else frozenset({'read', 'write', 'export'})
     workspace = Workspace(state_path, Principal(permissions=permissions))
-    server = MCPServer(
+    server = FixtureMCPServer(
         'DeepSignal fixture workspace', version='0.1.0', log_level='WARNING',
         instructions=(
             'Discover capabilities first. Always use explicit deployment and evidence IDs. '
