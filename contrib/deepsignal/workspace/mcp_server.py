@@ -15,7 +15,7 @@ from .service import Workspace
 
 Identifier = Annotated[str, Field(min_length=1, max_length=160, strict=True)]
 Revision = Annotated[int, Field(ge=1, le=1_000_000, strict=True)]
-Timestamp = Annotated[float, Field(allow_inf_nan=False)]
+Timestamp = Annotated[float, Field(allow_inf_nan=False, strict=True)]
 Evidence = Annotated[list[Identifier], Field(max_length=32)]
 Pattern = Annotated[str, Field(min_length=1, max_length=128, strict=True)]
 Title = Annotated[str, Field(min_length=1, max_length=200, strict=True)]
