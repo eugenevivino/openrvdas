@@ -28,3 +28,11 @@
 .workspace-metrics dt { color: var(--muted); text-transform: capitalize; }
 .workspace-metrics dd { margin: 4px 0 0; font: 600 25px var(--f-number); }
 @media (max-width: 650px) { .workspace-card { padding: 12px; } .workspace-form { display: grid; } .workspace-links a { flex: 1 1 40%; } }
+
+.workspace-plot { margin: 0; min-width: 0; overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; padding: 10px; background: var(--panel2); }
+.workspace-plot svg { display: block; width: 100%; min-width: 360px; }
+.workspace-plot-grid { stroke: var(--grid); stroke-width: 1; }
+.workspace-plot-labels { fill: var(--muted); font: 13px var(--f-mono); }
+.workspace-plot-segment { fill: none; stroke: var(--chart); stroke-width: 1.5; }
+.workspace-plot-point { fill: var(--chart); stroke: var(--panel2); stroke-width: 1; }
+.workspace-plot figcaption { display: grid; gap: 6px; font-size: 14px; color: var(--muted); }

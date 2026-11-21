@@ -1,12 +1,14 @@
 import { useState, useSyncExternalStore } from 'react'
 import type { ConsoleContext } from '../../contract'
 import { call } from './client'
+import { DatasetPlot } from './DatasetPlot'
 import type { Envelope } from './client'
 import './workspace.css'
 
 export type View = 'explorer' | 'configuration' | 'investigations' | 'connections'
 type Row = { time: number; value: unknown; reason?: string; source_flag: unknown; source_ref: string }
-type Dataset = { dataset_id: string; rows: Row[]; coverage: unknown; unit: string | null }
+type Dataset = { dataset_id: string; rows: Row[]; coverage: unknown; unit: string | null;
+  start?: number; end?: number; cadence_s?: number | null; time_basis?: string; source_class?: string }
 type Analysis = { artifact_id: string; count: number; finite_count: number; missing_count: number; nonfinite_count: number;
   min: number | null; max: number | null; mean: number | null; median: number | null; stddev: number | null;
   mean_convention: string; stddev_convention: string; unit: string | null }
@@ -137,6 +139,8 @@ export function WorkspacePage({ ctx, view }: { ctx: ConsoleContext; view: View }
       {state.dataset && <div className="workspace-card">
         <h2>Frozen dataset</h2><p>{state.selection} · Unit: {state.dataset.unit ?? 'unknown'} · {state.dataset.dataset_id}</p>
         <Evidence value={state.dataset.coverage} label="Requested and available coverage" />
+        <DatasetPlot datasetId={state.dataset.dataset_id} rows={state.dataset.rows} unit={state.dataset.unit}
+          start={state.dataset.start} end={state.dataset.end} cadenceS={state.dataset.cadence_s} timeBasis={state.dataset.time_basis} />
         <div className="workspace-table"><table><thead><tr><th>Event time (s)</th><th>Value</th><th>Classification</th><th>Original flag</th><th>Source record</th></tr></thead>
           <tbody>{state.dataset.rows.map((row, i) => <tr key={i}><td>{row.time}</td><td>{text(row.value)}</td><td>{row.reason ?? 'Reported observation'}</td><td>{text(row.source_flag)}</td><td>{row.source_ref}</td></tr>)}</tbody></table></div>
         <button disabled={state.busy} onClick={() => void perform<Analysis>('ds_analyze', { dataset_id: state.dataset!.dataset_id }, (analysis) => ({ analysis }))}>Analyze frozen dataset</button>

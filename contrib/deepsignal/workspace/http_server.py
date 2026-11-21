@@ -90,6 +90,9 @@ period:
                     await socket.close(code=1009)
                     return
                 request = json.loads(raw)
+                if not isinstance(request, dict):
+                    await socket.close(code=1008)
+                    return
                 kind = request.get('type')
                 if kind == 'fields':
                     data = list(fields)
