@@ -26,6 +26,15 @@ through shared UI/CLI services. Qualify each backend/version before advertising 
 capabilities. See [fake-cruise user stories](DEMO-STORIES.md) for real-upstream lab
 acceptance; the current fixture is the first bounded subset.
 
+Program requirements also include configurable selected access, strict read-only
+observation, permitted instrument inspection and independently approved science-
+instrument diagnostics/configuration over qualified OpenRVDAS transports. Credentials
+must come from a protected resolver and never be returned to the model. These
+instrument/policy/vault capabilities are not implemented by this fixture server.
+Canonical requirements: [program architecture](https://github.com/eugenevivino/openrvdas-desk/blob/deepsignal/relay-pilot-20261120/docs/ARCHITECTURE.md),
+[security](https://github.com/eugenevivino/openrvdas-desk/blob/deepsignal/relay-pilot-20261120/docs/SECURITY-ARCHITECTURE.md)
+and [instrument access](https://github.com/eugenevivino/openrvdas-desk/blob/deepsignal/relay-pilot-20261120/docs/SHIP-SYSTEMS.md).
+
 From `/private/tmp/deepsignal/product-m1-20261121`, after the isolated environment
 has been prepared through the existing resource guard:
 

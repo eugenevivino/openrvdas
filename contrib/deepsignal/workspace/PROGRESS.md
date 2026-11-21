@@ -2,7 +2,7 @@
 
 M1 is in progress on deepsignal/workspace-m1, based on qualified Console/Stream
 Health view pilot b67f3072. Full M1 and production are not qualified. The desk
-tracks 22 deliverables. DEMO-STORIES.md defines ten fake-cruise stories, including
+tracks 22 deliverables. DEMO-STORIES.md defines fourteen fake-cruise stories, including
 future real OpenRVDAS lab acceptance rather than only mock integration.
 
 ## Verified candidate
@@ -45,3 +45,25 @@ security/usability review and independent reference evidence; complete remaining
 M1 stories and the real-upstream lab adapter. General replay/jobs, deep links,
 no-change outcomes and broader operator acceptance remain incomplete. Keep HOLDs
 and unfinished stamps. No service installation or production launch.
+
+## Harness repair follow-up
+
+Candidate6cba5716fbf1e9fd4422214dffa3995d272483c4 passed Relay readiness checks
+and Linux44881969262 affected-harness-checks. Ten service/HTTP/MCP regression
+checks, actual SDK/CLI, optimized-Python acceptance checks and Chromium passed.
+Frontend/source reuse was checked against58fbde8c; no unchanged frontend rebuild
+or expensive rerun was needed. The original full-workflow evidence remains at58fb.
+
+The optimized-Python regression first failed for both incorrect tool catalogs;
+all30 smoke assertions were replaced by mandatory checks with unchanged conditions.
+The initial repair test exposed SDK exception wrapping; its original error is
+preserved and the test now verifies the exact underlying failure. Browser readiness
+now uses a direct loopback HTTP connection without proxies or redirects.
+
+Unchanged Bandit policy remains FAIL:190 total findings,2 in workspace
+(browser harness subprocess import/call), down from221 total/33 workspace.
+No finding was suppressed or automatically accepted. Independent review and all
+remaining full-scope/security/production gates remain held. Later story/docs commits
+have no new exact-head gate stamp. Program architecture now requires configurable
+selected access, read-only and permitted instrument modes, and protected secret
+resolution; the fixture does not implement those production capabilities.
