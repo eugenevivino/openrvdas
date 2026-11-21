@@ -29,7 +29,7 @@ class FixtureHttp(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             service = Workspace(Path(directory) / 'state.sqlite3')
             with TestClient(create_app(service), base_url='http://127.0.0.1:8765') as client:
-                with client.websocket_connect('/cds-ws') as socket:
+                with client.websocket_connect('ws://127.0.0.1:8765/cds-ws') as socket:
                     socket.send_json([])
                     with self.assertRaises(WebSocketDisconnect) as closed:
                         socket.receive_json()
