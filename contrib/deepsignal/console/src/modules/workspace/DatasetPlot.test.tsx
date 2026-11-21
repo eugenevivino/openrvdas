@@ -3,11 +3,12 @@ import '@testing-library/jest-dom/vitest'
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, expect, it } from 'vitest'
 import { DatasetPlot } from './DatasetPlot'
+import type { PlotObservation } from './DatasetPlot'
 
 afterEach(cleanup)
 
 it('plots only finite scalar observations while keeping nonfinite and missing classifications in the source', () => {
-  const rows = Object.freeze([
+  const rows: readonly PlotObservation[] = Object.freeze([
     Object.freeze({ time: 5, value: 12, source_ref: 'record-5' }),
     Object.freeze({ time: 1, value: null, reason: 'missing' }),
     Object.freeze({ time: 2, value: NaN, reason: 'nonfinite' }),
