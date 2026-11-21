@@ -1,31 +1,47 @@
 # Master directive checkpoint: 2026-11-21
 
-M0 inspected; M1 implementation in progress in `deepsignal/workspace-m1`, based
-on qualified pilot b67f3072. Neither full M1 nor production readiness is claimed.
-The master and mandatory Grafana directives are tracked by the existing desk's
-MASTER-PRODUCT-TICKETS.md, linked from TICKETS.md.
+M1 is in progress on deepsignal/workspace-m1, based on qualified Console/Stream
+Health view pilot b67f3072. Full M1 and production are not qualified. The desk
+tracks 22 deliverables. DEMO-STORIES.md defines ten fake-cruise stories, including
+future real OpenRVDAS lab acceptance rather than only mock integration.
 
-| Capability | State | Location/evidence |
-|---|---|---|
-| Console/Stream Health view | implemented, fixture-qualified at b67f3072 | console/src; prior exact native/Linux/independent review |
-| CDS/history semantics | implemented, same qualification | console/src/cds.ts, field-data.ts |
-| Upstream parser | implemented; new replay unverified | logger/transforms/parse_transform.py |
-| Configuration expansion | partial; unsuitable for untrusted static validation | read_config.py, ListenerFromLoggerConfig |
-| Shared analysis/artifacts | in progress | workspace/service.py |
-| Draft/replay/investigation | in progress | workspace |
-| MCP | new source, unverified | workspace/mcp_server.py |
-| Four additional UI routes | new source, unverified | console/src/modules/workspace |
-| Real archive/backend | unverified, M2 | no compatibility claim |
-| Grafana/InfluxDB | mandatory, not implemented | G1-G6 tickets |
-| Controlled operations | absent, M4 | no control tool registered |
+## Verified candidate
 
-Integration owner: DeepSignal lead; claim unit-workspace-m1. Helpers own disjoint
-UI and MCP files and run no builds. Checks reuse Relay's frozen resource guard
-and atomic execution claim. Kalon owns allocation; no Mini job is launched.
-User superseded the 1% reserve on November 21: use available allowance for useful
-work. No reset purchase or monetary-limit change.
+58fbde8cb9cbab0b4a77ee25042fd9a9169d4615 includes the Relay-built Console bundle.
+Relay R5 passed nine service/HTTP tests, actual 13-tool SDK stdio workflow,
+model-free CLI, 281 frontend tests, lint/build/types and actual Chromium
+investigation/draft/replay/export. Candidate audit is clean. Maximum queued
+handoff was 0.0931 seconds, not end-to-end throughput or machine utilization.
 
-Pending: service tests, SDK stdio journey, CLI parity, UI checks/browser journey,
-new candidate Linux and independent review. M1 also owes connected fixture
-Console/Stream Health presentation, plots/deep links, and general replay job
-semantics. Preserve honest capability limits and runnable earlier work.
+Linux run [44879804326](https://github.com/eugenevivino/openrvdas-desk/actions/runs/44879804326)
+tested that exact candidate: workspace PASS, existing-security-policy FAIL.
+The unchanged policy rejected an unlisted browser_smoke.py finding. Raw scan
+has 221 findings, including 33 in the new workspace: 30 smoke assertions,
+subprocess import/call and URL-open checks. Disposition remains required;
+no scanner policy was relaxed and this note is not independent security approval.
+
+Raw receipts are under /private/tmp/deepsignal/product-m1-evidence/m1-r5-state/
+and linux-44879804326/ under the same root. Original candidate invalidation,
+browser failure and subsequent regression/repair evidence remain preserved.
+Later documentation commits do not receive a new exact-head gate stamp.
+
+| Capability | Verified scope and remaining work |
+|---|---|
+| Console/Stream Health | Prior fixture qualification at b67f3072; new simulated incident has browser evidence |
+| Analysis/artifacts | Bounded scalar fixture and scoped artifacts; broader science/archive pending |
+| Draft/replay | Actual pinned ParseTransform, two patterns, four records; general executor absent |
+| MCP/CLI | Actual SDK transport and parity passed; interactive model walkthrough pending |
+| Four UI routes and scalar plot | 281 frontend tests and real browser; full operator acceptance pending |
+| Real manager/archive/cruise | Not implemented or qualified by this fixture |
+| Grafana/InfluxDB | Mandatory G1-G6; no qualified backend connection |
+| Controlled operations | No execution tool; independent approval boundary required |
+
+Integration owner is the DeepSignal lead, claim unit-workspace-m1. Helpers have
+finished. Build/test uses the frozen runtime-v11 Relay queue and guards. Kalon
+owns shared allocation; no DeepSignal Mini job or production scheduling activation.
+
+Next: disposition security findings, obtain whole-module independent science/
+security/usability review and independent reference evidence; complete remaining
+M1 stories and the real-upstream lab adapter. General replay/jobs, deep links,
+no-change outcomes and broader operator acceptance remain incomplete. Keep HOLDs
+and unfinished stamps. No service installation or production launch.

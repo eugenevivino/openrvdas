@@ -70,3 +70,5 @@ until explicit operator deletion, with no automatic evidence eviction. Stop this
 disposable server before copying its SQLite file for backup. It has no upstream
 connection; stopping it cannot stop acquisition. No persistent service is installed.
 See `PROGRESS.md` for tests actually run and remaining acceptance gates.
+See [demo user stories](DEMO-STORIES.md) for the fake-cruise scenarios and the
+distinction between this fixture and a future real OpenRVDAS lab.

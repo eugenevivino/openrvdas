@@ -14,10 +14,17 @@ The adapter uses the v2 `MCPServer` and `Client` interfaces. Dependencies belong
 in a separate environment; do not upgrade the acquisition environment.
 The integration owner records the resolved dependency manifest and check results.
 
-**Current evidence:** implementation and smoke test written; execution pending.
-Codex interactive use, cancellation under load, Linux packaging and live-vessel
-qualification are not established by source inspection. Preserve original smoke
-output; its JSON summary reports only what that run actually checks.
+**Current evidence:** actual 13-tool SDK workflow passed through Relay R5 and Linux
+run 44879804326 at `58fbde8cb9cbab0b4a77ee25042fd9a9169d4615`. The Linux
+security-policy job failed; the overall candidate remains held. Interactive Codex,
+cancellation under load, packaging and live-vessel qualification remain unverified.
+Preserve original smoke output; its summary reports only what that run checks.
+
+The target covers supported OpenRVDAS discovery, acquisition health, data/archive
+analysis, configuration, validation/replay, investigations and authorized operations
+through shared UI/CLI services. Qualify each backend/version before advertising its
+capabilities. See [fake-cruise user stories](DEMO-STORIES.md) for real-upstream lab
+acceptance; the current fixture is the first bounded subset.
 
 From `/private/tmp/deepsignal/product-m1-20261121`, after the isolated environment
 has been prepared through the existing resource guard:
